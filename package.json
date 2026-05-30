@@ -1,0 +1,538 @@
+{
+	"name": "keklick-copilot",
+	"publisher": "keklick1337",
+	"displayName": "Keklick Copilot Custom Endpoints",
+	"description": "Flexible custom model endpoints for GitHub Copilot Chat with multi-source API routing",
+	"icon": "assets/logo.png",
+	"keywords": [
+		"ai",
+		"chat",
+		"copilot",
+		"github-copilot",
+		"language-model",
+		"llm",
+		"openai",
+		"ollama",
+		"anthropic",
+		"claude",
+		"gemini",
+		"openai-compatible",
+		"openai-responses",
+		"git-commit",
+		"thinking"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/keklick1337/custom-copilot"
+	},
+	"version": "1.0.0",
+	"engines": {
+		"vscode": "^1.104.0"
+	},
+	"categories": [
+		"AI",
+		"Chat"
+	],
+	"badges": [
+		{
+			"url": "https://img.shields.io/github/stars/keklick1337/custom-copilot?style=social",
+			"description": "Star custom-copilot on Github",
+			"href": "https://github.com/keklick1337/custom-copilot"
+		}
+	],
+	"bugs": {
+		"url": "https://github.com/keklick1337/custom-copilot/issues"
+	},
+	"license": "MIT",
+	"enabledApiProposals": [
+		"chatProvider"
+	],
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "customcopilot-sidebar",
+					"title": "Custom Copilot",
+					"icon": "assets/logo.png"
+				}
+			]
+		},
+		"views": {
+			"customcopilot-sidebar": [
+				{
+					"type": "webview",
+					"id": "customcopilot.settingsView",
+					"name": "Configuration Panel",
+					"icon": "assets/logo.png"
+				}
+			]
+		},
+		"languageModelChatProviders": [
+			{
+				"vendor": "copilotcustommodelsendpoint",
+				"displayName": "Custom OpenAI"
+			},
+			{
+				"vendor": "copilotcustommodelsendpoint-responses",
+				"displayName": "Custom OpenAI Responses"
+			},
+			{
+				"vendor": "copilotcustommodelsendpoint-anthropic",
+				"displayName": "Custom Anthropic"
+			},
+			{
+				"vendor": "copilotcustommodelsendpoint-gemini",
+				"displayName": "Custom Gemini"
+			},
+			{
+				"vendor": "copilotcustommodelsendpoint-ollama",
+				"displayName": "Custom Ollama"
+			}
+		],
+		"commands": [
+			{
+				"command": "customcopilot.setProviderApikey",
+				"category": "Copilot Custom Models Endpoint",
+				"title": "Set API Key For Source"
+			},
+			{
+				"command": "customcopilot.openConfig",
+				"category": "Copilot Custom Models Endpoint",
+				"title": "Open Configuration UI"
+			},
+			{
+				"command": "customcopilot.generateGitCommitMessage",
+				"title": "Generate Commit Message",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(wand)"
+			},
+			{
+				"command": "customcopilot.abortGitCommitMessage",
+				"title": "Stop Commit Message Generation",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(debug-stop)"
+			}
+		],
+		"menus": {
+			"scm/title": [
+				{
+					"command": "customcopilot.generateGitCommitMessage",
+					"group": "navigation",
+					"when": "config.git.enabled && scmProvider == git && !customcopilot.isGeneratingCommit"
+				},
+				{
+					"command": "customcopilot.abortGitCommitMessage",
+					"group": "navigation",
+					"when": "config.git.enabled && scmProvider == git && customcopilot.isGeneratingCommit"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "customcopilot.generateGitCommitMessage",
+					"when": "config.git.enabled && !customcopilot.isGeneratingCommit"
+				},
+				{
+					"command": "customcopilot.abortGitCommitMessage",
+					"when": "config.git.enabled && customcopilot.isGeneratingCommit"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Copilot Custom Models Endpoint",
+			"properties": {
+				"customcopilot.logLevel": {
+					"type": "string",
+					"default": "off",
+					"enum": [
+						"off",
+						"debug",
+						"info",
+						"warn",
+						"error"
+					],
+					"description": "Debug log level. Logs are written to ~/.copilot/customcopilot/logs/ as JSON lines. Default is 'off' (no logging)."
+				},
+				"customcopilot.baseUrl": {
+					"type": "string",
+					"default": "https://router.huggingface.co/v1",
+					"description": "The base URL for the Openai Compatible Inference API. Default value is Hugging Face."
+				},
+				"customcopilot.proxyUrl": {
+					"type": "string",
+					"default": "",
+					"description": "Optional global proxy URL for API requests (supports socks5://, http://, https://)."
+				},
+				"customcopilot.models": {
+					"type": "array",
+					"default": [],
+					"items": {
+						"type": "object",
+						"properties": {
+							"id": {
+								"type": "string",
+								"description": "Model ID (e.g., 'glm-4.6')."
+							},
+							"displayName": {
+								"type": "string",
+								"description": "(Optional) Display name for the model that will be shown in the Copilot interface. If not provided, will be generated automatically."
+							},
+							"configId": {
+								"type": "string",
+								"description": "(Optional) Configuration ID for this model. Allows defining the same model with different settings (e.g. 'glm-4.6::thinking', 'glm-4.6::no-thinking')."
+							},
+							"owned_by": {
+								"type": "string",
+								"description": "Model provider (e.g., 'zai', 'openai')."
+							},
+							"provider": {
+								"type": "string",
+								"description": "(Alias of owned_by) Model provider (e.g., 'zai', 'openai')."
+							},
+							"provide": {
+								"type": "string",
+								"description": "(Alias of owned_by) Model provider (e.g., 'zai', 'openai')."
+							},
+							"family": {
+								"type": "string",
+								"description": "Model family (e.g., 'gpt-4', 'claude-3', 'gemini'). Enables model-specific optimizations and behaviors. Defaults to 'oai-compatible' if not specified."
+							},
+							"baseUrl": {
+								"type": "string",
+								"description": "Base URL for the model provider. If not provided, the global customcopilot.baseUrl will be used."
+							},
+							"proxyUrl": {
+								"type": "string",
+								"description": "Optional proxy URL for this source (supports socks5://, http://, https://)."
+							},
+							"userAgent": {
+								"type": "string",
+								"description": "Optional User-Agent override for this source. If omitted, global customcopilot.userAgent is used."
+							},
+							"context_length": {
+								"type": "number",
+								"default": 128000,
+								"minimum": 1000,
+								"maximum": 10000000,
+								"description": "Model support context length. Default is 128000."
+							},
+							"vision": {
+								"type": "boolean",
+								"default": false,
+								"description": "Model support vision. Default is false."
+							},
+							"max_tokens": {
+								"type": "number",
+								"default": 4096,
+								"minimum": 1,
+								"maximum": 10000000,
+								"description": "Maximum number of tokens to generate (range: [1, context_length)). Default is 4096."
+							},
+							"max_completion_tokens": {
+								"type": "number",
+								"default": 4096,
+								"minimum": 1,
+								"maximum": 10000000,
+								"description": "Maximum number of tokens to generate (OpenAI new standard parameter)."
+							},
+							"reasoning_effort": {
+								"type": "string",
+								"default": "medium",
+								"enum": [
+									"max",
+									"xhigh",
+									"high",
+									"medium",
+									"low",
+									"minimal"
+								],
+								"description": "Reasoning effort level (OpenAI reasoning configuration)"
+							},
+							"thinking": {
+								"type": "object",
+								"description": "Thinking configuration for Zai provider",
+								"properties": {
+									"type": {
+										"type": "string",
+										"enum": [
+											"enabled",
+											"disabled"
+										],
+										"description": "Set to 'enabled' to enable thinking, 'disabled' to disable thinking"
+									}
+								}
+							},
+							"enable_thinking": {
+								"type": "boolean",
+								"default": false,
+								"description": "Switches between thinking and non-thinking modes. Not required."
+							},
+							"thinking_budget": {
+								"type": "number",
+								"default": 128,
+								"minimum": 128,
+								"maximum": 10000000,
+								"description": "Maximum number of tokens for chain-of-thought output. Not required."
+							},
+							"temperature": {
+								"type": "number",
+								"default": 0,
+								"minimum": 0,
+								"maximum": 2,
+								"description": "Sampling temperature (range: [0, 2]). Lower values make output more deterministic, higher values make it more creative. Default is 0."
+							},
+							"top_p": {
+								"type": "number",
+								"default": 1,
+								"minimum": 0,
+								"maximum": 1,
+								"description": "Top-p sampling value (range: (0, 1]). Not required."
+							},
+							"top_k": {
+								"type": "number",
+								"default": 50,
+								"minimum": 1,
+								"description": "Top-k sampling value (range: [1, Infinity)). Not required."
+							},
+							"min_p": {
+								"type": "number",
+								"default": 0,
+								"minimum": 0,
+								"maximum": 1,
+								"description": "Minimum probability threshold (range: [0, 1]). Not required."
+							},
+							"frequency_penalty": {
+								"type": "number",
+								"default": 0,
+								"minimum": -2,
+								"maximum": 2,
+								"description": "Frequency penalty (range: [-2, 2]). Not required."
+							},
+							"presence_penalty": {
+								"type": "number",
+								"default": 0,
+								"minimum": -2,
+								"maximum": 2,
+								"description": "Presence penalty (range: [-2, 2]). Not required."
+							},
+							"repetition_penalty": {
+								"type": "number",
+								"default": 0,
+								"minimum": 0,
+								"maximum": 2,
+								"description": "Repetition penalty (range: (0, 2]). Not required."
+							},
+							"reasoning": {
+								"type": "object",
+								"default": {
+									"effort": "medium"
+								},
+								"properties": {
+									"effort": {
+										"type": "string",
+										"default": "medium",
+										"enum": [
+											"max",
+											"xhigh",
+											"high",
+											"medium",
+											"low",
+											"minimal",
+											"auto"
+										],
+										"description": "Reasoning effort level for OpenRouter/xAI (high, medium, low, minimal, auto)"
+									},
+									"exclude": {
+										"type": "boolean",
+										"default": false,
+										"description": "Exclude reasoning tokens from the final response"
+									},
+									"max_tokens": {
+										"type": "number",
+										"default": 2000,
+										"minimum": 1,
+										"description": "Specific token limit for reasoning (Anthropic-style, alternative to effort)"
+									},
+									"enabled": {
+										"type": "boolean",
+										"default": true,
+										"description": "Enable reasoning (inferred from effort or max_tokens if not specified)"
+									}
+								},
+								"description": "Reasoning configuration for OpenRouter-compatible providers"
+							},
+							"extra": {
+								"type": "object",
+								"description": "Extra request body parameters."
+							},
+							"headers": {
+								"type": "object",
+								"additionalProperties": {
+									"type": "string"
+								},
+								"description": "Custom HTTP headers to be sent with every request to this model's provider. These headers will be merged with the default headers (Authorization, Content-Type, User-Agent)."
+							},
+							"include_reasoning_in_request": {
+								"type": "boolean",
+								"default": false,
+								"description": "Whether to include reasoning_content in assistant messages sent to the API. Support deepseek-v3.2 or others."
+							},
+							"apiMode": {
+								"type": "string",
+								"enum": [
+									"openai",
+									"openai-responses",
+									"ollama",
+									"anthropic",
+									"gemini"
+								],
+								"default": "openai",
+								"description": "API mode: 'openai' (Default) for OpenAI Chat Completions (/chat/completions), 'openai-responses' for OpenAI Responses (/responses), 'ollama' for Ollama (/api/chat), 'anthropic' for Anthropic (/v1/messages), 'gemini' for Gemini (*/v1beta/models/{model}:streamGenerateContent?alt=sse)."
+							},
+							"useForCommitGeneration": {
+								"type": "boolean",
+								"default": false,
+								"description": "Whether to be used for Git commit message generation. Not supports gemini apiMode."
+							},
+							"delay": {
+								"type": "number",
+								"default": 0,
+								"minimum": 0,
+								"description": "Model-specific delay in milliseconds between consecutive requests. If not specified, falls back to global customcopilot.delay configuration."
+							}
+						},
+						"required": [
+							"id"
+						],
+						"anyOf": [
+							{
+								"required": [
+									"owned_by"
+								]
+							},
+							{
+								"required": [
+									"provider"
+								]
+							},
+							{
+								"required": [
+									"provide"
+								]
+							}
+						]
+					},
+					"description": "A list of preferred models to use. If provided, these models will be used directly instead of fetching from the API."
+				},
+				"customcopilot.retry": {
+					"type": "object",
+					"default": {
+						"enabled": true,
+						"max_attempts": 3,
+						"interval_ms": 1000,
+						"status_codes": []
+					},
+					"properties": {
+						"enabled": {
+							"type": "boolean",
+							"default": true,
+							"description": "Enable retry mechanism for api errors. Default is true."
+						},
+						"max_attempts": {
+							"type": "number",
+							"default": 3,
+							"minimum": 1,
+							"description": "Maximum number of retry attempts. Default is 3."
+						},
+						"interval_ms": {
+							"type": "number",
+							"default": 1000,
+							"minimum": 1,
+							"description": "Interval between retry attempts in milliseconds. Default is 1000 (1 seconds)."
+						},
+						"status_codes": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"description": "Additional HTTP status codes that will be merged. Default is [429, 500, 502, 503, 504]."
+						}
+					},
+					"description": "Retry configuration for handling api errors like [429, 500, 502, 503, 504]."
+				},
+				"customcopilot.delay": {
+					"type": "number",
+					"default": 0,
+					"minimum": 0,
+					"description": "Fixed delay in milliseconds between consecutive requests. Default is 0 (no delay)."
+				},
+				"customcopilot.commitLanguage": {
+					"type": "string",
+					"default": "English",
+					"enum": [
+						"English",
+						"French",
+						"Italian",
+						"German",
+						"Spanish",
+						"Russian",
+						"Chinese (Simplified)",
+						"Chinese (Traditional)",
+						"Japanese",
+						"Korean",
+						"Czech",
+						"Portuguese (Brazil)",
+						"Turkish",
+						"Polish"
+					],
+					"description": "Language for generated Git commit messages. Default is English."
+				},
+				"customcopilot.commitMessagePrompt": {
+					"type": "string",
+					"default": "",
+					"description": "Custom system prompt for commit message generation. If not provided, uses the default prompt."
+				},
+				"customcopilot.readFileLines": {
+					"type": "number",
+					"default": 0,
+					"minimum": 0,
+					"maximum": 10000,
+					"description": "Number of lines to read when using `read_file` tool. Large lines may cost more tokens. Default is 0, let model decide lines."
+				},
+				"customcopilot.userAgent": {
+					"type": "string",
+					"default": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+					"description": "Custom User-Agent string to use for API requests. Default is a Chrome-based User-Agent."
+				}
+			}
+		}
+	},
+	"main": "./out/extension.js",
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"download-api": "dts dev && mv vscode.proposed.*.ts src",
+		"compile": "tsc -p ./",
+		"lint": "eslint src",
+		"format": "prettier --write . --ignore-path .prettierignore",
+		"watch": "tsc -watch -p ./",
+		"test": "npm run compile && vscode-test",
+		"build": "npx @vscode/vsce package -o extension.vsix"
+	},
+	"dependencies": {
+		"@microsoft/tiktokenizer": "^1.0.10",
+		"undici": "^8.2.0"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.13.0",
+		"@stylistic/eslint-plugin": "^2.9.0",
+		"@types/mocha": "^10.0.10",
+		"@types/node": "^22.19.17",
+		"@types/vscode": "^1.104.0",
+		"@vscode/dts": "^0.4.1",
+		"@vscode/test-cli": "^0.0.11",
+		"@vscode/test-electron": "^2.5.2",
+		"eslint": "^9.13.0",
+		"prettier": "^3.1.0",
+		"typescript": "^5.9.2",
+		"typescript-eslint": "^8.39.0"
+	}
+}

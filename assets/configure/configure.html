@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta http-equiv="Content-Security-Policy" content="%CSP_SOURCE%" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Copilot Custom Models</title>
+		<link rel="stylesheet" href="%CSS_URI%" />
+	</head>
+	<body>
+		<div class="layout">
+
+			<!-- ── Sidebar ─────────────────────────────────────────── -->
+			<aside class="sidebar">
+				<div class="sidebar-top">
+					<span class="sidebar-label">Providers</span>
+					<button id="addProviderBtn" class="icon-btn" title="Add provider">+</button>
+				</div>
+				<div id="providerList" class="provider-list"></div>
+				<div class="sidebar-bottom">
+					<button id="exportConfig" class="secondary small">Export</button>
+					<button id="importConfig" class="secondary small">Import</button>
+				</div>
+			</aside>
+
+			<!-- ── Main ────────────────────────────────────────────── -->
+			<main class="main-panel">
+
+				<!-- General / empty state ─────────────────────────── -->
+				<div id="emptyState">
+					<div class="back-bar" id="gitCommitBackBar" style="display:none">
+						<button id="gitCommitBackBtn" class="secondary small back-btn">← Back to Providers</button>
+					</div>
+					<div class="empty-hint" id="emptyHintText">Select a provider from the list, or add a new one.</div>
+					<section id="commitSection">
+						<div class="section-header">
+							<h2>Git Commit</h2>
+							<div class="section-actions">
+								<button id="saveCommitBtn">Save</button>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field">
+								<label for="commitModel">Commit Model</label>
+								<div class="field-description">Model for Git commit message generation.</div>
+								<select id="commitModel"><option value="">None</option></select>
+							</div>
+							<div class="field">
+								<label for="commitLanguage">Language</label>
+								<div class="field-description">Language for generated messages.</div>
+								<select id="commitLanguage">
+									<option value="English">English</option>
+									<option value="French">French</option>
+									<option value="Italian">Italian</option>
+									<option value="German">German</option>
+									<option value="Spanish">Spanish</option>
+									<option value="Russian">Russian</option>
+									<option value="Chinese (Simplified)">Chinese (Simplified)</option>
+									<option value="Chinese (Traditional)">Chinese (Traditional)</option>
+									<option value="Japanese">Japanese</option>
+									<option value="Korean">Korean</option>
+									<option value="Czech">Czech</option>
+									<option value="Portuguese (Brazil)">Portuguese (Brazil)</option>
+									<option value="Turkish">Turkish</option>
+									<option value="Polish">Polish</option>
+								</select>
+							</div>
+						</div>
+					</section>
+					<section id="integrationSection">
+						<div class="section-header">
+							<h2>Global Settings</h2>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label class="checkbox-label">
+									<input id="allowAnonymousAccess" type="checkbox" />
+									Use Copilot Chat without a GitHub account
+								</label>
+								<div class="field-description">
+									Enables VS Code's anonymous chat access (<code>chat.allowAnonymousAccess</code>)
+									so you can use the Chat view with your own providers while signed out of GitHub.
+									Requires reloading the window to take effect.
+								</div>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label class="checkbox-label">
+									<input id="telemetryDisabled" type="checkbox" />
+									Disable VS Code telemetry (keep your providers private)
+								</label>
+								<div class="field-description">
+									VS Code reports the selected model id in its core chat telemetry
+									(<code>interactiveSessionProviderInvoked</code>), which can reveal which
+									third-party API providers and models you use. Enabling this sets
+									<code>telemetry.telemetryLevel</code> to <code>off</code>. Recommended for anonymity.
+								</div>
+							</div>
+						</div>
+					</section>
+				</div>
+
+				<!-- Provider detail ───────────────────────────────── -->
+				<div id="providerDetail" style="display:none">
+					<div class="back-bar">
+						<button id="backToHomeBtn" class="secondary small back-btn">← Back to Providers</button>
+					</div>
+
+					<!-- Provider Settings ─────────────────────────── -->
+					<section id="providerSettingsSection">
+						<div class="section-header">
+							<div class="provider-heading">
+								<h2 id="providerTitle" class="provider-title"></h2>
+								<div id="providerNameField" class="provider-name-input" style="display:none">
+									<input id="pName" type="text" placeholder="provider-id (lowercase-no-spaces)" />
+								</div>
+							</div>
+							<div class="section-actions">
+								<button id="saveProviderBtn">Save Settings</button>
+								<button id="deleteProviderBtn" class="danger" style="display:none">Delete</button>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label for="pPreset">Quick Setup — Default Endpoints</label>
+								<div class="field-description">Pick a known provider to auto-fill Base URL & API Mode.</div>
+								<select id="pPreset">
+									<option value="">— Select a provider preset —</option>
+								</select>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field">
+								<label for="pBaseUrl">Base URL</label>
+								<div class="field-description">API endpoint (e.g. https://api.novita.ai/v3/openai)</div>
+								<input id="pBaseUrl" type="text" placeholder="https://api.example.com/v1" />
+							</div>
+							<div class="field">
+								<label for="pApiKey">API Key</label>
+								<div class="field-description">Stored in VS Code secrets.</div>
+								<input id="pApiKey" type="password" placeholder="sk-..." autocomplete="new-password" />
+							</div>
+							<div class="field">
+								<label for="pApiMode">API Mode</label>
+								<div class="field-description">Request protocol.</div>
+								<select id="pApiMode">
+									<option value="openai">OpenAI (/chat/completions)</option>
+									<option value="openai-responses">OpenAI Responses (/responses)</option>
+									<option value="ollama">Ollama (/api/chat)</option>
+									<option value="anthropic">Anthropic (/v1/messages)</option>
+									<option value="gemini">Gemini (generateContent)</option>
+								</select>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field">
+								<label for="pProxyUrl">Proxy URL</label>
+								<div class="field-description">socks5://, http://, https://</div>
+								<input id="pProxyUrl" type="text" placeholder="socks5://127.0.0.1:9150" />
+							</div>
+							<div class="field">
+								<label for="pUserAgent">User-Agent</label>
+								<div class="field-description">Override HTTP User-Agent header.</div>
+								<div class="ua-input-group">
+									<input id="pUserAgent" type="text" placeholder="Mozilla/5.0 ..." />
+									<select id="pUserAgentPreset" class="ua-preset-select" title="Insert a preset User-Agent">
+										<option value="">Preset…</option>
+									</select>
+									<button id="pUserAgentRandom" type="button" class="icon-btn ua-random-btn" title="Random User-Agent">🎲</button>
+								</div>
+							</div>
+							<div class="field">
+								<label for="pDelay">Delay (ms)</label>
+								<div class="field-description">Between consecutive requests.</div>
+								<input id="pDelay" type="number" min="0" placeholder="0" />
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label for="pHeaders">Custom Headers (JSON)</label>
+								<div class="field-description">Extra HTTP headers for every request to this provider.</div>
+								<textarea id="pHeaders" rows="2" placeholder='{"X-Custom-Header": "value"}'></textarea>
+							</div>
+						</div>
+					</section>
+
+					<!-- Models ────────────────────────────────────── -->
+					<section id="modelsSection" style="display:none">
+						<div class="section-header">
+							<h2>Models &nbsp;<span id="modelCount" class="badge">0</span></h2>
+							<div class="section-actions">
+								<button id="fetchFromApiBtn" class="secondary">↓ Fetch from API</button>
+								<button id="addModelBtn">+ Add</button>
+							</div>
+						</div>
+
+						<!-- Fetch panel -->
+						<div id="fetchPanel" class="fetch-panel" style="display:none">
+							<div class="fetch-bar">
+								<span id="fetchStatus">Fetching models…</span>
+								<div class="fetch-bar-actions">
+									<button id="selectAllFetched" class="secondary small">All</button>
+									<button id="deselectAllFetched" class="secondary small">None</button>
+									<button id="importFetchedBtn" disabled>Import (<span id="importCount">0</span>)</button>
+									<button id="cancelFetchBtn" class="secondary">Cancel</button>
+								</div>
+							</div>
+							<div id="fetchResults" class="fetch-results"></div>
+						</div>
+
+						<!-- Model Cards List Instead of Overflowing Table -->
+						<div class="models-cards-container" id="modelCardsContainer"></div>
+
+						<div id="bulkDeleteBar" class="bulk-delete-bar" style="display:none">
+							<div class="bulk-delete-info">
+								Selected: <span id="bulkDeleteCount">0</span>
+							</div>
+							<div class="bulk-delete-actions">
+								<button id="bulkSelectAllBtn" class="secondary small">Select All</button>
+								<button id="bulkClearSelectionBtn" class="secondary small">Clear</button>
+								<button id="bulkDeleteBtn" class="danger">Delete Selected</button>
+							</div>
+						</div>
+
+						<!-- Model form -->
+						<div id="modelFormSection" style="display:none">
+							<div class="form-section-title" id="modelFormTitle">Add New Model</div>
+							<div class="form-container">
+								<div class="row">
+									<div class="field">
+										<label for="modelIdInput">Model ID *</label>
+										<div class="field-description">e.g. gpt-4o, meta/llama-3.1-8b-instruct</div>
+										<div class="input-with-dropdown">
+											<input id="modelIdInput" type="text" placeholder="model-id" required />
+											<div id="modelIdDropdown" class="model-dropdown">
+												<div class="dropdown-header">— select or type —</div>
+												<div class="dropdown-content"></div>
+											</div>
+										</div>
+									</div>
+									<div class="field">
+										<label for="modelDisplayName">Display Name</label>
+										<div class="field-description">Label shown in Copilot picker.</div>
+										<input id="modelDisplayName" type="text" placeholder="My Model" />
+									</div>
+									<div class="field">
+										<label for="modelConfigId">Config ID</label>
+										<div class="field-description">Variant suffix (e.g. thinking)</div>
+										<input id="modelConfigId" type="text" placeholder="thinking" />
+									</div>
+								</div>
+								<div class="row">
+									<div class="field">
+										<label for="modelContextLength">Context Length</label>
+										<input id="modelContextLength" type="number" placeholder="128000" min="1" />
+									</div>
+									<div class="field">
+										<label for="modelMaxTokens">Max Tokens</label>
+										<input id="modelMaxTokens" type="number" placeholder="4096" min="1" />
+									</div>
+									<div class="field">
+										<label for="modelMaxCompletionTokens">Max Completion</label>
+										<input id="modelMaxCompletionTokens" type="number" placeholder="4096" min="1" />
+									</div>
+									<div class="field">
+										<label for="modelVision">Vision</label>
+										<select id="modelVision">
+											<option value="">Default (false)</option>
+											<option value="true">True</option>
+											<option value="false">False</option>
+										</select>
+									</div>
+									<div class="field">
+										<label for="modelDelay">Delay (ms)</label>
+										<input id="modelDelay" type="number" placeholder="0" min="0" />
+									</div>
+								</div>
+
+								<div class="advanced-toggle" id="toggleAdvancedSettings">
+									<span id="toggleAdvancedLabel">▶ Advanced</span>
+								</div>
+								<div id="advancedSettingsContent" class="advanced-content" style="display:none">
+									<div class="row">
+										<div class="field">
+											<label for="modelTemperature">Temperature</label>
+											<input id="modelTemperature" type="number" min="0" max="2" step="0.01" />
+										</div>
+										<div class="field">
+											<label for="modelTopP">Top P</label>
+											<input id="modelTopP" type="number" min="0" max="1" step="0.01" />
+										</div>
+										<div class="field">
+											<label for="modelFamily">Family</label>
+											<input id="modelFamily" type="text" placeholder="gpt-4" />
+										</div>
+										<div class="field">
+											<label for="modelTopK">Top K</label>
+											<input id="modelTopK" type="number" min="1" />
+										</div>
+										<div class="field">
+											<label for="modelMinP">Min P</label>
+											<input id="modelMinP" type="number" min="0" max="1" step="0.01" />
+										</div>
+									</div>
+									<div class="row">
+										<div class="field">
+											<label for="modelFrequencyPenalty">Freq. Penalty</label>
+											<input id="modelFrequencyPenalty" type="number" min="-2" max="2" step="0.01" />
+										</div>
+										<div class="field">
+											<label for="modelPresencePenalty">Pres. Penalty</label>
+											<input id="modelPresencePenalty" type="number" min="-2" max="2" step="0.01" />
+										</div>
+										<div class="field">
+											<label for="modelRepetitionPenalty">Rep. Penalty</label>
+											<input id="modelRepetitionPenalty" type="number" min="0" step="0.01" />
+										</div>
+										<div class="field">
+											<label for="modelReasoningEffort">Reasoning Effort</label>
+											<select id="modelReasoningEffort">
+												<option value=""></option>
+												<option value="max">Max</option>
+												<option value="high">High</option>
+												<option value="medium">Medium</option>
+												<option value="low">Low</option>
+											</select>
+										</div>
+										<div class="field">
+											<label for="modelEnableThinking">Enable Thinking</label>
+											<select id="modelEnableThinking">
+												<option value=""></option>
+												<option value="true">True</option>
+												<option value="false">False</option>
+											</select>
+										</div>
+										<div class="field">
+											<label for="modelThinkingBudget">Thinking Budget</label>
+											<input id="modelThinkingBudget" type="number" min="128" />
+										</div>
+									</div>
+									<div class="row">
+										<div class="field">
+											<label for="modelIncludeReasoning">Include Reasoning</label>
+											<select id="modelIncludeReasoning">
+												<option value=""></option>
+												<option value="true">True</option>
+												<option value="false">False</option>
+											</select>
+										</div>
+										<div class="field">
+											<label for="modelThinkingType">Thinking Type</label>
+											<select id="modelThinkingType">
+												<option value=""></option>
+												<option value="enabled">Enabled</option>
+												<option value="disabled">Disabled</option>
+											</select>
+										</div>
+									</div>
+									<div class="subsection">
+										<h3>OpenRouter Reasoning</h3>
+										<div class="row">
+											<div class="field">
+												<label for="modelReasoningEnabled">Enabled</label>
+												<select id="modelReasoningEnabled">
+													<option value=""></option>
+													<option value="true">True</option>
+													<option value="false">False</option>
+												</select>
+											</div>
+											<div class="field">
+												<label for="modelReasoningEffortOR">Effort</label>
+												<select id="modelReasoningEffortOR">
+													<option value=""></option>
+													<option value="max">Max</option>
+													<option value="high">High</option>
+													<option value="medium">Medium</option>
+													<option value="low">Low</option>
+													<option value="auto">Auto</option>
+												</select>
+											</div>
+											<div class="field">
+												<label for="modelReasoningExclude">Exclude</label>
+												<select id="modelReasoningExclude">
+													<option value=""></option>
+													<option value="true">True</option>
+													<option value="false">False</option>
+												</select>
+											</div>
+											<div class="field">
+												<label for="modelReasoningMaxTokens">Max Tokens</label>
+												<input id="modelReasoningMaxTokens" type="number" min="1" />
+											</div>
+										</div>
+									</div>
+									<div class="row">
+										<div class="field">
+											<label for="modelHeaders">Custom Headers (JSON)</label>
+											<textarea id="modelHeaders" rows="2" placeholder='{"X-API-Version": "v1"}'></textarea>
+										</div>
+										<div class="field">
+											<label for="modelExtra">Extra Params (JSON)</label>
+											<textarea id="modelExtra" rows="2" placeholder='{"key": "value"}'></textarea>
+										</div>
+									</div>
+								</div>
+
+								<div id="modelError" class="error-message" style="display:none"></div>
+								<div class="form-actions">
+									<button id="saveModel">Save Model</button>
+									<button id="cancelModel" class="secondary">Cancel</button>
+								</div>
+							</div>
+						</div>
+					</section>
+
+				</div><!-- /providerDetail -->
+			</main>
+		</div>
+
+		<script src="%SCRIPT_URI%" nonce="%NONCE%"></script>
+	</body>
+</html>

@@ -1,0 +1,15 @@
+dist/**
+.vscode/**
+.vscode-test/**
+.git-blame-ignore-revs
+tmp/**
+vscode/**
+oai-compatible-copilot/**
+node_modules/**
+out/**
+**/*.md
+**/*.yml
+**/*.json
+**/*.mjs
+**/*vscode.d.ts
+.build/**
