@@ -21,6 +21,7 @@ interface InitPayload {
 	models: HFModelItem[];
 	providerKeys: Record<string, string>;
 	allowAnonymousAccess: boolean;
+	restoreChatSessions: boolean;
 	telemetryDisabled: boolean;
 }
 
@@ -103,6 +104,7 @@ type IncomingMessage =
 	| { type: "saveCommitSettings"; commitModel: string; commitLanguage: string }
 	| { type: "requestConfirm"; id: string; message: string; action: string }
 	| { type: "setAnonymousAccess"; enabled: boolean }
+	| { type: "setRestoreChatSessions"; enabled: boolean }
 	| { type: "setTelemetryDisabled"; disabled: boolean }
 	| { type: "exportConfig" }
 	| { type: "importConfig" };
@@ -242,6 +244,9 @@ export class ConfigViewController {
 			case "setAnonymousAccess":
 				await this.setAnonymousAccess(message.enabled);
 				break;
+			case "setRestoreChatSessions":
+				await this.setRestoreChatSessions(message.enabled);
+				break;
 			case "setTelemetryDisabled":
 				await this.setTelemetryDisabled(message.disabled);
 				break;
@@ -322,6 +327,7 @@ export class ConfigViewController {
 		const commitLanguage = config.get<string>("customcopilot.commitLanguage", "English");
 		const readFileLines = config.get<number>("customcopilot.readFileLines", 0);
 		const allowAnonymousAccess = config.get<boolean>("chat.allowAnonymousAccess", false);
+		const restoreChatSessions = config.get<boolean>("chat.restoreLastPanelSession", false);
 		const telemetryDisabled = config.get<string>("telemetry.telemetryLevel", "all") === "off";
 		const payload: InitPayload = {
 			baseUrl,
@@ -335,6 +341,7 @@ export class ConfigViewController {
 			models,
 			providerKeys,
 			allowAnonymousAccess,
+			restoreChatSessions,
 			telemetryDisabled,
 		};
 		this.webview.postMessage({ type: "init", payload });
@@ -840,6 +847,22 @@ export class ConfigViewController {
 		if (choice === "Reload Window") {
 			await vscode.commands.executeCommand("workbench.action.reloadWindow");
 		}
+		await this.sendInit();
+	}
+
+	private async setRestoreChatSessions(enabled: boolean) {
+		const config = vscode.workspace.getConfiguration();
+		// VS Code only restores the last chat panel session after a full restart when
+		// `chat.restoreLastPanelSession` is true; otherwise the persisted session reference
+		// is cleared on a fresh start (see ChatViewPane). The session files themselves are
+		// always written to disk, so enabling this makes chats survive restarts even when
+		// signed out of GitHub (anonymous access).
+		await config.update("chat.restoreLastPanelSession", enabled, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			enabled
+				? "Chat sessions will now be restored after restarting VS Code."
+				: "Chat sessions will no longer be restored after restart."
+		);
 		await this.sendInit();
 	}
 

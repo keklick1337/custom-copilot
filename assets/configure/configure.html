@@ -87,6 +87,21 @@
 						<div class="row">
 							<div class="field field-wide">
 								<label class="checkbox-label">
+									<input id="restoreChatSessions" type="checkbox" />
+									Save & restore chat sessions across restarts
+								</label>
+								<div class="field-description">
+									By default VS Code clears the open chat panel on a fresh start, so your
+									conversations disappear after restarting (especially when signed out of GitHub).
+									Enabling this sets <code>chat.restoreLastPanelSession</code> to <code>true</code>
+									so the last chat session is restored from disk on startup. Chat history files are
+									always written to disk; this only controls whether they are re-opened.
+								</div>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label class="checkbox-label">
 									<input id="telemetryDisabled" type="checkbox" />
 									Disable VS Code telemetry (keep your providers private)
 								</label>

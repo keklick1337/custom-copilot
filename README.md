@@ -36,6 +36,8 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
 - **Multi‑provider & multi‑config** — group models by provider with per‑provider API keys,
   and define the same model id multiple times with different settings via `configId`.
 - **Git commit messages** — generate SCM commit messages from your own model.
+- **Persistent chat sessions** — keep and restore your chat history across full VS Code
+  restarts (`chat.restoreLastPanelSession`), even when using Copilot without a GitHub account.
 - **Per‑model control** — base URL, proxy, User‑Agent, headers, extra body params, temperature,
   top‑p/k, penalties, reasoning effort, thinking budget, request delay, and retry.
 - **Local token counting** — usage is estimated locally with the bundled `o200k_base` tokenizer.
@@ -64,8 +66,10 @@ The configuration panel is a webview hosted in its own activity‑bar container.
 
 - **Providers** — add/edit providers, set base URL / proxy / User‑Agent, and **Fetch from API**
   to import models (capabilities are auto‑detected).
-- **Global Settings** — toggle privacy‑related options:
+- **Global Settings** — toggle privacy‑ and persistence‑related options:
   - **Anonymous access** (`chat.allowAnonymousAccess`).
+  - **Save & restore chat sessions across restarts** (`chat.restoreLastPanelSession`) — keep
+    your last chat after VS Code is fully restarted, even without a GitHub account.
   - **Disable telemetry** (`telemetry.telemetryLevel`), which is also set off on first run.
 - **Git Commit Settings** — pick the model and language used for commit‑message generation.
 - **User‑Agent presets** — a dropdown of common desktop/mobile User‑Agent strings plus a

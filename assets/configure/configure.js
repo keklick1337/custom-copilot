@@ -45,6 +45,7 @@ const el = {
 	commitLanguage:      $("commitLanguage"),
 	saveCommitBtn:       $("saveCommitBtn"),
 	allowAnonymousAccess: $("allowAnonymousAccess"),
+	restoreChatSessions: $("restoreChatSessions"),
 	telemetryDisabled:   $("telemetryDisabled"),
 	// Provider detail
 	providerDetail:      $("providerDetail"),
@@ -554,6 +555,15 @@ if (el.allowAnonymousAccess) {
 		vscode.postMessage({
 			type:    "setAnonymousAccess",
 			enabled: el.allowAnonymousAccess.checked,
+		});
+	});
+}
+
+if (el.restoreChatSessions) {
+	el.restoreChatSessions.addEventListener("change", () => {
+		vscode.postMessage({
+			type:    "setRestoreChatSessions",
+			enabled: el.restoreChatSessions.checked,
 		});
 	});
 }
@@ -1136,6 +1146,9 @@ window.addEventListener("message", ({ data: msg }) => {
 
 			if (el.allowAnonymousAccess) {
 				el.allowAnonymousAccess.checked = p.allowAnonymousAccess === true;
+			}
+			if (el.restoreChatSessions) {
+				el.restoreChatSessions.checked = p.restoreChatSessions === true;
 			}
 			if (el.telemetryDisabled) {
 				el.telemetryDisabled.checked = p.telemetryDisabled === true;
