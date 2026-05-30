@@ -133,7 +133,7 @@
 						<div class="row">
 							<div class="field">
 								<label for="pBaseUrl">Base URL</label>
-								<div class="field-description">API endpoint (e.g. https://api.novita.ai/v3/openai)</div>
+								<div class="field-description">API endpoint (e.g. https://api.example.com/v1)</div>
 								<input id="pBaseUrl" type="text" placeholder="https://api.example.com/v1" />
 							</div>
 							<div class="field">
@@ -143,7 +143,12 @@
 							</div>
 							<div class="field">
 								<label for="pApiMode">API Mode</label>
-								<div class="field-description">Request protocol.</div>
+								<div class="field-description">
+									Request protocol. OpenAI <strong>pro</strong> and <strong>o-series</strong>
+									reasoning models (e.g. <code>gpt-5.5-pro</code>, <code>o3-pro</code>) are
+									Responses-only — pick <code>OpenAI Responses (/responses)</code>, otherwise
+									<code>/chat/completions</code> returns &quot;This is not a chat model&quot;.
+								</div>
 								<select id="pApiMode">
 									<option value="openai">OpenAI (/chat/completions)</option>
 									<option value="openai-responses">OpenAI Responses (/responses)</option>
