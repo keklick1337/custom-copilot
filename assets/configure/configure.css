@@ -970,3 +970,61 @@ tr:hover td {
 		display: flex !important;
 	}
 }
+
+/* ── Chat Generator ─────────────────────────────────────────────── */
+
+.chatgen-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.chatgen-preview {
+	margin-top: 16px;
+	border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+	padding-top: 12px;
+}
+
+.chatgen-preview-header {
+	font-weight: 600;
+	margin-bottom: 8px;
+}
+
+.chatgen-preview-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	max-height: 360px;
+	overflow-y: auto;
+}
+
+.chatgen-item {
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+	background: var(--vscode-editor-background);
+	padding: 8px;
+}
+
+.chatgen-item-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 6px;
+}
+
+.chatgen-item-index {
+	font-weight: 600;
+	opacity: 0.8;
+}
+
+.chatgen-item-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.chatgen-item-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12px;
+	opacity: 0.9;
+}

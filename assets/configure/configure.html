@@ -114,6 +114,114 @@
 							</div>
 						</div>
 					</section>
+					<section id="chatGenSection">
+						<div class="section-header">
+							<h2>Chat Generator</h2>
+						</div>
+						<div class="empty-hint">
+							Write a prompt template with a placeholder, provide a list of values, and launch
+							one Copilot chat per value with the mode and model you choose. Great for running the
+							same task across many files, items or variants.
+						</div>
+
+						<div class="row">
+							<div class="field field-wide">
+								<label for="chatGenTemplate">Prompt template</label>
+								<div class="field-description">
+									Use <code>[REPLACE_THAT]</code> (simple mode) or <code>[KEY]</code> tokens
+									(advanced mode) as placeholders that get substituted for each generated chat.
+								</div>
+								<textarea id="chatGenTemplate" rows="5"
+									placeholder="Refactor the file [REPLACE_THAT] and add unit tests."></textarea>
+							</div>
+						</div>
+
+						<div class="row">
+							<div class="field">
+								<label for="chatGenToken">Simple placeholder token</label>
+								<div class="field-description">Token replaced by each line in simple mode.</div>
+								<input id="chatGenToken" type="text" value="[REPLACE_THAT]" />
+							</div>
+							<div class="field">
+								<label for="chatGenSourceMode">Replacement source</label>
+								<div class="field-description">Simple = one value per line. Advanced = JSONL objects.</div>
+								<select id="chatGenSourceMode">
+									<option value="simple">Simple (one value per line)</option>
+									<option value="advanced">Advanced (JSONL patterns)</option>
+								</select>
+							</div>
+						</div>
+
+						<div class="row" id="chatGenSimpleRow">
+							<div class="field field-wide">
+								<label for="chatGenSimpleValues">Replacement values (one per line)</label>
+								<div class="field-description">Each non-empty line generates one chat.</div>
+								<textarea id="chatGenSimpleValues" rows="5"
+									placeholder="src/foo.ts&#10;src/bar.ts&#10;src/baz.ts"></textarea>
+							</div>
+						</div>
+
+						<div class="row" id="chatGenAdvancedRow" style="display:none">
+							<div class="field field-wide">
+								<label for="chatGenJsonl">JSONL replacements</label>
+								<div class="field-description">
+									One JSON object per line. Each key <code>NAME</code> replaces the token
+									<code>[NAME]</code> in the template. Example:
+									<code>{"FILE":"src/foo.ts","TASK":"add tests"}</code>
+								</div>
+								<textarea id="chatGenJsonl" rows="5"
+									placeholder='{"FILE":"src/foo.ts","TASK":"add tests"}&#10;{"FILE":"src/bar.ts","TASK":"fix lint"}'></textarea>
+							</div>
+						</div>
+
+						<div class="row">
+							<div class="field">
+								<label for="chatGenMode">Chat mode</label>
+								<div class="field-description">Copilot mode used for every generated chat.</div>
+								<select id="chatGenMode">
+									<option value="agent">Agent</option>
+									<option value="ask">Ask</option>
+									<option value="edit">Edit</option>
+								</select>
+							</div>
+							<div class="field">
+								<label for="chatGenModel">Model</label>
+								<div class="field-description">Pick one of your configured models, or use the active one.</div>
+								<select id="chatGenModel"><option value="">Use current model</option></select>
+							</div>
+						</div>
+
+						<div class="row">
+							<div class="field">
+								<label for="chatGenStrategy">Launch strategy</label>
+								<div class="field-description">
+									Sequential waits for each chat to finish (reliable). Parallel fires them with a
+									delay so sessions run concurrently (best-effort — VS Code has no true parallel API).
+								</div>
+								<select id="chatGenStrategy">
+									<option value="sequential">Sequential (one after another)</option>
+									<option value="parallel">Parallel (best-effort)</option>
+								</select>
+							</div>
+							<div class="field" id="chatGenDelayField" style="display:none">
+								<label for="chatGenDelay">Delay between launches (ms)</label>
+								<div class="field-description">Used only in parallel mode.</div>
+								<input id="chatGenDelay" type="number" min="0" max="60000" step="100" value="1500" />
+							</div>
+						</div>
+
+						<div class="section-actions chatgen-actions">
+							<button id="chatGenPreviewBtn" class="secondary">Generate Preview</button>
+							<button id="chatGenLaunchBtn">Launch All</button>
+						</div>
+
+						<div id="chatGenPreview" class="chatgen-preview" style="display:none">
+							<div class="chatgen-preview-header">
+								<span id="chatGenCount">0 prompts</span>
+							</div>
+							<div id="chatGenPreviewList" class="chatgen-preview-list"></div>
+						</div>
+					</section>
 				</div>
 
 				<!-- Provider detail ───────────────────────────────── -->

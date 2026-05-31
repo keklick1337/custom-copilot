@@ -38,6 +38,9 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
 - **Git commit messages** — generate SCM commit messages from your own model.
 - **Persistent chat sessions** — keep and restore your chat history across full VS Code
   restarts (`chat.restoreLastPanelSession`), even when using Copilot without a GitHub account.
+- **Chat Generator** — turn one prompt template into many Copilot chats at once: substitute a
+  per‑line value (`[REPLACE_THAT]`) or JSONL patterns (`[KEY]`), pick the mode and model, and
+  launch the sessions sequentially or in parallel.
 - **Per‑model control** — base URL, proxy, User‑Agent, headers, extra body params, temperature,
   top‑p/k, penalties, reasoning effort, thinking budget, request delay, and retry.
 - **Local token counting** — usage is estimated locally with the bundled `o200k_base` tokenizer.
@@ -72,6 +75,7 @@ The configuration panel is a webview hosted in its own activity‑bar container.
     your last chat after VS Code is fully restarted, even without a GitHub account.
   - **Disable telemetry** (`telemetry.telemetryLevel`), which is also set off on first run.
 - **Git Commit Settings** — pick the model and language used for commit‑message generation.
+- **Chat Generator** — generate and launch many chats from a single prompt template (see below).
 - **User‑Agent presets** — a dropdown of common desktop/mobile User‑Agent strings plus a
   🎲 button to pick one at random; the default is a Mozilla/Chrome string.
 - **Import / Export** — move your provider/model configuration in or out as JSON.
@@ -197,6 +201,29 @@ Mark a model with `"useForCommitGeneration": true`, then use the **Generate Comm
 button in the Source Control title bar (or the command of the same name). The output language is
 controlled by `customcopilot.commitLanguage`, and you can override the prompt with
 `customcopilot.commitMessagePrompt`. The `gemini` API mode is not supported for commit generation.
+
+## ⚡ Chat Generator
+
+Open the **Chat Generator** entry in the configuration sidebar to fan a single prompt template
+out into many Copilot chats at once — handy for running the same task across many files, items,
+or variants.
+
+1. **Prompt template** — write your prompt with a placeholder.
+2. **Replacement source** — choose one of two modes:
+   - **Simple** — replace a token (default `[REPLACE_THAT]`, configurable) with each non‑empty
+     line of the values box. One line → one chat.
+   - **Advanced (JSONL)** — paste one JSON object per line; each key `NAME` replaces the
+     `[NAME]` token in the template (e.g. `{"FILE":"src/foo.ts","TASK":"add tests"}`), so you
+     can substitute several placeholders per chat.
+3. **Mode & model** — pick the Copilot mode (Agent / Ask / Edit) and one of your configured
+   models (or the currently active model).
+4. **Launch strategy**:
+   - **Sequential** — runs each chat one after another, waiting for each response (reliable).
+   - **Parallel** — fires the chats with a configurable delay so sessions run concurrently
+     (best‑effort; VS Code exposes no API for guaranteed parallel auto‑submit).
+5. **Preview** — *Generate Preview* lists every expanded prompt with **Copy** and **Open**
+   (pre‑fills a chat without submitting) buttons; *Launch All* opens them with your chosen
+   strategy.
 
 ## ⚙️ Settings Reference
 

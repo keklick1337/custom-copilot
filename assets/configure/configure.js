@@ -47,6 +47,24 @@ const el = {
 	allowAnonymousAccess: $("allowAnonymousAccess"),
 	restoreChatSessions: $("restoreChatSessions"),
 	telemetryDisabled:   $("telemetryDisabled"),
+	// Chat Generator
+	chatGenTemplate:     $("chatGenTemplate"),
+	chatGenToken:        $("chatGenToken"),
+	chatGenSourceMode:   $("chatGenSourceMode"),
+	chatGenSimpleRow:    $("chatGenSimpleRow"),
+	chatGenSimpleValues: $("chatGenSimpleValues"),
+	chatGenAdvancedRow:  $("chatGenAdvancedRow"),
+	chatGenJsonl:        $("chatGenJsonl"),
+	chatGenMode:         $("chatGenMode"),
+	chatGenModel:        $("chatGenModel"),
+	chatGenStrategy:     $("chatGenStrategy"),
+	chatGenDelayField:   $("chatGenDelayField"),
+	chatGenDelay:        $("chatGenDelay"),
+	chatGenPreviewBtn:   $("chatGenPreviewBtn"),
+	chatGenLaunchBtn:    $("chatGenLaunchBtn"),
+	chatGenPreview:      $("chatGenPreview"),
+	chatGenPreviewList:  $("chatGenPreviewList"),
+	chatGenCount:        $("chatGenCount"),
 	// Provider detail
 	providerDetail:      $("providerDetail"),
 	providerTitle:       $("providerTitle"),
@@ -289,6 +307,11 @@ function renderSidebar() {
 		<span class="provider-item-name">🌐 Global Settings</span>
 	</div>`;
 
+	const chatGenActive = !state.isNewProvider && state.selectedProvider === "chatgen";
+	html += `<div class="provider-item special-item${chatGenActive ? " active" : ""}" data-special="chatgen">
+		<span class="provider-item-name">⚡ Chat Generator</span>
+	</div>`;
+
 	el.providerList.innerHTML = html;
 
 	el.providerList.querySelectorAll(".provider-item[data-provider]").forEach((item) => {
@@ -301,6 +324,10 @@ function renderSidebar() {
 
 	el.providerList.querySelectorAll(".provider-item[data-special='integration']").forEach((item) => {
 		item.addEventListener("click", selectIntegrationSettings);
+	});
+
+	el.providerList.querySelectorAll(".provider-item[data-special='chatgen']").forEach((item) => {
+		item.addEventListener("click", selectChatGenSettings);
 	});
 }
 
@@ -330,6 +357,10 @@ function showEmptyState() {
 	const integrationSection = $("integrationSection");
 	if (integrationSection) {
 		integrationSection.style.display = "";
+	}
+	const chatGenSection = $("chatGenSection");
+	if (chatGenSection) {
+		chatGenSection.style.display = "";
 	}
 
 	updateActiveScreen();
@@ -427,6 +458,10 @@ function selectGitCommitSettings() {
 	if (integrationSection) {
 		integrationSection.style.display = "none";
 	}
+	const chatGenSection = $("chatGenSection");
+	if (chatGenSection) {
+		chatGenSection.style.display = "none";
+	}
 
 	updateActiveScreen();
 }
@@ -458,7 +493,45 @@ function selectIntegrationSettings() {
 	if (integrationSection) {
 		integrationSection.style.display = "";
 	}
+	const chatGenSection = $("chatGenSection");
+	if (chatGenSection) {
+		chatGenSection.style.display = "none";
+	}
 
+	updateActiveScreen();
+}
+
+function selectChatGenSettings() {
+	state.selectedProvider = "chatgen";
+	state.isNewProvider = false;
+	clearModelSelection();
+	renderSidebar();
+
+	el.emptyState.style.display = "";
+	el.providerDetail.style.display = "none";
+
+	const hint = $("emptyHintText");
+	if (hint) {
+		hint.style.display = "none";
+	}
+	const backBar = $("gitCommitBackBar");
+	if (backBar) {
+		backBar.style.display = "flex";
+	}
+	const commitSection = $("commitSection");
+	if (commitSection) {
+		commitSection.style.display = "none";
+	}
+	const integrationSection = $("integrationSection");
+	if (integrationSection) {
+		integrationSection.style.display = "none";
+	}
+	const chatGenSection = $("chatGenSection");
+	if (chatGenSection) {
+		chatGenSection.style.display = "";
+	}
+
+	populateChatGenModelDropdown();
 	updateActiveScreen();
 }
 
@@ -474,6 +547,8 @@ function updateActiveScreen() {
 	if (state.selectedProvider === "git-commit") {
 		layout.classList.add("screen-git-commit");
 	} else if (state.selectedProvider === "integration") {
+		layout.classList.add("screen-git-commit");
+	} else if (state.selectedProvider === "chatgen") {
 		layout.classList.add("screen-git-commit");
 	} else if (state.selectedProvider !== null || state.isNewProvider) {
 		layout.classList.add("screen-provider-detail");
@@ -573,6 +648,184 @@ if (el.telemetryDisabled) {
 		vscode.postMessage({
 			type:     "setTelemetryDisabled",
 			disabled: el.telemetryDisabled.checked,
+		});
+	});
+}
+
+// ── Chat Generator ───────────────────────────────────────────────────────────
+
+function populateChatGenModelDropdown() {
+	if (!el.chatGenModel) {
+		return;
+	}
+	const current = el.chatGenModel.value;
+	while (el.chatGenModel.children.length > 1) {
+		el.chatGenModel.removeChild(el.chatGenModel.lastChild);
+	}
+	state.models
+		.filter((m) => !m.id.startsWith("__provider__"))
+		.sort((a, b) => a.id.localeCompare(b.id))
+		.forEach((m) => {
+			const fid = m.configId ? `${m.id}::${m.configId}` : m.id;
+			const opt = document.createElement("option");
+			opt.value = fid;
+			opt.textContent = m.displayName || fid;
+			el.chatGenModel.appendChild(opt);
+		});
+	// Restore previous selection if it still exists
+	if (current && [...el.chatGenModel.options].some((o) => o.value === current)) {
+		el.chatGenModel.value = current;
+	}
+}
+
+/** Build the list of prompts from the template + replacement source. */
+function buildChatGenPrompts() {
+	const template = (el.chatGenTemplate?.value ?? "").trim();
+	if (!template) {
+		return { prompts: [], error: "Add a prompt template first." };
+	}
+
+	const sourceMode = el.chatGenSourceMode?.value ?? "simple";
+
+	if (sourceMode === "simple") {
+		const token = (el.chatGenToken?.value ?? "[REPLACE_THAT]").trim() || "[REPLACE_THAT]";
+		const values = (el.chatGenSimpleValues?.value ?? "")
+			.split("\n")
+			.map((v) => v.trim())
+			.filter((v) => v.length > 0);
+		if (values.length === 0) {
+			return { prompts: [], error: "Add at least one replacement value (one per line)." };
+		}
+		const prompts = values.map((v) => template.split(token).join(v));
+		return { prompts, error: null };
+	}
+
+	// Advanced JSONL mode
+	const lines = (el.chatGenJsonl?.value ?? "")
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0);
+	if (lines.length === 0) {
+		return { prompts: [], error: "Add at least one JSON object (one per line)." };
+	}
+
+	const prompts = [];
+	for (let i = 0; i < lines.length; i++) {
+		let obj;
+		try {
+			obj = JSON.parse(lines[i]);
+		} catch (_e) {
+			return { prompts: [], error: `Invalid JSON on line ${i + 1}.` };
+		}
+		if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+			return { prompts: [], error: `Line ${i + 1} must be a JSON object.` };
+		}
+		let prompt = template;
+		for (const [key, value] of Object.entries(obj)) {
+			prompt = prompt.split(`[${key}]`).join(String(value));
+		}
+		prompts.push(prompt);
+	}
+	return { prompts, error: null };
+}
+
+function renderChatGenPreview(prompts) {
+	if (!el.chatGenPreview || !el.chatGenPreviewList) {
+		return;
+	}
+	el.chatGenCount.textContent = `${prompts.length} prompt${prompts.length === 1 ? "" : "s"}`;
+	el.chatGenPreviewList.innerHTML = prompts
+		.map(
+			(p, idx) => `<div class="chatgen-item">
+				<div class="chatgen-item-head">
+					<span class="chatgen-item-index">#${idx + 1}</span>
+					<div class="chatgen-item-actions">
+						<button class="secondary small chatgen-copy-btn" data-idx="${idx}">Copy</button>
+						<button class="secondary small chatgen-open-btn" data-idx="${idx}">Open</button>
+					</div>
+				</div>
+				<div class="chatgen-item-text">${escHtml(p)}</div>
+			</div>`
+		)
+		.join("");
+
+	el.chatGenPreviewList.querySelectorAll(".chatgen-copy-btn").forEach((btn) => {
+		btn.addEventListener("click", () => {
+			const idx = parseInt(btn.getAttribute("data-idx"), 10);
+			const text = prompts[idx];
+			if (navigator.clipboard) {
+				navigator.clipboard.writeText(text);
+			}
+			btn.textContent = "Copied";
+			setTimeout(() => (btn.textContent = "Copy"), 1200);
+		});
+	});
+
+	el.chatGenPreviewList.querySelectorAll(".chatgen-open-btn").forEach((btn) => {
+		btn.addEventListener("click", () => {
+			const idx = parseInt(btn.getAttribute("data-idx"), 10);
+			vscode.postMessage({
+				type:        "prefillChat",
+				prompt:      prompts[idx],
+				mode:        el.chatGenMode?.value ?? "agent",
+				modelFullId: el.chatGenModel?.value || undefined,
+			});
+		});
+	});
+
+	el.chatGenPreview.style.display = "";
+}
+
+if (el.chatGenSourceMode) {
+	el.chatGenSourceMode.addEventListener("change", () => {
+		const advanced = el.chatGenSourceMode.value === "advanced";
+		if (el.chatGenSimpleRow) {
+			el.chatGenSimpleRow.style.display = advanced ? "none" : "";
+		}
+		if (el.chatGenAdvancedRow) {
+			el.chatGenAdvancedRow.style.display = advanced ? "" : "none";
+		}
+		if (el.chatGenToken) {
+			el.chatGenToken.parentElement.style.display = advanced ? "none" : "";
+		}
+	});
+}
+
+if (el.chatGenStrategy) {
+	el.chatGenStrategy.addEventListener("change", () => {
+		if (el.chatGenDelayField) {
+			el.chatGenDelayField.style.display = el.chatGenStrategy.value === "parallel" ? "" : "none";
+		}
+	});
+}
+
+if (el.chatGenPreviewBtn) {
+	el.chatGenPreviewBtn.addEventListener("click", () => {
+		const { prompts, error } = buildChatGenPrompts();
+		if (error) {
+			vscode.postMessage({ type: "requestConfirm", id: `cg-${Date.now()}`, message: error, action: "showInfo" });
+			return;
+		}
+		renderChatGenPreview(prompts);
+	});
+}
+
+if (el.chatGenLaunchBtn) {
+	el.chatGenLaunchBtn.addEventListener("click", () => {
+		const { prompts, error } = buildChatGenPrompts();
+		if (error) {
+			vscode.postMessage({ type: "requestConfirm", id: `cg-${Date.now()}`, message: error, action: "showInfo" });
+			return;
+		}
+		renderChatGenPreview(prompts);
+		const delayMs = parseInt(el.chatGenDelay?.value ?? "1500", 10);
+		vscode.postMessage({
+			type:        "launchChats",
+			prompts,
+			mode:        el.chatGenMode?.value ?? "agent",
+			modelFullId: el.chatGenModel?.value || undefined,
+			strategy:    el.chatGenStrategy?.value === "parallel" ? "parallel" : "sequential",
+			delayMs:     Number.isFinite(delayMs) ? delayMs : 1500,
 		});
 	});
 }
@@ -1143,6 +1396,7 @@ window.addEventListener("message", ({ data: msg }) => {
 			populateCommitModelDropdown();
 			el.commitModel.value    = state.commitModel;
 			el.commitLanguage.value = state.commitLanguage;
+			populateChatGenModelDropdown();
 
 			if (el.allowAnonymousAccess) {
 				el.allowAnonymousAccess.checked = p.allowAnonymousAccess === true;
@@ -1172,6 +1426,8 @@ window.addEventListener("message", ({ data: msg }) => {
 				selectGitCommitSettings();
 			} else if (state.selectedProvider === "integration") {
 				selectIntegrationSettings();
+			} else if (state.selectedProvider === "chatgen") {
+				selectChatGenSettings();
 			} else if (state.selectedProvider) {
 				const stillExists = getProviders().includes(state.selectedProvider);
 				if (stillExists) {

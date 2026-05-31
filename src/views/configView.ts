@@ -106,6 +106,15 @@ type IncomingMessage =
 	| { type: "setAnonymousAccess"; enabled: boolean }
 	| { type: "setRestoreChatSessions"; enabled: boolean }
 	| { type: "setTelemetryDisabled"; disabled: boolean }
+	| {
+			type: "launchChats";
+			prompts: string[];
+			mode?: string;
+			modelFullId?: string;
+			strategy?: "sequential" | "parallel";
+			delayMs?: number;
+	  }
+	| { type: "prefillChat"; prompt: string; mode?: string; modelFullId?: string }
 	| { type: "exportConfig" }
 	| { type: "importConfig" };
 
@@ -249,6 +258,18 @@ export class ConfigViewController {
 				break;
 			case "setTelemetryDisabled":
 				await this.setTelemetryDisabled(message.disabled);
+				break;
+			case "launchChats":
+				await this.launchChats(
+					message.prompts,
+					message.mode,
+					message.modelFullId,
+					message.strategy ?? "sequential",
+					message.delayMs ?? 1500
+				);
+				break;
+			case "prefillChat":
+				await this.prefillChat(message.prompt, message.mode, message.modelFullId);
 				break;
 			case "exportConfig":
 				await this.exportConfig();
@@ -878,6 +899,148 @@ export class ConfigViewController {
 				: "VS Code telemetry re-enabled (level: all)."
 		);
 		await this.sendInit();
+	}
+
+	private resolveModelSelector(modelFullId?: string): { id: string; vendor: string } | undefined {
+		if (!modelFullId) {
+			return undefined;
+		}
+		const config = vscode.workspace.getConfiguration();
+		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
+		const match = models.find((m) => (m.configId ? `${m.id}::${m.configId}` : m.id) === modelFullId);
+		const apiMode = (match?.apiMode ?? "openai") as HFApiMode;
+		const vendorByMode: Record<string, string> = {
+			"openai": "copilotcustommodelsendpoint",
+			"openai-responses": "copilotcustommodelsendpoint-responses",
+			"anthropic": "copilotcustommodelsendpoint-anthropic",
+			"gemini": "copilotcustommodelsendpoint-gemini",
+			"ollama": "copilotcustommodelsendpoint-ollama",
+		};
+		return { id: modelFullId, vendor: vendorByMode[apiMode] ?? "copilotcustommodelsendpoint" };
+	}
+
+	private normalizeChatMode(mode?: string): string {
+		const value = (mode ?? "agent").toLowerCase();
+		if (value === "ask" || value === "edit" || value === "agent") {
+			return value;
+		}
+		return "agent";
+	}
+
+	private async prefillChat(prompt: string, mode?: string, modelFullId?: string) {
+		const text = (prompt ?? "").trim();
+		if (!text) {
+			vscode.window.showWarningMessage("Cannot open an empty prompt.");
+			return;
+		}
+		const selector = this.resolveModelSelector(modelFullId);
+		const opts: Record<string, unknown> = {
+			query: text,
+			mode: this.normalizeChatMode(mode),
+			isPartialQuery: true,
+		};
+		if (selector) {
+			opts.modelSelector = selector;
+		}
+		try {
+			await vscode.commands.executeCommand("workbench.action.chat.open", opts);
+		} catch (err) {
+			console.error("[customcopilot] prefillChat failed", err);
+			vscode.window.showErrorMessage(
+				`Failed to open chat: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	private async launchChats(
+		prompts: string[],
+		mode: string | undefined,
+		modelFullId: string | undefined,
+		strategy: "sequential" | "parallel",
+		delayMs: number
+	) {
+		const cleanPrompts = (Array.isArray(prompts) ? prompts : [])
+			.map((p) => (typeof p === "string" ? p.trim() : ""))
+			.filter((p) => p.length > 0);
+
+		if (cleanPrompts.length === 0) {
+			vscode.window.showWarningMessage("No prompts to launch. Add a template and replacements first.");
+			return;
+		}
+
+		const confirm = await vscode.window.showWarningMessage(
+			`Launch ${cleanPrompts.length} chat session(s) ${
+				strategy === "parallel" ? "in parallel (best-effort)" : "sequentially"
+			}?`,
+			{ modal: true },
+			"Launch"
+		);
+		if (confirm !== "Launch") {
+			return;
+		}
+
+		const chatMode = this.normalizeChatMode(mode);
+		const selector = this.resolveModelSelector(modelFullId);
+		const safeDelay = Math.max(0, Math.min(delayMs, 60000));
+
+		await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Notification,
+				title: "Launching Copilot chats",
+				cancellable: true,
+			},
+			async (progress, token) => {
+				for (let i = 0; i < cleanPrompts.length; i++) {
+					if (token.isCancellationRequested) {
+						break;
+					}
+					progress.report({
+						message: `${i + 1}/${cleanPrompts.length}`,
+						increment: 100 / cleanPrompts.length,
+					});
+
+					// Start each prompt in its own fresh panel session so they are saved as
+					// separate chats. The first one reuses the current panel.
+					if (i > 0) {
+						try {
+							await vscode.commands.executeCommand("workbench.action.chat.newChat");
+						} catch (err) {
+							console.error("[customcopilot] newChat failed", err);
+						}
+					}
+
+					const opts: Record<string, unknown> = {
+						query: cleanPrompts[i],
+						mode: chatMode,
+					};
+					if (selector) {
+						opts.modelSelector = selector;
+					}
+					// Sequential waits for each response before moving on; parallel fires the
+					// request and continues so sessions run concurrently (best-effort: VS Code
+					// exposes no API for guaranteed parallel auto-submit).
+					if (strategy === "sequential") {
+						opts.blockOnResponse = true;
+					}
+
+					try {
+						await vscode.commands.executeCommand("workbench.action.chat.open", opts);
+					} catch (err) {
+						console.error("[customcopilot] chat.open failed", err);
+						vscode.window.showErrorMessage(
+							`Failed to launch chat ${i + 1}: ${err instanceof Error ? err.message : String(err)}`
+						);
+						break;
+					}
+
+					if (strategy === "parallel" && safeDelay > 0 && i < cleanPrompts.length - 1) {
+						await new Promise((resolve) => setTimeout(resolve, safeDelay));
+					}
+				}
+			}
+		);
+
+		vscode.window.showInformationMessage(`Launched ${cleanPrompts.length} chat session(s).`);
 	}
 
 	private async exportConfig() {
