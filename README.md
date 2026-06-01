@@ -74,6 +74,8 @@ The configuration panel is a webview hosted in its own activity‑bar container.
   - **Save & restore chat sessions across restarts** (`chat.restoreLastPanelSession`) — keep
     your last chat after VS Code is fully restarted, even without a GitHub account.
   - **Disable telemetry** (`telemetry.telemetryLevel`), which is also set off on first run.
+  - **Automatic chat retries** (`customcopilot.chatRetries` / `customcopilot.chatRetryInterval`) —
+    auto "Try Again" on failed requests; `0` off, `-1` infinite, or a max attempt count.
 - **Git Commit Settings** — pick the model and language used for commit‑message generation.
 - **Chat Generator** — generate and launch many chats from a single prompt template (see below).
 - **User‑Agent presets** — a dropdown of common desktop/mobile User‑Agent strings plus a
@@ -237,6 +239,9 @@ Global settings (namespace `customcopilot.*`):
 | `customcopilot.userAgent` | Chrome UA string | Default User‑Agent for requests. |
 | `customcopilot.delay` | `0` | Fixed delay (ms) between consecutive requests. |
 | `customcopilot.retry` | enabled, 3 attempts | Retry policy for transient errors (429/5xx). |
+| `customcopilot.chatRetries` | `0` | Automatic chat-level retries ("auto Try Again") when a request fails before any content streams. `0` off, `-1` infinite, `N` max attempts. |
+| `customcopilot.chatRetryInterval` | `1000` | Delay (ms) between automatic chat-level retries. |
+| `customcopilot.chatRetryJitter` | `0` | Optional random extra delay (0–N ms) added before each chat retry, spreading out batch retries. `0` disables. |
 | `customcopilot.logLevel` | `off` | File log level → `~/.copilot/customcopilot/logs/`. |
 | `customcopilot.commitLanguage` | `English` | Language for generated commit messages. |
 | `customcopilot.commitMessagePrompt` | `""` | Custom system prompt for commit messages. |

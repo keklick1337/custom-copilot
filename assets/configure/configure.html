@@ -113,6 +113,35 @@
 								</div>
 							</div>
 						</div>
+						<div class="row">
+							<div class="field">
+								<label for="chatRetries">Automatic chat retries</label>
+								<div class="field-description">
+									Auto "Try Again" when a chat request fails before any content is streamed.
+									<code>0</code> = off, <code>-1</code> = infinite, or the max number of extra
+									attempts. Output already streamed is never duplicated. Sets
+									<code>customcopilot.chatRetries</code>.
+								</div>
+								<input id="chatRetries" type="number" min="-1" step="1" value="0" />
+							</div>
+							<div class="field">
+								<label for="chatRetryInterval">Retry interval (ms)</label>
+								<div class="field-description">Delay between automatic chat retries.</div>
+								<input id="chatRetryInterval" type="number" min="0" step="100" value="1000" />
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label for="chatRetryJitter">Retry jitter (ms)</label>
+								<div class="field-description">
+									Optional random extra delay (<code>0</code>–this value) added before each retry.
+									Spreads out retries so a batch of chats that failed together don't all hit the
+									endpoint at once. <code>0</code> disables jitter. Sets
+									<code>customcopilot.chatRetryJitter</code>.
+								</div>
+								<input id="chatRetryJitter" type="number" min="0" step="100" value="0" />
+							</div>
+						</div>
 					</section>
 					<section id="chatGenSection">
 						<div class="section-header">

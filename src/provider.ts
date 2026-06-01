@@ -18,6 +18,7 @@ import { parseModelId, createRetryConfig, executeWithRetry, normalizeUserModels,
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { countMessageTokens } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
+import { notifyChatRequestStart } from "./chatActivity";
 import { OllamaApi } from "./ollama/ollamaApi";
 import { OpenaiApi } from "./openai/openaiApi";
 import { OpenaiResponsesApi } from "./openai/openaiResponsesApi";
@@ -104,8 +105,14 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 		progress: Progress<LanguageModelResponsePart2>,
 		token: CancellationToken
 	): Promise<void> {
+		// Signal that VS Code has dispatched a request to us. By the time this provider is
+		// invoked the request is already registered on the chat session model, so the Chat
+		// Generator can safely move on to the next session without losing this one.
+		notifyChatRequestStart();
+		let hasReported = false;
 		const trackingProgress: Progress<LanguageModelResponsePart2> = {
 			report: (part) => {
+				hasReported = true;
 				try {
 					progress.report(part);
 				} catch (e) {
@@ -116,6 +123,56 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				}
 			},
 		};
+
+		// Chat-level automatic retry ("auto Try Again"): when a request fails before any
+		// content has been streamed, transparently re-run the whole generation so the user
+		// does not have to click "Try Again". Controlled by `customcopilot.chatRetries`
+		// (-1 = infinite, 0 = disabled, N = up to N extra attempts) and
+		// `customcopilot.chatRetryInterval` (ms between attempts). Retries only happen while
+		// nothing has been emitted yet, so already-streamed output is never duplicated.
+		const retrySettings = vscode.workspace.getConfiguration();
+		const chatRetries = Math.trunc(retrySettings.get<number>("customcopilot.chatRetries", 0));
+		const chatRetryIntervalMs = Math.max(0, retrySettings.get<number>("customcopilot.chatRetryInterval", 1000));
+		const chatRetryJitterMs = Math.max(0, retrySettings.get<number>("customcopilot.chatRetryJitter", 0));
+		let chatAttempt = 0;
+		for (;;) {
+			try {
+				await this.runChatResponse(model, messages, options, trackingProgress, token);
+				return;
+			} catch (err) {
+				const canRetry = chatRetries < 0 || chatAttempt < chatRetries;
+				if (token.isCancellationRequested || hasReported || !canRetry) {
+					throw err;
+				}
+				chatAttempt++;
+				const jitterMs = chatRetryJitterMs > 0 ? Math.floor(Math.random() * (chatRetryJitterMs + 1)) : 0;
+				const delayMs = chatRetryIntervalMs + jitterMs;
+				logger.warn("chat.retry", {
+					modelId: model.id,
+					attempt: chatAttempt,
+					maxAttempts: chatRetries < 0 ? "infinite" : chatRetries,
+					delayMs,
+					errorMessage: err instanceof Error ? err.message : String(err),
+				});
+				if (delayMs > 0) {
+					await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+				}
+			}
+		}
+	}
+
+	/**
+	 * Performs a single chat-response attempt: resolves the model configuration, builds the
+	 * request, and streams the result to {@link trackingProgress}. Wrapped by
+	 * {@link provideLanguageModelChatResponse} for chat-level automatic retries.
+	 */
+	private async runChatResponse(
+		model: LanguageModelChatInformation,
+		messages: readonly LanguageModelChatRequestMessage[],
+		options: ProvideLanguageModelChatResponseOptions,
+		trackingProgress: Progress<LanguageModelResponsePart2>,
+		token: CancellationToken
+	): Promise<void> {
 		const requestStartTime = Date.now();
 		try {
 			// get model config from user settings

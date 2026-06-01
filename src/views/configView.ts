@@ -3,6 +3,7 @@ import type { HFApiMode, HFModelItem } from "../types";
 import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
 import { fetchModels } from "../provideModel";
 import { VersionManager } from "../versionManager";
+import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 
 interface InitPayload {
 	baseUrl: string;
@@ -23,6 +24,9 @@ interface InitPayload {
 	allowAnonymousAccess: boolean;
 	restoreChatSessions: boolean;
 	telemetryDisabled: boolean;
+	chatRetries: number;
+	chatRetryInterval: number;
+	chatRetryJitter: number;
 }
 
 interface ExportConfig {
@@ -106,6 +110,9 @@ type IncomingMessage =
 	| { type: "setAnonymousAccess"; enabled: boolean }
 	| { type: "setRestoreChatSessions"; enabled: boolean }
 	| { type: "setTelemetryDisabled"; disabled: boolean }
+	| { type: "setChatRetries"; value: number }
+	| { type: "setChatRetryInterval"; value: number }
+	| { type: "setChatRetryJitter"; value: number }
 	| {
 			type: "launchChats";
 			prompts: string[];
@@ -259,6 +266,15 @@ export class ConfigViewController {
 			case "setTelemetryDisabled":
 				await this.setTelemetryDisabled(message.disabled);
 				break;
+			case "setChatRetries":
+				await this.setChatRetries(message.value);
+				break;
+			case "setChatRetryInterval":
+				await this.setChatRetryInterval(message.value);
+				break;
+			case "setChatRetryJitter":
+				await this.setChatRetryJitter(message.value);
+				break;
 			case "launchChats":
 				await this.launchChats(
 					message.prompts,
@@ -350,6 +366,9 @@ export class ConfigViewController {
 		const allowAnonymousAccess = config.get<boolean>("chat.allowAnonymousAccess", false);
 		const restoreChatSessions = config.get<boolean>("chat.restoreLastPanelSession", false);
 		const telemetryDisabled = config.get<string>("telemetry.telemetryLevel", "all") === "off";
+		const chatRetries = config.get<number>("customcopilot.chatRetries", 0);
+		const chatRetryInterval = config.get<number>("customcopilot.chatRetryInterval", 1000);
+		const chatRetryJitter = config.get<number>("customcopilot.chatRetryJitter", 0);
 		const payload: InitPayload = {
 			baseUrl,
 			proxyUrl,
@@ -364,6 +383,9 @@ export class ConfigViewController {
 			allowAnonymousAccess,
 			restoreChatSessions,
 			telemetryDisabled,
+			chatRetries,
+			chatRetryInterval,
+			chatRetryJitter,
 		};
 		this.webview.postMessage({ type: "init", payload });
 	}
@@ -901,6 +923,34 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
+	private async setChatRetries(value: number) {
+		const config = vscode.workspace.getConfiguration();
+		const normalized = Number.isFinite(value) ? Math.max(-1, Math.trunc(value)) : 0;
+		await config.update("customcopilot.chatRetries", normalized, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			normalized === 0
+				? "Automatic chat retries disabled."
+				: normalized < 0
+					? "Automatic chat retries set to infinite."
+					: `Automatic chat retries set to ${normalized}.`
+		);
+		await this.sendInit();
+	}
+
+	private async setChatRetryInterval(value: number) {
+		const config = vscode.workspace.getConfiguration();
+		const normalized = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 1000;
+		await config.update("customcopilot.chatRetryInterval", normalized, vscode.ConfigurationTarget.Global);
+		await this.sendInit();
+	}
+
+	private async setChatRetryJitter(value: number) {
+		const config = vscode.workspace.getConfiguration();
+		const normalized = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+		await config.update("customcopilot.chatRetryJitter", normalized, vscode.ConfigurationTarget.Global);
+		await this.sendInit();
+	}
+
 	private resolveModelSelector(modelFullId?: string): { id: string; vendor: string } | undefined {
 		if (!modelFullId) {
 			return undefined;
@@ -1023,6 +1073,10 @@ export class ConfigViewController {
 						opts.blockOnResponse = true;
 					}
 
+					// Snapshot the request counter before opening so we can detect when VS Code
+					// actually dispatches this prompt to our provider (see below).
+					const startCountBefore = getChatRequestStartCount();
+
 					try {
 						await vscode.commands.executeCommand("workbench.action.chat.open", opts);
 					} catch (err) {
@@ -1033,8 +1087,19 @@ export class ConfigViewController {
 						break;
 					}
 
-					if (strategy === "parallel" && safeDelay > 0 && i < cleanPrompts.length - 1) {
-						await new Promise((resolve) => setTimeout(resolve, safeDelay));
+					// In parallel mode `chat.open` returns before the prompt has actually been
+					// submitted (input acceptance is async). If we created the next session via
+					// `newChat` right away, VS Code would dispose this still-empty session and
+					// DELETE it (empty sessions without a custom title are not persisted), so
+					// some launched chats would silently vanish from history. Wait until our
+					// provider is invoked — that only happens once the request is registered on
+					// the session model — before continuing. A timeout guards against models
+					// that are not handled by this extension.
+					if (strategy === "parallel" && i < cleanPrompts.length - 1) {
+						await waitForChatRequestStart(startCountBefore, 20000, token);
+						if (safeDelay > 0 && !token.isCancellationRequested) {
+							await new Promise((resolve) => setTimeout(resolve, safeDelay));
+						}
 					}
 				}
 			}

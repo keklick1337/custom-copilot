@@ -25,7 +25,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -458,6 +458,24 @@
 						}
 					},
 					"description": "Retry configuration for handling api errors like [429, 500, 502, 503, 504]."
+				},
+				"customcopilot.chatRetries": {
+					"type": "number",
+					"default": 0,
+					"minimum": -1,
+					"markdownDescription": "Automatic chat-level retries (\"auto Try Again\"). When a chat request fails **before any content has been streamed**, the whole generation is re-run transparently so you don't have to press *Try Again*. `0` disables it (default), `-1` retries forever, and any positive number is the maximum extra attempts. Already-streamed output is never duplicated. Applies to all API modes."
+				},
+				"customcopilot.chatRetryInterval": {
+					"type": "number",
+					"default": 1000,
+					"minimum": 0,
+					"description": "Delay in milliseconds between automatic chat-level retries (customcopilot.chatRetries). Default is 1000 (1 second)."
+				},
+				"customcopilot.chatRetryJitter": {
+					"type": "number",
+					"default": 0,
+					"minimum": 0,
+					"markdownDescription": "Optional random extra delay (in milliseconds) added on top of `customcopilot.chatRetryInterval` before each automatic chat retry. A random value between `0` and this number is picked for every retry, spreading retries out so a batch of chats that failed together don't all hit the endpoint at the same time. `0` disables jitter (default)."
 				},
 				"customcopilot.delay": {
 					"type": "number",

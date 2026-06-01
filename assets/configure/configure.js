@@ -47,6 +47,9 @@ const el = {
 	allowAnonymousAccess: $("allowAnonymousAccess"),
 	restoreChatSessions: $("restoreChatSessions"),
 	telemetryDisabled:   $("telemetryDisabled"),
+	chatRetries:         $("chatRetries"),
+	chatRetryInterval:   $("chatRetryInterval"),
+	chatRetryJitter:     $("chatRetryJitter"),
 	// Chat Generator
 	chatGenTemplate:     $("chatGenTemplate"),
 	chatGenToken:        $("chatGenToken"),
@@ -649,6 +652,39 @@ if (el.telemetryDisabled) {
 			type:     "setTelemetryDisabled",
 			disabled: el.telemetryDisabled.checked,
 		});
+	});
+}
+
+if (el.chatRetries) {
+	el.chatRetries.addEventListener("change", () => {
+		let value = parseInt(el.chatRetries.value, 10);
+		if (!Number.isFinite(value) || value < -1) {
+			value = 0;
+		}
+		el.chatRetries.value = String(value);
+		vscode.postMessage({ type: "setChatRetries", value });
+	});
+}
+
+if (el.chatRetryInterval) {
+	el.chatRetryInterval.addEventListener("change", () => {
+		let value = parseInt(el.chatRetryInterval.value, 10);
+		if (!Number.isFinite(value) || value < 0) {
+			value = 1000;
+		}
+		el.chatRetryInterval.value = String(value);
+		vscode.postMessage({ type: "setChatRetryInterval", value });
+	});
+}
+
+if (el.chatRetryJitter) {
+	el.chatRetryJitter.addEventListener("change", () => {
+		let value = parseInt(el.chatRetryJitter.value, 10);
+		if (!Number.isFinite(value) || value < 0) {
+			value = 0;
+		}
+		el.chatRetryJitter.value = String(value);
+		vscode.postMessage({ type: "setChatRetryJitter", value });
 	});
 }
 
@@ -1406,6 +1442,15 @@ window.addEventListener("message", ({ data: msg }) => {
 			}
 			if (el.telemetryDisabled) {
 				el.telemetryDisabled.checked = p.telemetryDisabled === true;
+			}
+			if (el.chatRetries) {
+				el.chatRetries.value = String(p.chatRetries != null ? p.chatRetries : 0);
+			}
+			if (el.chatRetryInterval) {
+				el.chatRetryInterval.value = String(p.chatRetryInterval != null ? p.chatRetryInterval : 1000);
+			}
+			if (el.chatRetryJitter) {
+				el.chatRetryJitter.value = String(p.chatRetryJitter != null ? p.chatRetryJitter : 0);
 			}
 
 			// Refresh sidebar
