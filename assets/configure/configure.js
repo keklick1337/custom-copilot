@@ -117,6 +117,7 @@ const el = {
 	modelMaxTokens:            $("modelMaxTokens"),
 	modelMaxCompletionTokens:  $("modelMaxCompletionTokens"),
 	modelVision:               $("modelVision"),
+	modelTools:                $("modelTools"),
 	modelDelay:                $("modelDelay"),
 	modelTemperature:          $("modelTemperature"),
 	modelTopP:                 $("modelTopP"),
@@ -1332,7 +1333,7 @@ function resetModelForm() {
 	].forEach((f) => { if (el[f]) el[f].value = ""; });
 
 	[
-		"modelVision", "modelReasoningEffort", "modelEnableThinking", "modelThinkingType",
+		"modelVision", "modelTools", "modelReasoningEffort", "modelEnableThinking", "modelThinkingType",
 		"modelIncludeReasoning", "modelReasoningEnabled", "modelReasoningExclude", "modelReasoningEffortOR",
 	].forEach((f) => { if (el[f] && el[f].tagName === "SELECT") el[f].selectedIndex = 0; });
 
@@ -1359,6 +1360,7 @@ function populateModelForm(model) {
 	el.modelMaxTokens.value          = model.max_tokens     != null ? model.max_tokens     : "";
 	el.modelMaxCompletionTokens.value = model.max_completion_tokens != null ? model.max_completion_tokens : "";
 	el.modelVision.value             = model.vision         != null ? String(model.vision) : "";
+	el.modelTools.value              = model.tool_calling   != null ? String(model.tool_calling) : "";
 	el.modelDelay.value              = model.delay          != null ? model.delay          : "";
 	el.modelTemperature.value        = model.temperature    != null ? model.temperature    : "";
 	el.modelTopP.value               = model.top_p          != null ? model.top_p          : "";
@@ -1392,6 +1394,7 @@ function collectModelFormData() {
 		max_tokens:                numOrUndef(el.modelMaxTokens.value),
 		max_completion_tokens:     numOrUndef(el.modelMaxCompletionTokens.value),
 		vision:                    boolOrUndef(el.modelVision.value),
+		tool_calling:              boolOrUndef(el.modelTools.value),
 		delay:                     numOrUndef(el.modelDelay.value),
 		temperature:               floatOrUndef(el.modelTemperature.value),
 		top_p:                     floatOrUndef(el.modelTopP.value),
@@ -1474,6 +1477,17 @@ function populateModelDropdown(models) {
 		div.dataset.modelId = m.id;
 		div.addEventListener("click", () => {
 			el.modelIdInput.value = m.id;
+			if (m.tool_calling != null) {
+				el.modelTools.value = String(m.tool_calling);
+			}
+			if (m.vision != null) {
+				el.modelVision.value = String(m.vision);
+			}
+			if (m.reasoning_effort) {
+				el.modelReasoningEffort.value = String(m.reasoning_effort);
+			} else if (m.enable_thinking === true || m.reasoning?.enabled === true) {
+				el.modelReasoningEffort.value = "medium";
+			}
 			hideDropdown();
 		});
 		dropdownContent.appendChild(div);

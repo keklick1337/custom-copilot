@@ -430,6 +430,25 @@
 										</select>
 									</div>
 									<div class="field">
+										<label for="modelTools">Tools</label>
+										<select id="modelTools">
+											<option value="">Default (false)</option>
+											<option value="true">True</option>
+											<option value="false">False</option>
+										</select>
+									</div>
+									<div class="field">
+										<label for="modelReasoningEffort">Thinking</label>
+										<div class="field-description">Reasoning effort (легко / средне / сложно)</div>
+										<select id="modelReasoningEffort">
+											<option value="">Off (выкл)</option>
+											<option value="low">Low (лёгкое)</option>
+											<option value="medium">Medium (среднее)</option>
+											<option value="high">High (сложное)</option>
+											<option value="max">Max (максимум)</option>
+										</select>
+									</div>
+									<div class="field">
 										<label for="modelDelay">Delay (ms)</label>
 										<input id="modelDelay" type="number" placeholder="0" min="0" />
 									</div>
@@ -473,16 +492,6 @@
 										<div class="field">
 											<label for="modelRepetitionPenalty">Rep. Penalty</label>
 											<input id="modelRepetitionPenalty" type="number" min="0" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelReasoningEffort">Reasoning Effort</label>
-											<select id="modelReasoningEffort">
-												<option value=""></option>
-												<option value="max">Max</option>
-												<option value="high">High</option>
-												<option value="medium">Medium</option>
-												<option value="low">Low</option>
-											</select>
 										</div>
 										<div class="field">
 											<label for="modelEnableThinking">Enable Thinking</label>
