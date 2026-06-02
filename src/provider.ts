@@ -199,8 +199,21 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			}
 
 			// Check if using Ollama native API mode
-			const apiMode = um?.apiMode ?? "openai";
-			const baseUrl = um?.baseUrl || config.get<string>("customcopilot.baseUrl", "");
+			// Provider-level settings (apiMode/baseUrl/...) are stored per-model,
+			// including on a hidden `__provider__<id>` placeholder. A model added
+			// via the model form may not carry them, so fall back to a sibling
+			// model of the same provider.
+			const providerSibling = um?.owned_by
+				? userModels.find((m) => m.id !== um!.id && m.owned_by === um!.owned_by && !!m.baseUrl)
+				: undefined;
+			const apiMode = um?.apiMode ?? providerSibling?.apiMode ?? "openai";
+			// Resolve the base URL from the selected model. If the selected model
+			// has no baseUrl of its own, fall back to a sibling model of the same
+			// provider that does.
+			let baseUrl = um?.baseUrl || "";
+			if (!baseUrl && um?.owned_by) {
+				baseUrl = providerSibling?.baseUrl || "";
+			}
 
 			logger.info("request.start", {
 				modelId: model.id,

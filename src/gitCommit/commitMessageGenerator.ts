@@ -194,7 +194,7 @@ async function performCommitMsgGeneration(secrets: vscode.SecretStorage, gitDiff
 		}
 
 		// Get base URL for the model
-		const baseUrl = selectedModel.baseUrl || config.get<string>("customcopilot.baseUrl", "");
+		const baseUrl = selectedModel.baseUrl || "";
 		if (!baseUrl || !baseUrl.startsWith("http")) {
 			throw new Error(`Invalid base URL configuration.`);
 		}

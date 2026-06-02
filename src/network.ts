@@ -33,29 +33,36 @@ export function getProxyDispatcher(proxyUrl?: string): Dispatcher | undefined {
 	return created;
 }
 
+function isDirectProxyToken(value: string): boolean {
+	const v = value.trim().toLowerCase();
+	return v === "none" || v === "direct" || v === "no-proxy" || v === "no_proxy";
+}
+
+function readGlobalProxyUrl(): string | undefined {
+	try {
+		const config = vscode.workspace.getConfiguration();
+		const globalProxy = config.get<string>("customcopilot.proxyUrl", "").trim();
+		if (!globalProxy || isDirectProxyToken(globalProxy)) {
+			return undefined;
+		}
+		return globalProxy;
+	} catch {
+		return undefined;
+	}
+}
+
 export function buildFetchNetworkInit(proxyUrl?: string): RequestInit {
 	let resolved: string | undefined;
-	if (proxyUrl !== undefined) {
-		const p = proxyUrl.trim().toLowerCase();
-		if (p === "none" || p === "direct" || p === "no-proxy" || p === "no_proxy" || p === "") {
-			resolved = undefined;
-		} else {
-			resolved = proxyUrl;
-		}
+	const trimmed = (proxyUrl ?? "").trim();
+	if (isDirectProxyToken(trimmed)) {
+		// Explicit opt-out: force a direct connection, ignoring the global proxy.
+		resolved = undefined;
+	} else if (trimmed) {
+		// A concrete per-call proxy was provided.
+		resolved = trimmed;
 	} else {
-		// Fallback to global config
-		try {
-			const config = vscode.workspace.getConfiguration();
-			const globalProxy = config.get<string>("customcopilot.proxyUrl", "").trim();
-			const gp = globalProxy.toLowerCase();
-			if (gp === "none" || gp === "direct" || gp === "no-proxy" || gp === "no_proxy" || gp === "") {
-				resolved = undefined;
-			} else {
-				resolved = globalProxy;
-			}
-		} catch {
-			resolved = undefined;
-		}
+		// Not specified (undefined or blank): fall back to the global proxy config.
+		resolved = readGlobalProxyUrl();
 	}
 
 	const dispatcher = getProxyDispatcher(resolved);

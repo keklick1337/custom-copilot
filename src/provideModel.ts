@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { CancellationToken, LanguageModelChatInformation } from "vscode";
 
 import type { HFApiMode, HFModelItem, HFModelsResponse } from "./types";
-import { normalizeUserModels, resolveProxyUrl } from "./utils";
+import { normalizeUserModels } from "./utils";
 import { VersionManager } from "./versionManager";
 import { fetchGeminiModels } from "./gemini/geminiApi";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
@@ -47,7 +47,7 @@ function getProviderLabel(m: HFModelItem): string {
 export async function prepareLanguageModelChatInformation(
 	options: { silent: boolean; apiMode?: HFApiMode },
 	_token: CancellationToken,
-	secrets: vscode.SecretStorage
+	_secrets: vscode.SecretStorage
 ): Promise<LanguageModelChatInformation[]> {
 	// Check for user-configured models first
 	const config = vscode.workspace.getConfiguration();
@@ -106,119 +106,6 @@ export async function prepareLanguageModelChatInformation(
 					},
 				} satisfies LanguageModelChatInformation;
 			});
-	} else if ((userModels?.length ?? 0) === 0 && (!vendorMode || vendorMode === "openai")) {
-		// Fallback (legacy): no user models are configured at all. Only the default
-		// OpenAI vendor performs the global-baseUrl discovery so we don't prompt for
-		// an API key once per registered vendor.
-		const apiKey = await ensureApiKey(options.silent, secrets);
-		if (!apiKey) {
-			if (options.silent) {
-				return [];
-			} else {
-				throw new Error("API key not configured");
-			}
-		}
-
-		const config = vscode.workspace.getConfiguration();
-		const BASE_URL = config.get<string>("customcopilot.baseUrl", "");
-		const globalProxyUrl = resolveProxyUrl(undefined, config.get<string>("customcopilot.proxyUrl", "").trim());
-		const globalUserAgent = config.get<string>("customcopilot.userAgent", "").trim() || undefined;
-		if (!BASE_URL || !BASE_URL.startsWith("http")) {
-			throw new Error(`Invalid base URL configuration.`);
-		}
-		const { models } = await fetchModels(BASE_URL, apiKey, undefined, undefined, {
-			proxyUrl: globalProxyUrl,
-			userAgent: globalUserAgent,
-		});
-
-		infos = models.flatMap((m) => {
-			const providers = m?.providers ?? [];
-			// Use the vision property directly from the model (set during conversion)
-			const vision = m.vision === true;
-
-			// Build entries for all providers that support tool calling
-			const toolProviders = providers.filter((p) => p.supports_tools === true);
-			const entries: LanguageModelChatInformation[] = [];
-
-			for (const p of toolProviders) {
-				const contextLen = p?.context_length ?? m.context_length ?? DEFAULT_CONTEXT_LENGTH;
-				const maxOutput = m.max_tokens ?? m.max_completion_tokens ?? DEFAULT_MAX_TOKENS;
-				const maxInput = Math.max(1, contextLen - maxOutput);
-
-				const provider = p.provider ? p.provider.charAt(0).toUpperCase() + p.provider.slice(1) : getProviderLabel(m);
-				const contextText = formatContextSize(contextLen);
-				const caps: string[] = [];
-				if (m.tool_calling) {
-					caps.push("tools");
-				}
-				if (vision) {
-					caps.push("vision");
-				}
-				if (m.enable_thinking || m.thinking || m.reasoning_effort || m.reasoning?.enabled) {
-					caps.push("thinking");
-				}
-				const capsText = caps.length > 0 ? ` • ${caps.join(", ")}` : "";
-				const detail = `${provider} (${EXTENSION_LABEL}) • ${contextText}${capsText}`;
-				const tooltip = `Model: ${m.id}\nProvider: ${provider}\nContext: ${contextText}\nCapabilities: ${caps.join(", ") || "none"}`;
-
-				entries.push({
-					id: `${m.id}:${p.provider}`,
-					name: `${m.id}`,
-					detail: detail,
-					tooltip: tooltip,
-					family: m.family ?? EXTENSION_LABEL,
-					version: "1.0.0",
-					maxInputTokens: maxInput,
-					maxOutputTokens: maxOutput,
-					isUserSelectable: true,
-					capabilities: {
-						toolCalling: m.tool_calling === true,
-						imageInput: vision,
-					},
-				} satisfies LanguageModelChatInformation);
-			}
-
-			if (entries.length === 0) {
-				const base = providers.length > 0 ? providers[0] : null;
-				const contextLen = base?.context_length ?? m.context_length ?? DEFAULT_CONTEXT_LENGTH;
-				const maxOutput = m.max_tokens ?? m.max_completion_tokens ?? DEFAULT_MAX_TOKENS;
-				const maxInput = Math.max(1, contextLen - maxOutput);
-
-				const provider = base?.provider ? base.provider.charAt(0).toUpperCase() + base.provider.slice(1) : getProviderLabel(m);
-				const contextText = formatContextSize(contextLen);
-				const caps: string[] = [];
-				if (m.tool_calling) {
-					caps.push("tools");
-				}
-				if (vision) {
-					caps.push("vision");
-				}
-				if (m.enable_thinking || m.thinking || m.reasoning_effort || m.reasoning?.enabled) {
-					caps.push("thinking");
-				}
-				const capsText = caps.length > 0 ? ` • ${caps.join(", ")}` : "";
-				const detail = `${provider} (${EXTENSION_LABEL}) • ${contextText}${capsText}`;
-				const tooltip = `Model: ${m.displayName || m.id}\nProvider: ${provider}\nContext: ${contextText}\nCapabilities: ${caps.join(", ") || "none"}`;
-
-				entries.push({
-					id: `${m.id}`,
-					name: m.displayName || m.id,
-					detail: detail,
-					tooltip: tooltip,
-					family: m.family ?? EXTENSION_LABEL,
-					version: "1.0.0",
-					maxInputTokens: maxInput,
-					maxOutputTokens: maxOutput,
-					isUserSelectable: true,
-					capabilities: {
-						toolCalling: m.tool_calling === true,
-						imageInput: vision,
-					},
-				} satisfies LanguageModelChatInformation);
-			}
-
-			return entries;
-		});
 	} else {
 		// User has models configured but none belong to this vendor's protocol.
 		infos = [];
@@ -405,25 +292,4 @@ export async function fetchModelsIntersection(
 }
 
 
-/**
- * Ensure an API key exists in SecretStorage, optionally prompting the user when not silent.
- * @param silent If true, do not prompt the user.
- * @param secrets vscode.SecretStorage
- */
-/**
- * Prompt for an API key for the fallback "fetch from global base URL" flow, used only when no
- * models are configured. The key is used transiently and is not persisted as a global secret.
- * @param silent If true, do not prompt the user.
- */
-async function ensureApiKey(silent: boolean, _secrets: vscode.SecretStorage): Promise<string | undefined> {
-	if (silent) {
-		return undefined;
-	}
-	const entered = await vscode.window.showInputBox({
-		title: "API Key",
-		prompt: "Enter your API key",
-		ignoreFocusOut: true,
-		password: true,
-	});
-	return entered && entered.trim() ? entered.trim() : undefined;
-}
+

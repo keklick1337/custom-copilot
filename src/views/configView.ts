@@ -9,7 +9,6 @@ import { VersionManager } from "../versionManager";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 
 interface InitPayload {
-	baseUrl: string;
 	proxyUrl: string;
 	userAgent: string;
 	delay: number;
@@ -35,7 +34,6 @@ interface InitPayload {
 interface ExportConfig {
 	version: string;
 	exportDate: string;
-	baseUrl: string;
 	proxyUrl: string;
 	delay: number;
 	retry: {
@@ -351,7 +349,6 @@ export class ConfigViewController {
 
 	public async sendInit() {
 		const config = vscode.workspace.getConfiguration();
-		const baseUrl = config.get<string>("customcopilot.baseUrl", "https://api.openai.com/v1");
 		const proxyUrl = config.get<string>("customcopilot.proxyUrl", "");
 		const userAgent = config.get<string>(
 			"customcopilot.userAgent",
@@ -401,7 +398,6 @@ export class ConfigViewController {
 		const chatRetryInterval = config.get<number>("customcopilot.chatRetryInterval", 1000);
 		const chatRetryJitter = config.get<number>("customcopilot.chatRetryJitter", 0);
 		const payload: InitPayload = {
-			baseUrl,
 			proxyUrl,
 			userAgent,
 			delay,
@@ -513,7 +509,7 @@ export class ConfigViewController {
 			const normalizedProxyUrl = (proxyUrl || "").trim();
 			const normalizedUserAgent = (userAgent || "").trim();
 			const config = vscode.workspace.getConfiguration();
-			const effectiveBaseUrl = normalizedBaseUrl || config.get<string>("customcopilot.baseUrl", "").trim();
+			const effectiveBaseUrl = normalizedBaseUrl;
 			const effectiveApiKey = normalizedApiKey;
 			const effectiveProxyUrl = resolveProxyUrl(normalizedProxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
 			const effectiveUserAgent =
@@ -587,7 +583,7 @@ export class ConfigViewController {
 
 			const providerModels = currentModels.filter((m) => m.owned_by === provider);
 			const firstModel = providerModels[0];
-			const providerBaseUrl = firstModel?.baseUrl || config.get<string>("customcopilot.baseUrl", "").trim();
+			const providerBaseUrl = firstModel?.baseUrl || "";
 			const providerProxyUrl = firstModel?.proxyUrl || globalProxyUrl;
 			const providerUserAgent = firstModel?.userAgent || globalUserAgent;
 			const providerApiMode = firstModel?.apiMode;
@@ -627,7 +623,7 @@ export class ConfigViewController {
 	}
 
 	private async saveGlobalConfig(
-		rawBaseUrl: string,
+		_rawBaseUrl: string,
 		rawProxyUrl: string,
 		rawUserAgent: string,
 		delay: number,
@@ -636,11 +632,9 @@ export class ConfigViewController {
 		commitModel: string,
 		commitLanguage: string
 	) {
-		const baseUrl = rawBaseUrl.trim();
 		const proxyUrl = rawProxyUrl.trim();
 		const userAgent = rawUserAgent.trim();
 		const config = vscode.workspace.getConfiguration();
-		await config.update("customcopilot.baseUrl", baseUrl, vscode.ConfigurationTarget.Global);
 		await config.update("customcopilot.proxyUrl", proxyUrl, vscode.ConfigurationTarget.Global);
 		await config.update("customcopilot.userAgent", userAgent, vscode.ConfigurationTarget.Global);
 		await config.update("customcopilot.delay", delay, vscode.ConfigurationTarget.Global);
@@ -831,6 +825,37 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
+	private getProviderDefaultSource(models: HFModelItem[], provider?: string): HFModelItem | undefined {
+		if (!provider) {
+			return undefined;
+		}
+		const providerModels = models.filter((m) => m.owned_by === provider);
+		return providerModels.find((m) => m.id.startsWith("__provider__")) || providerModels[0];
+	}
+
+	private fillModelDefaults(model: HFModelItem, source: HFModelItem | undefined): HFModelItem {
+		if (!source) {
+			return model;
+		}
+		const merged: HFModelItem = { ...model };
+		if (!merged.baseUrl) {
+			merged.baseUrl = source.baseUrl;
+		}
+		if (!merged.apiMode) {
+			merged.apiMode = source.apiMode;
+		}
+		if (merged.proxyUrl === undefined) {
+			merged.proxyUrl = source.proxyUrl;
+		}
+		if (merged.userAgent === undefined) {
+			merged.userAgent = source.userAgent;
+		}
+		if (merged.headers === undefined) {
+			merged.headers = source.headers;
+		}
+		return merged;
+	}
+
 	private async addModel(model: HFModelItem) {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
@@ -845,7 +870,12 @@ export class ConfigViewController {
 			return;
 		}
 
-		models.push(model);
+		// The model form does not carry provider-level settings (baseUrl, apiMode,
+		// proxyUrl, ...). Inherit them from the provider's existing models so the
+		// saved model always has a usable baseUrl.
+		const modelToSave = this.fillModelDefaults(model, this.getProviderDefaultSource(models, model.owned_by));
+
+		models.push(modelToSave);
 		await config.update("customcopilot.models", models, vscode.ConfigurationTarget.Global);
 		vscode.window.showInformationMessage(
 			`Model ${model.id}${model.configId ? "::" + model.configId : ""} has been added.`
@@ -868,8 +898,12 @@ export class ConfigViewController {
 				((originalConfigId && m.configId === originalConfigId) || (!originalConfigId && !m.configId));
 
 			if (isTargetModel) {
-				// Update with new values
-				return model;
+				// Update with new values, but keep provider-level settings
+				// (baseUrl, apiMode, ...) that the model form does not carry by
+				// inheriting them from the original model, then provider defaults.
+				let merged = this.fillModelDefaults(model, m);
+				merged = this.fillModelDefaults(merged, this.getProviderDefaultSource(models, model.owned_by));
+				return merged;
 			}
 			return m;
 		});
@@ -1227,7 +1261,6 @@ export class ConfigViewController {
 	private async exportConfig() {
 		try {
 			const config = vscode.workspace.getConfiguration();
-			const baseUrl = config.get<string>("customcopilot.baseUrl", "https://api.openai.com/v1");
 			const proxyUrl = config.get<string>("customcopilot.proxyUrl", "");
 			const delay = config.get<number>("customcopilot.delay", 0);
 			const retry = config.get<{
@@ -1260,7 +1293,6 @@ export class ConfigViewController {
 			const exportData: ExportConfig = {
 				version: VersionManager.getVersion(),
 				exportDate: new Date().toISOString(),
-				baseUrl,
 				proxyUrl,
 				delay,
 				retry,
@@ -1318,7 +1350,6 @@ export class ConfigViewController {
 
 			const config = vscode.workspace.getConfiguration();
 
-			await config.update("customcopilot.baseUrl", importData.baseUrl, vscode.ConfigurationTarget.Global);
 			await config.update("customcopilot.proxyUrl", importData.proxyUrl || "", vscode.ConfigurationTarget.Global);
 			await config.update("customcopilot.delay", importData.delay, vscode.ConfigurationTarget.Global);
 			await config.update("customcopilot.retry", importData.retry, vscode.ConfigurationTarget.Global);

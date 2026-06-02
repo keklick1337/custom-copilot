@@ -25,7 +25,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.7",
+	"version": "1.0.9",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -152,11 +152,6 @@
 					],
 					"description": "Debug log level. Logs are written to ~/.copilot/customcopilot/logs/ as JSON lines. Default is 'off' (no logging)."
 				},
-				"customcopilot.baseUrl": {
-					"type": "string",
-					"default": "https://router.huggingface.co/v1",
-					"description": "The base URL for the Openai Compatible Inference API. Default value is Hugging Face."
-				},
 				"customcopilot.proxyUrl": {
 					"type": "string",
 					"default": "",
@@ -198,7 +193,7 @@
 							},
 							"baseUrl": {
 								"type": "string",
-								"description": "Base URL for the model provider. If not provided, the global customcopilot.baseUrl will be used."
+								"description": "Base URL for the model provider (required per model, e.g. https://api.openai.com/v1)."
 							},
 							"proxyUrl": {
 								"type": "string",
