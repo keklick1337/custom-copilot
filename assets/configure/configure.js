@@ -83,6 +83,9 @@ const el = {
 	pDelay:              $("pDelay"),
 	pHeaders:            $("pHeaders"),
 	pPreset:             $("pPreset"),
+	keyStatsTable:       $("keyStatsTable"),
+	keyStatsBody:        $("keyStatsBody"),
+	refreshKeyStatsBtn:  $("refreshKeyStatsBtn"),
 	saveProviderBtn:     $("saveProviderBtn"),
 	deleteProviderBtn:   $("deleteProviderBtn"),
 	// Models section
@@ -279,6 +282,73 @@ function getProviderModels(name) {
 	return state.models.filter((m) => m.owned_by === name && !m.id.startsWith("__provider__"));
 }
 
+// ── API key health table ───────────────────────────────────────────────────────
+
+// Mirror of parseApiKeys() in src/keyBalancer.ts: split on newlines/commas,
+// trim, drop empties and duplicates — keeps row order in sync with the backend.
+function parseRawKeys(raw) {
+	if (!raw) { return []; }
+	const seen = new Set();
+	const out = [];
+	for (const part of String(raw).split(/[\r\n,]+/)) {
+		const key = part.trim();
+		if (key && !seen.has(key)) {
+			seen.add(key);
+			out.push(key);
+		}
+	}
+	return out;
+}
+
+function requestKeyStats(name) {
+	if (!name || name === "git-commit" || name === "__global__") {
+		clearKeyStats();
+		return;
+	}
+	vscode.postMessage({ type: "requestKeyStats", provider: name });
+}
+
+function clearKeyStats() {
+	if (!el.keyStatsBody) { return; }
+	el.keyStatsBody.innerHTML =
+		'<tr class="key-stats-empty"><td colspan="4">No API keys configured.</td></tr>';
+}
+
+function renderKeyStats(provider, stats) {
+	if (!el.keyStatsBody) { return; }
+	// Ignore late responses for a provider that is no longer selected.
+	if (provider !== state.selectedProvider) { return; }
+	if (!stats || !stats.length) {
+		clearKeyStats();
+		return;
+	}
+	// The backend returns masked keys in the same order as the stored keys, so
+	// we can recover each full key (kept in memory in state.providerKeys) by
+	// index to surface it as a hover tooltip.
+	const fullKeys = parseRawKeys(state.providerKeys[provider]);
+	el.keyStatsBody.innerHTML = stats.map((s, i) => {
+		const hasErrors = s.errors > 0;
+		const statusLabel = s.benched
+			? '<span class="ks-badge ks-benched" title="Temporarily benched after repeated failures">Benched</span>'
+			: hasErrors
+				? '<span class="ks-badge ks-warn">OK</span>'
+				: '<span class="ks-badge ks-ok">OK</span>';
+		const lastError = s.lastError ? ` title="Last error: ${escAttr(s.lastError)}"` : "";
+		const fullKey = fullKeys[i];
+		const keyTitle = fullKey ? ` title="${escAttr(fullKey)}"` : "";
+		return `<tr class="${hasErrors ? "ks-has-errors" : ""}"${lastError}>
+			<td class="ks-key"><span class="ks-key-text"${keyTitle}>${escHtml(s.keyMasked)}</span></td>
+			<td class="ks-num">${s.requests}</td>
+			<td class="ks-num${hasErrors ? " ks-num-error" : ""}">${s.errors}</td>
+			<td class="ks-status">${statusLabel}</td>
+		</tr>`;
+	}).join("");
+}
+
+el.refreshKeyStatsBtn?.addEventListener("click", () => {
+	requestKeyStats(state.selectedProvider);
+});
+
 // ── Sidebar rendering ──────────────────────────────────────────────────────────
 
 function renderSidebar() {
@@ -402,6 +472,8 @@ function selectProvider(name) {
 	hideModelForm();
 	renderModelTable(name);
 
+	requestKeyStats(name);
+
 	updateActiveScreen();
 }
 
@@ -431,6 +503,7 @@ function showNewProviderForm() {
 
 	// Hide models section for new providers (created on save)
 	el.modelsSection.style.display = "none";
+	clearKeyStats();
 	el.pName.focus();
 
 	updateActiveScreen();
@@ -1597,6 +1670,10 @@ window.addEventListener("message", ({ data: msg }) => {
 			} else {
 				populateModelDropdown(models);
 			}
+			break;
+		}
+		case "keyStats": {
+			renderKeyStats(msg.provider, msg.stats || []);
 			break;
 		}
 		case "modelKeysTested": {

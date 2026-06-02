@@ -340,6 +340,28 @@
 								<textarea id="pHeaders" rows="2" placeholder='{"X-Custom-Header": "value"}'></textarea>
 							</div>
 						</div>
+						<div class="row" id="keyStatsRow">
+							<div class="field field-wide">
+								<div class="key-stats-header">
+									<label>API Key Health</label>
+									<button id="refreshKeyStatsBtn" type="button" class="secondary small">↻ Refresh</button>
+								</div>
+								<div class="field-description">Per-key request &amp; error counters. Failing keys are benched automatically and rotated.</div>
+								<table class="key-stats-table" id="keyStatsTable">
+									<thead>
+										<tr>
+											<th class="ks-key">API Key</th>
+											<th class="ks-num">Requests</th>
+											<th class="ks-num">Errors</th>
+											<th class="ks-status">Status</th>
+										</tr>
+									</thead>
+									<tbody id="keyStatsBody">
+										<tr class="key-stats-empty"><td colspan="4">No API keys configured.</td></tr>
+									</tbody>
+								</table>
+							</div>
+						</div>
 					</section>
 
 					<!-- Models ────────────────────────────────────── -->

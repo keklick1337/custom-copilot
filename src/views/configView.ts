@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { HFApiMode, HFModelItem } from "../types";
 import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
 import { fetchModels, fetchModelsIntersection } from "../provideModel";
-import { parseApiKeys } from "../keyBalancer";
+import { parseApiKeys, keyBalancer } from "../keyBalancer";
 import { CommonApi } from "../commonApi";
 import { buildFetchNetworkInit } from "../network";
 import { VersionManager } from "../versionManager";
@@ -133,12 +133,25 @@ type IncomingMessage =
 			delayMs?: number;
 	  }
 	| { type: "prefillChat"; prompt: string; mode?: string; modelFullId?: string }
+	| { type: "requestKeyStats"; provider: string }
 	| { type: "exportConfig" }
 	| { type: "importConfig" };
 
 type OutgoingMessage =
 	| { type: "init"; payload: InitPayload }
 	| { type: "modelsFetched"; models: HFModelItem[] }
+	| {
+			type: "keyStats";
+			provider: string;
+			stats: Array<{
+				keyMasked: string;
+				requests: number;
+				errors: number;
+				benched: boolean;
+				lastError?: string;
+				lastErrorAt?: number;
+			}>;
+	  }
 	| { type: "confirmResponse"; id: string; confirmed: boolean };
 
 export class ConfigViewController {
@@ -316,6 +329,9 @@ export class ConfigViewController {
 			case "prefillChat":
 				await this.prefillChat(message.prompt, message.mode, message.modelFullId);
 				break;
+			case "requestKeyStats":
+				await this.sendKeyStats(message.provider);
+				break;
 			case "exportConfig":
 				await this.exportConfig();
 				break;
@@ -325,6 +341,21 @@ export class ConfigViewController {
 			default:
 				break;
 		}
+	}
+
+	private async sendKeyStats(provider: string) {
+		const normalized = (provider || "").toLowerCase();
+		if (!normalized) {
+			this.webview.postMessage({ type: "keyStats", provider, stats: [] } as OutgoingMessage);
+			return;
+		}
+		let key = await this.secrets.get(`customcopilot.apiKey.${normalized}`);
+		if (!key && normalized !== provider) {
+			key = await this.secrets.get(`customcopilot.apiKey.${provider}`);
+		}
+		const keys = parseApiKeys(key ?? "");
+		const stats = keyBalancer.getStats(normalized, keys);
+		this.webview.postMessage({ type: "keyStats", provider, stats } as OutgoingMessage);
 	}
 
 	private async handleConfirmRequest(id: string, message: string, action: string) {

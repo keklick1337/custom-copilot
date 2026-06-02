@@ -7,6 +7,7 @@ import { logger } from "./logger";
 import { normalizeUserModels } from "./utils";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
+import { keyBalancer } from "./keyBalancer";
 
 export function activate(context: vscode.ExtensionContext) {
 	// Initialize logger
@@ -14,6 +15,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Initialize TokenizerManager with extension path
 	TokenizerManager.initialize(context.extensionPath);
+
+	// Wire persistence for per-API-key usage/error counters (key health table).
+	keyBalancer.init(context);
 
 	const tokenCountStatusBarItem: vscode.StatusBarItem = initStatusBar(context);
 

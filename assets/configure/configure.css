@@ -324,6 +324,101 @@ button.small {
 	padding: 0 7px;
 }
 
+/* ── API key health table ───────────────────────────────────────── */
+
+.key-stats-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.key-stats-table {
+	width: 100%;
+	border-collapse: collapse;
+	margin-top: 6px;
+	font-size: 12px;
+	table-layout: fixed;
+}
+
+.key-stats-table th,
+.key-stats-table td {
+	padding: 5px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+	text-align: left;
+}
+
+.key-stats-table th {
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.key-stats-table th.ks-num,
+.key-stats-table td.ks-num {
+	width: 72px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.key-stats-table th.ks-status,
+.key-stats-table td.ks-status {
+	width: 84px;
+	text-align: center;
+}
+
+.key-stats-table td.ks-key {
+	overflow: hidden;
+}
+
+.key-stats-table .ks-key-text {
+	display: block;
+	font-family: var(--vscode-editor-font-family, monospace);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	text-align: center;
+	cursor: help;
+}
+
+.key-stats-table td.ks-num-error {
+	color: var(--vscode-errorForeground, #f14c4c);
+	font-weight: 600;
+}
+
+.key-stats-table tr.ks-has-errors {
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f14c4c) 8%, transparent);
+}
+
+.key-stats-table .key-stats-empty td {
+	color: var(--vscode-descriptionForeground);
+	text-align: center;
+	font-style: italic;
+}
+
+.ks-badge {
+	display: inline-block;
+	padding: 1px 7px;
+	border-radius: 9px;
+	font-size: 10px;
+	font-weight: 600;
+}
+
+.ks-badge.ks-ok {
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 22%, transparent);
+	color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.ks-badge.ks-warn {
+	background: color-mix(in srgb, var(--vscode-charts-yellow, #e2c08d) 22%, transparent);
+	color: var(--vscode-charts-yellow, #e2c08d);
+}
+
+.ks-badge.ks-benched {
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f14c4c) 22%, transparent);
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
 /* ── Inputs ─────────────────────────────────────────────────────── */
 
 input[type="text"],

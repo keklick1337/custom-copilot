@@ -285,10 +285,52 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 			// Per-attempt header builder: picks the healthiest key from the balancer
 			// each time it is called so executeWithRetry rotates keys across attempts.
+			// `triedKeys` makes each retry prefer a key not yet used in this request,
+			// so a failing key is skipped instead of being hit again.
 			let lastSelectedKey = "";
+			const triedKeys = new Set<string>();
 			const selectRequestHeaders = () => {
-				lastSelectedKey = keyBalancer.selectKey(normalizedProvider, apiKeys);
+				lastSelectedKey = keyBalancer.selectKey(normalizedProvider, apiKeys, triedKeys);
+				if (lastSelectedKey) {
+					triedKeys.add(lastSelectedKey);
+					keyBalancer.recordRequest(normalizedProvider, lastSelectedKey);
+				}
 				return CommonApi.prepareHeaders(lastSelectedKey, apiMode, um?.headers, um?.userAgent);
+			};
+			// A "fatal" key error means this specific key cannot be used (quota
+			// exhausted, invalid/disabled key, forbidden). Such a key is benched
+			// hard so the balancer immediately rotates to another one.
+			const isFatalKeyError = (status: number, body: string): boolean => {
+				if (status === 401 || status === 403) {
+					return true;
+				}
+				if (status === 429) {
+					return /insufficient_quota|invalid_api_key|billing|access_terminated|account_deactivated|exceeded your current quota/i.test(
+						body
+					);
+				}
+				return false;
+			};
+			// Records the failure against the current key and returns an Error to
+			// throw. When the key is dead (fatal) and other keys exist, the error is
+			// flagged `retryImmediately` so executeWithRetry rotates without backoff.
+			const handleKeyError = (status: number, statusText: string, body: string, message: string): Error => {
+				const fatal = isFatalKeyError(status, body);
+				keyBalancer.reportError(normalizedProvider, lastSelectedKey, {
+					fatal,
+					message: `[${status}] ${statusText}`,
+				});
+				const err = new Error(message) as Error & {
+					status?: number;
+					errorText?: string;
+					retryImmediately?: boolean;
+				};
+				err.status = status;
+				err.errorText = body;
+				if (fatal && apiKeys.length > 1) {
+					err.retryImmediately = true;
+				}
+				return err;
 			};
 			logger.debug("request.headers", {
 				keyPoolSize: apiKeys.length,
@@ -323,10 +365,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					});
 
 					if (!res.ok) {
-						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Ollama Provider] Ollama API error response", errorText);
-						throw new Error(
+						throw handleKeyError(
+							res.status,
+							res.statusText,
+							errorText,
 							`Ollama API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
 						);
 					}
@@ -369,10 +413,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					});
 
 					if (!res.ok) {
-						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Anthropic Provider] Anthropic API error response", errorText);
-						throw new Error(
+						throw handleKeyError(
+							res.status,
+							res.statusText,
+							errorText,
 							`Anthropic API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
 						);
 					}
@@ -449,14 +495,13 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						});
 
 						if (!res.ok) {
-							keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 							const errorText = await res.text();
-							const error = new Error(
+							throw handleKeyError(
+								res.status,
+								res.statusText,
+								errorText,
 								`Responses API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
 							);
-							(error as { status?: number; errorText?: string }).status = res.status;
-							(error as { status?: number; errorText?: string }).errorText = errorText;
-							throw error;
 						}
 
 						keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
@@ -546,10 +591,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					});
 
 					if (!res.ok) {
-						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Gemini Provider] Gemini API error response", errorText);
-						throw new Error(
+						throw handleKeyError(
+							res.status,
+							res.statusText,
+							errorText,
 							`Gemini API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
 						);
 					}
@@ -588,10 +635,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					});
 
 					if (!res.ok) {
-						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[customcopilot] API error response", errorText);
-						throw new Error(
+						throw handleKeyError(
+							res.status,
+							res.statusText,
+							errorText,
 							`API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
 						);
 					}

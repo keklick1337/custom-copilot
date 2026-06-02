@@ -310,8 +310,14 @@ export async function executeWithRetry<T>(fn: () => Promise<T>, retryConfig: Ret
 				throw lastError;
 			}
 
+			// A dead key (quota/auth) with healthy alternatives should rotate
+			// immediately — no point waiting out an exponential backoff when the
+			// next key is ready to serve. Transient errors still back off.
+			const switchKeyNow = (lastError as { retryImmediately?: boolean }).retryImmediately === true;
 			// Exponential backoff: interval doubles each attempt, capped at 60s
-			const delayMs = Math.min(baseIntervalMs * Math.pow(RETRY_BACKOFF_FACTOR, attempt), RETRY_MAX_INTERVAL_MS);
+			const delayMs = switchKeyNow
+				? 0
+				: Math.min(baseIntervalMs * Math.pow(RETRY_BACKOFF_FACTOR, attempt), RETRY_MAX_INTERVAL_MS);
 
 			logger.warn("retry.attempt", {
 				attempt: attempt + 1,
