@@ -19,6 +19,7 @@ import { prepareLanguageModelChatInformation } from "./provideModel";
 import { countMessageTokens } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
 import { notifyChatRequestStart } from "./chatActivity";
+import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { OllamaApi } from "./ollama/ollamaApi";
 import { OpenaiApi } from "./openai/openaiApi";
 import { OpenaiResponsesApi } from "./openai/openaiResponsesApi";
@@ -239,10 +240,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				}
 			}
 
-			// Get API key for the model's provider
+			// Get API key(s) for the model's provider. Multiple keys (stored
+			// newline-separated under the same secret) are load-balanced per request.
 			const provider = um?.owned_by;
-			const modelApiKey = await this.ensureApiKey(provider);
-			if (!modelApiKey) {
+			const normalizedProvider = (provider ?? "").trim().toLowerCase();
+			const apiKeys = await this.resolveApiKeys(provider);
+			if (apiKeys.length === 0) {
 				logger.warn("apiKey.missing", {
 					provider: provider ?? "",
 				});
@@ -257,13 +260,25 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 			// get retry config
 			const retryConfig = createRetryConfig();
+			// With multiple keys, allow enough retry attempts to cycle through the
+			// pool and also rotate on auth failures (a bad/limited key should be
+			// benched and another tried instead of surfacing the error).
+			if (apiKeys.length > 1) {
+				retryConfig.max_attempts = Math.max(retryConfig.max_attempts ?? 3, apiKeys.length + 1);
+				retryConfig.status_codes = [...new Set([...(retryConfig.status_codes ?? []), 401, 403, 408, 409])];
+			}
 			const proxyUrl = resolveProxyUrl(um?.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
 			const requestNetworkInit = buildFetchNetworkInit(proxyUrl);
 
-			// prepare headers with custom headers if specified
-			const requestHeaders = CommonApi.prepareHeaders(modelApiKey, apiMode, um?.headers, um?.userAgent);
+			// Per-attempt header builder: picks the healthiest key from the balancer
+			// each time it is called so executeWithRetry rotates keys across attempts.
+			let lastSelectedKey = "";
+			const selectRequestHeaders = () => {
+				lastSelectedKey = keyBalancer.selectKey(normalizedProvider, apiKeys);
+				return CommonApi.prepareHeaders(lastSelectedKey, apiMode, um?.headers, um?.userAgent);
+			};
 			logger.debug("request.headers", {
-				headers: logger.sanitizeHeaders(requestHeaders as Record<string, string>),
+				keyPoolSize: apiKeys.length,
 			});
 			logger.debug("request.messages.origin", {
 				messages: messages,
@@ -290,11 +305,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					const res = await fetch(url, {
 						...requestNetworkInit,
 						method: "POST",
-						headers: requestHeaders,
+						headers: selectRequestHeaders(),
 						body: JSON.stringify(ollamaRequestBody),
 					});
 
 					if (!res.ok) {
+						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Ollama Provider] Ollama API error response", errorText);
 						throw new Error(
@@ -302,6 +318,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						);
 					}
 
+					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
 				}, retryConfig);
 
@@ -334,11 +351,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					const res = await fetch(url, {
 						...requestNetworkInit,
 						method: "POST",
-						headers: requestHeaders,
+						headers: selectRequestHeaders(),
 						body: JSON.stringify(requestBody),
 					});
 
 					if (!res.ok) {
+						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Anthropic Provider] Anthropic API error response", errorText);
 						throw new Error(
@@ -346,6 +364,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						);
 					}
 
+					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
 				}, retryConfig);
 
@@ -412,11 +431,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						const res = await fetch(url, {
 							...requestNetworkInit,
 							method: "POST",
-							headers: requestHeaders,
+							headers: selectRequestHeaders(),
 							body: JSON.stringify(body),
 						});
 
 						if (!res.ok) {
+							keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 							const errorText = await res.text();
 							const error = new Error(
 								`Responses API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
@@ -426,6 +446,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 							throw error;
 						}
 
+						keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 						return res;
 					}, retryConfig);
 
@@ -507,11 +528,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					const res = await fetch(url, {
 						...requestNetworkInit,
 						method: "POST",
-						headers: requestHeaders,
+						headers: selectRequestHeaders(),
 						body: JSON.stringify(requestBody),
 					});
 
 					if (!res.ok) {
+						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[Gemini Provider] Gemini API error response", errorText);
 						throw new Error(
@@ -519,6 +541,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						);
 					}
 
+					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
 				}, retryConfig);
 
@@ -547,11 +570,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					const res = await fetch(url, {
 						...requestNetworkInit,
 						method: "POST",
-						headers: requestHeaders,
+						headers: selectRequestHeaders(),
 						body: JSON.stringify(requestBody),
 					});
 
 					if (!res.ok) {
+						keyBalancer.reportError(normalizedProvider, lastSelectedKey);
 						const errorText = await res.text();
 						console.error("[customcopilot] API error response", errorText);
 						throw new Error(
@@ -559,6 +583,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 						);
 					}
 
+					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
 				}, retryConfig);
 
@@ -586,6 +611,17 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			// Update last request time after successful completion
 			this._lastRequestTime = Date.now();
 		}
+	}
+
+	/**
+	 * Resolve the pool of API keys for a provider. Multiple keys are stored
+	 * newline-separated under the same per-provider secret; a single key (legacy
+	 * format) yields a one-element pool. Prompts the user once when none exist.
+	 * @param provider Provider name used to look up the provider-specific secret.
+	 */
+	private async resolveApiKeys(provider?: string): Promise<string[]> {
+		const existing = await this.ensureApiKey(provider);
+		return parseApiKeys(existing);
 	}
 
 	/**

@@ -353,6 +353,59 @@ export async function fetchModels(
 }
 
 /**
+ * Fetch models for a pool of API keys and return only the models available on
+ * **every** key (the intersection by model id). This guarantees that any model
+ * the user adds for a load-balanced provider can be served by all of its keys.
+ *
+ * @param baseUrl API base URL.
+ * @param apiKeys One or more API keys to probe.
+ * @param apiMode Request protocol.
+ * @param customHeaders Extra HTTP headers.
+ * @param networkOptions Proxy / user-agent overrides.
+ * @returns The intersected models plus the per-key probe results for UI feedback.
+ */
+export async function fetchModelsIntersection(
+	baseUrl: string,
+	apiKeys: string[],
+	apiMode?: HFApiMode | string,
+	customHeaders?: Record<string, string>,
+	networkOptions?: { proxyUrl?: string; userAgent?: string }
+): Promise<{ models: HFModelItem[]; keyResults: { ok: boolean; error?: string }[] }> {
+	const keys = apiKeys.filter((key) => key && key.trim()).map((key) => key.trim());
+	if (keys.length <= 1) {
+		const { models } = await fetchModels(baseUrl, keys[0] ?? "", apiMode, customHeaders, networkOptions);
+		return { models, keyResults: [{ ok: true }] };
+	}
+
+	const settled = await Promise.allSettled(
+		keys.map((key) => fetchModels(baseUrl, key, apiMode, customHeaders, networkOptions))
+	);
+
+	const keyResults: { ok: boolean; error?: string }[] = settled.map((result) =>
+		result.status === "fulfilled"
+			? { ok: true }
+			: { ok: false, error: result.reason instanceof Error ? result.reason.message : String(result.reason) }
+	);
+
+	const successful = settled
+		.filter((result): result is PromiseFulfilledResult<{ models: HFModelItem[] }> => result.status === "fulfilled")
+		.map((result) => result.value.models);
+
+	if (successful.length === 0) {
+		// Surface the first error so the UI can report why discovery failed.
+		const firstError = keyResults.find((result) => !result.ok)?.error ?? "Failed to fetch models";
+		throw new Error(firstError);
+	}
+
+	// Intersect by model id: keep models present in every successful key response.
+	const [first, ...rest] = successful;
+	const intersected = first.filter((model) => rest.every((list) => list.some((other) => other.id === model.id)));
+
+	return { models: intersected, keyResults };
+}
+
+
+/**
  * Ensure an API key exists in SecretStorage, optionally prompting the user when not silent.
  * @param silent If true, do not prompt the user.
  * @param secrets vscode.SecretStorage

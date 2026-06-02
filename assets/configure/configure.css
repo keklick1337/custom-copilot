@@ -759,6 +759,65 @@ tr:hover td {
 	opacity: 0.6;
 }
 
+/* Multi-key load-balancing test feedback */
+.key-test-status {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 12px;
+	font-size: 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.15));
+}
+
+.key-test-label {
+	opacity: 0.7;
+}
+
+.key-mark {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 3px;
+	border-radius: 3px;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1;
+}
+
+.key-mark.ok {
+	color: var(--vscode-testing-iconPassed, #2ea043);
+}
+
+.key-mark.fail {
+	color: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+.key-test-btn {
+	flex: 0 0 auto;
+	align-self: center;
+}
+
+.fetch-item-keytest {
+	font-size: 11px;
+	margin-top: 3px;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.fetch-item-keytest:empty {
+	display: none;
+}
+
+.fetch-item-keytest.testing {
+	opacity: 0.7;
+	font-style: italic;
+}
+
 /* ── Model form ─────────────────────────────────────────────────── */
 
 .form-container {

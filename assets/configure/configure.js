@@ -92,6 +92,7 @@ const el = {
 	addModelBtn:         $("addModelBtn"),
 	fetchPanel:          $("fetchPanel"),
 	fetchStatus:         $("fetchStatus"),
+	keyTestStatus:       $("keyTestStatus"),
 	fetchResults:        $("fetchResults"),
 	selectAllFetched:    $("selectAllFetched"),
 	deselectAllFetched:  $("deselectAllFetched"),
@@ -1059,6 +1060,10 @@ el.fetchFromApiBtn.addEventListener("click", () => {
 	el.fetchPanel.style.display = "";
 	el.fetchStatus.textContent = "Fetching models…";
 	el.fetchResults.innerHTML  = '<div class="fetch-loading">Loading…</div>';
+	if (el.keyTestStatus) {
+		el.keyTestStatus.style.display = "none";
+		el.keyTestStatus.innerHTML = "";
+	}
 	el.importFetchedBtn.disabled = true;
 	el.importCount.textContent = "0";
 
@@ -1110,6 +1115,10 @@ function hideFetchPanel() {
 	el.fetchPanel.style.display = "none";
 	state.fetchedModels = [];
 	state.isFetchingForPanel = false;
+	if (el.keyTestStatus) {
+		el.keyTestStatus.style.display = "none";
+		el.keyTestStatus.innerHTML = "";
+	}
 }
 
 function updateImportCount() {
@@ -1118,9 +1127,11 @@ function updateImportCount() {
 	el.importFetchedBtn.disabled = count === 0;
 }
 
-function showFetchResults(models) {
+function showFetchResults(models, keyResults) {
 	state.fetchedModels = models;
 	state.isFetchingForPanel = false;
+
+	renderKeyTestStatus(keyResults);
 
 	if (!models.length) {
 		el.fetchStatus.textContent = "No models returned from API.";
@@ -1129,7 +1140,10 @@ function showFetchResults(models) {
 		return;
 	}
 
-	el.fetchStatus.textContent = `Found ${models.length} model(s) — select to import`;
+	const multiKey = Array.isArray(keyResults) && keyResults.length > 1;
+	el.fetchStatus.textContent = multiKey
+		? `Found ${models.length} model(s) available on all keys — select to import`
+		: `Found ${models.length} model(s) — select to import`;
 
 	const existingIds = new Set(
 		getProviderModels(state.selectedProvider).map((m) =>
@@ -1152,14 +1166,91 @@ function showFetchResults(models) {
 			<div class="fetch-item-info">
 				<div class="fetch-item-id">${escHtml(m.id)}${m.displayName ? `<span class="fetch-item-tag">${escHtml(m.displayName)}</span>` : ""}</div>
 				${meta ? `<div class="fetch-item-meta">${escHtml(meta)}</div>` : ""}
+				<div class="fetch-item-keytest" data-model="${escHtml(m.id)}"></div>
 			</div>
+			<button type="button" class="secondary small key-test-btn" data-model="${escHtml(m.id)}" title="Send a hello-world request with every API key">Test keys</button>
 		</label>`;
 	}).join("");
 
 	el.fetchResults.querySelectorAll("input[type='checkbox']").forEach((cb) => {
 		cb.addEventListener("change", updateImportCount);
 	});
+	el.fetchResults.querySelectorAll(".key-test-btn").forEach((btn) => {
+		btn.addEventListener("click", (ev) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			testModelKeys(btn.dataset.model);
+		});
+	});
 	updateImportCount();
+}
+
+// Render the per-key auth result line shown after fetching models.
+function renderKeyTestStatus(keyResults) {
+	if (!el.keyTestStatus) return;
+	if (!Array.isArray(keyResults) || keyResults.length <= 1) {
+		el.keyTestStatus.style.display = "none";
+		el.keyTestStatus.innerHTML = "";
+		return;
+	}
+	const okCount = keyResults.filter((r) => r && r.ok).length;
+	const marks = keyResults.map((r, i) => {
+		const ok = r && r.ok;
+		const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
+		return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
+	}).join("");
+	el.keyTestStatus.style.display = "";
+	el.keyTestStatus.innerHTML = `<span class="key-test-label">Keys ${okCount}/${keyResults.length} OK:</span> ${marks}`;
+}
+
+// Send a hello-world test for one model against every configured API key.
+function testModelKeys(modelId) {
+	if (!state.selectedProvider || !modelId) return;
+	const info = getProviderInfo(state.selectedProvider);
+	const target = el.fetchResults.querySelector(`.fetch-item-keytest[data-model="${cssEsc(modelId)}"]`);
+	if (target) {
+		target.textContent = "Testing keys…";
+		target.className = "fetch-item-keytest testing";
+	}
+	vscode.postMessage({
+		type:      "testModelKeys",
+		baseUrl:   info.baseUrl,
+		apiKey:    info.apiKey,
+		apiMode:   info.apiMode,
+		modelId:   modelId,
+		proxyUrl:  info.proxyUrl  || undefined,
+		userAgent: info.userAgent || undefined,
+		headers:   info.headers,
+	});
+}
+
+// Render per-key checkmarks for a completed model key test.
+function renderModelKeyTestResults(modelId, results) {
+	const target = el.fetchResults
+		? el.fetchResults.querySelector(`.fetch-item-keytest[data-model="${cssEsc(modelId)}"]`)
+		: null;
+	if (!target) return;
+	if (!results.length) {
+		target.textContent = "No API keys configured.";
+		target.className = "fetch-item-keytest";
+		return;
+	}
+	const okCount = results.filter((r) => r && r.ok).length;
+	const marks = results.map((r, i) => {
+		const ok = r && r.ok;
+		const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
+		return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
+	}).join("");
+	target.className = "fetch-item-keytest done";
+	target.innerHTML = `<span class="key-test-label">${okCount}/${results.length} OK:</span> ${marks}`;
+}
+
+// Escape a string for safe use inside a CSS attribute selector.
+function cssEsc(value) {
+	if (window.CSS && typeof window.CSS.escape === "function") {
+		return window.CSS.escape(value);
+	}
+	return String(value).replace(/["\\\]]/g, "\\$&");
 }
 
 // ── Add Model button ───────────────────────────────────────────────────────────
@@ -1488,10 +1579,14 @@ window.addEventListener("message", ({ data: msg }) => {
 		case "modelsFetched": {
 			const models = msg.models || [];
 			if (state.isFetchingForPanel) {
-				showFetchResults(models);
+				showFetchResults(models, msg.keyResults);
 			} else {
 				populateModelDropdown(models);
 			}
+			break;
+		}
+		case "modelKeysTested": {
+			renderModelKeyTestResults(msg.modelId, msg.results || []);
 			break;
 		}
 		case "modelsFetchError": {

@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
 import type { HFApiMode, HFModelItem } from "../types";
 import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
-import { fetchModels } from "../provideModel";
+import { fetchModels, fetchModelsIntersection } from "../provideModel";
+import { parseApiKeys } from "../keyBalancer";
+import { CommonApi } from "../commonApi";
+import { buildFetchNetworkInit } from "../network";
 import { VersionManager } from "../versionManager";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 
@@ -66,6 +69,16 @@ type IncomingMessage =
 			baseUrl: string;
 			apiKey: string;
 			apiMode?: HFApiMode | string;
+			headers?: Record<string, string>;
+			proxyUrl?: string;
+			userAgent?: string;
+	  }
+	| {
+			type: "testModelKeys";
+			baseUrl: string;
+			apiKey: string;
+			apiMode?: HFApiMode | string;
+			modelId: string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
 			userAgent?: string;
@@ -194,11 +207,18 @@ export class ConfigViewController {
 				break;
 			case "fetchModels": {
 				try {
-					const { models } = await fetchModels(message.baseUrl, message.apiKey, message.apiMode, message.headers, {
-						proxyUrl: message.proxyUrl,
-						userAgent: message.userAgent,
-					});
-					this.webview.postMessage({ type: "modelsFetched", models });
+					const apiKeys = parseApiKeys(message.apiKey);
+					const { models, keyResults } = await fetchModelsIntersection(
+						message.baseUrl,
+						apiKeys.length ? apiKeys : [message.apiKey],
+						message.apiMode,
+						message.headers,
+						{
+							proxyUrl: message.proxyUrl,
+							userAgent: message.userAgent,
+						}
+					);
+					this.webview.postMessage({ type: "modelsFetched", models, keyResults });
 				} catch (err) {
 					console.error("[customcopilot] fetchModels failed", err);
 					const errorMessage = err instanceof Error ? err.message : String(err);
@@ -208,6 +228,17 @@ export class ConfigViewController {
 			}
 			case "refreshModelsFromApi":
 				await this.refreshModelsFromApi(message.baseUrl, message.apiKey, message.proxyUrl, message.userAgent);
+				break;
+			case "testModelKeys":
+				await this.testModelKeys(
+					message.baseUrl,
+					message.apiKey,
+					message.modelId,
+					message.apiMode,
+					message.headers,
+					message.proxyUrl,
+					message.userAgent
+				);
 				break;
 			case "addProvider":
 				await this.addProvider(
@@ -390,8 +421,93 @@ export class ConfigViewController {
 		this.webview.postMessage({ type: "init", payload });
 	}
 
-	private async refreshModelsFromApi(baseUrl: string, apiKey: string, proxyUrl?: string, userAgent?: string) {
-		try {
+	/**
+	 * Run a minimal "hello world" request against every API key configured for a
+	 * provider so the UI can show a per-key pass/fail indicator. Keys are tested
+	 * in parallel; the result preserves the key order (one entry per key line).
+	 */
+	private async testModelKeys(
+		baseUrl: string,
+		apiKey: string,
+		modelId: string,
+		apiMode?: HFApiMode | string,
+		headers?: Record<string, string>,
+		proxyUrl?: string,
+		userAgent?: string
+	) {
+		const keys = parseApiKeys(apiKey);
+		const effectiveBaseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
+		const mode = (apiMode as string) || "openai";
+		const config = vscode.workspace.getConfiguration();
+		const effectiveProxyUrl = resolveProxyUrl((proxyUrl || "").trim(), config.get<string>("customcopilot.proxyUrl", "").trim());
+		const networkInit = buildFetchNetworkInit(effectiveProxyUrl);
+
+		const buildRequest = (): { url: string; body: Record<string, unknown> } => {
+			if (mode === "anthropic") {
+				return {
+					url: `${effectiveBaseUrl}/messages`,
+					// max_tokens is required by the Anthropic API.
+					body: { model: modelId, max_tokens: 64, messages: [{ role: "user", content: "Hello world" }] },
+				};
+			}
+			if (mode === "ollama") {
+				return {
+					url: `${effectiveBaseUrl}/api/chat`,
+					body: { model: modelId, messages: [{ role: "user", content: "Hello world" }], stream: false },
+				};
+			}
+			if (mode === "gemini") {
+				return {
+					url: `${effectiveBaseUrl}/models/${encodeURIComponent(modelId)}:generateContent`,
+					body: { contents: [{ role: "user", parts: [{ text: "Hello world" }] }] },
+				};
+			}
+			if (mode === "openai-responses") {
+				return {
+					url: `${effectiveBaseUrl}/responses`,
+					body: { model: modelId, input: "Hello world" },
+				};
+			}
+			return {
+				url: `${effectiveBaseUrl}/chat/completions`,
+				body: { model: modelId, messages: [{ role: "user", content: "Hello world" }], stream: false },
+			};
+		};
+
+		const testOne = async (key: string): Promise<{ ok: boolean; error?: string }> => {
+			try {
+				const { url, body } = buildRequest();
+				const requestHeaders = CommonApi.prepareHeaders(key, mode, headers, userAgent);
+				// Gemini streams by default; force a JSON response for the test probe.
+				if (mode === "gemini") {
+					requestHeaders["Accept"] = "application/json";
+				}
+				const res = await fetch(url, {
+					...networkInit,
+					method: "POST",
+					headers: requestHeaders,
+					body: JSON.stringify(body),
+				});
+				if (!res.ok) {
+					let text = "";
+					try {
+						text = await res.text();
+					} catch {
+						/* ignore body read errors */
+					}
+					return { ok: false, error: `[${res.status}] ${res.statusText}${text ? ` ${text.slice(0, 200)}` : ""}` };
+				}
+				return { ok: true };
+			} catch (err) {
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+		};
+
+		const results = await Promise.all(keys.map((key) => testOne(key)));
+		this.webview.postMessage({ type: "modelKeysTested", modelId, results });
+	}
+
+	private async refreshModelsFromApi(baseUrl: string, apiKey: string, proxyUrl?: string, userAgent?: string) {		try {
 			const normalizedBaseUrl = baseUrl.trim();
 			const normalizedApiKey = apiKey.trim();
 			const normalizedProxyUrl = (proxyUrl || "").trim();

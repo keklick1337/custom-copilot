@@ -125,9 +125,27 @@ every model authenticates with its provider's key.
 ]
 ```
 
-## 🧩 Multi‑Config (same model, different settings)
+## 🔑 Multi‑Key Load Balancing
 
-Use `configId` to register the same model id with different settings. Each entry appears
+A provider can hold **multiple API keys** — enter one key per line in the **API Key(s)** field
+of the configuration UI (they are stored newline‑separated under the same
+`customcopilot.apiKey.<providerLowercase>` secret, so a single key keeps working unchanged).
+
+When more than one key is present, every chat request is balanced across the pool:
+
+- Requests are spread round‑robin over the healthiest keys.
+- If a key errors (rate limit, auth, network, 5xx) the request silently rotates to another key —
+  no error is surfaced while a healthy key remains.
+- Failing keys accumulate an error score and are **temporarily benched** once they get much worse
+  than the others; the score decays over time so a benched key automatically rejoins.
+- The **Chat Generator** runs in parallel across the pool, distributing load over all keys.
+
+When you **Fetch models** for a multi‑key provider, only the models available on **every** key are
+shown (the intersection), and a per‑key ✓/✗ summary reports which keys authenticated. Use the
+**Test keys** button next to a model to send a "hello world" request with each key and see a green
+check per key that responds.
+
+## 🧩 Multi‑Config (same model, different settings)Use `configId` to register the same model id with different settings. Each entry appears
 separately in the model picker as `<id>::<configId>`.
 
 ```jsonc

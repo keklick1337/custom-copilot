@@ -289,9 +289,9 @@
 								<input id="pBaseUrl" type="text" placeholder="https://api.example.com/v1" />
 							</div>
 							<div class="field">
-								<label for="pApiKey">API Key</label>
-								<div class="field-description">Stored in VS Code secrets.</div>
-								<input id="pApiKey" type="password" placeholder="sk-..." autocomplete="new-password" />
+								<label for="pApiKey">API Key(s)</label>
+								<div class="field-description">Stored in VS Code secrets. Enter <strong>one key per line</strong> to load-balance requests across keys.</div>
+								<textarea id="pApiKey" rows="2" placeholder="sk-key-1&#10;sk-key-2" autocomplete="new-password" spellcheck="false"></textarea>
 							</div>
 							<div class="field">
 								<label for="pApiMode">API Mode</label>
@@ -363,6 +363,7 @@
 									<button id="cancelFetchBtn" class="secondary">Cancel</button>
 								</div>
 							</div>
+							<div id="keyTestStatus" class="key-test-status" style="display:none"></div>
 							<div id="fetchResults" class="fetch-results"></div>
 						</div>
 
