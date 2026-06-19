@@ -87,6 +87,10 @@
 			{
 				"vendor": "copilotcustommodelsendpoint-ollama",
 				"displayName": "Custom Ollama"
+			},
+			{
+				"vendor": "copilotcustommodelsendpoint-zai",
+				"displayName": "Z.AI Free"
 			}
 		],
 		"commands": [
@@ -378,10 +382,11 @@
 									"openai-responses",
 									"ollama",
 									"anthropic",
-									"gemini"
+									"gemini",
+									"zai"
 								],
 								"default": "openai",
-								"description": "API mode: 'openai' (Default) for OpenAI Chat Completions (/chat/completions), 'openai-responses' for OpenAI Responses (/responses), 'ollama' for Ollama (/api/chat), 'anthropic' for Anthropic (/v1/messages), 'gemini' for Gemini (*/v1beta/models/{model}:streamGenerateContent?alt=sse)."
+								"description": "API mode: 'openai' (Default) for OpenAI Chat Completions (/chat/completions), 'openai-responses' for OpenAI Responses (/responses), 'ollama' for Ollama (/api/chat), 'anthropic' for Anthropic (/v1/messages), 'gemini' for Gemini (*/v1beta/models/{model}:streamGenerateContent?alt=sse), 'zai' for Z.AI free tier (Anthropic-compatible with Bearer auth at https://api.z.ai/api/anthropic)."
 							},
 							"useForCommitGeneration": {
 								"type": "boolean",

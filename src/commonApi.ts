@@ -295,6 +295,10 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		if (apiMode === "anthropic") {
 			headers["x-api-key"] = apiKey;
 			headers["anthropic-version"] = "2023-06-01";
+		} else if (apiMode === "zai") {
+			// Z.AI uses Anthropic-compatible API with Bearer auth (not x-api-key)
+			headers["Authorization"] = `Bearer ${apiKey}`;
+			headers["anthropic-version"] = "2023-06-01";
 		} else if (apiMode === "ollama" && apiKey !== "ollama") {
 			headers["Authorization"] = `Bearer ${apiKey}`;
 		} else if (apiMode === "gemini") {

@@ -172,6 +172,7 @@ const PROVIDER_PRESETS = [
 	{ label: "Zhipu (GLM)",            provider: "zhipu",       baseUrl: "https://open.bigmodel.cn/api/paas/v4",            apiMode: "openai" },
 	{ label: "Ollama (local)",         provider: "ollama",      baseUrl: "http://localhost:11434",                          apiMode: "ollama" },
 	{ label: "LM Studio (local)",      provider: "lmstudio",    baseUrl: "http://localhost:1234/v1",                        apiMode: "openai" },
+	{ label: "Z.AI Free (Claude-compatible)", provider: "zai", baseUrl: "https://api.z.ai/api/anthropic",                 apiMode: "zai" },
 ];
 
 function populateProviderPresets() {

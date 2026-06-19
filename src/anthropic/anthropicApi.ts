@@ -156,9 +156,13 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		um: HFModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): AnthropicRequestBody {
-		// Set max_tokens (required for Anthropic)
+		// Set max_tokens (required for Anthropic).
+		// Z.AI crashes with 500 if max_tokens is missing (NoneType comparison bug on their side).
+		// Always emit a sensible default so the field is never absent.
 		if (um?.max_tokens !== undefined) {
 			rb.max_tokens = um.max_tokens;
+		} else {
+			rb.max_tokens = 16384;
 		}
 
 		// Add system content if we extracted it
@@ -493,9 +497,10 @@ export async function fetchAnthropicModels(
 	baseUrl: string,
 	apiKey: string,
 	customHeaders?: Record<string, string>,
-	networkOptions?: { proxyUrl?: string; userAgent?: string }
+	networkOptions?: { proxyUrl?: string; userAgent?: string },
+	apiMode = "anthropic"
 ): Promise<HFModelItem[]> {
-	const headers = CommonApi.prepareHeaders(apiKey, "anthropic", customHeaders, networkOptions?.userAgent);
+	const headers = CommonApi.prepareHeaders(apiKey, apiMode, customHeaders, networkOptions?.userAgent);
 	headers["Accept"] = "application/json";
 	const networkInit = buildFetchNetworkInit(networkOptions?.proxyUrl);
 
@@ -539,11 +544,16 @@ export async function fetchAnthropicModels(
 		};
 		const entries = parsed.data ?? [];
 		for (const entry of entries) {
+			// GLM models (z.ai) support up to 1M context window.
+			// The /v1/models endpoint doesn't return context_length so we set it here.
+			const isGlm = entry.id.toLowerCase().startsWith("glm");
 			models.push({
 				id: entry.id,
 				displayName: entry.display_name || entry.id,
-				owned_by: "anthropic",
-				apiMode: "anthropic",
+				owned_by: apiMode === "zai" ? "zai" : "anthropic",
+				apiMode: apiMode as import("../types").HFApiMode,
+				context_length: apiMode === "zai" && isGlm ? 1_000_000 : undefined,
+				max_tokens: apiMode === "zai" ? 16384 : undefined,
 				tool_calling: true,
 				vision: true,
 			} as HFModelItem);

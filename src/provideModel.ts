@@ -138,8 +138,8 @@ export async function fetchModels(
 	} else if (normalizedApiMode === "ollama") {
 		const models = await fetchOllamaModels(baseUrl, apiKey, customHeaders, networkOptions);
 		return { models };
-	} else if (normalizedApiMode === "anthropic") {
-		const models = await fetchAnthropicModels(baseUrl, apiKey, customHeaders, networkOptions);
+	} else if (normalizedApiMode === "anthropic" || normalizedApiMode === "zai") {
+		const models = await fetchAnthropicModels(baseUrl, apiKey, customHeaders, networkOptions, normalizedApiMode);
 		return { models };
 	}
 

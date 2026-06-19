@@ -383,8 +383,8 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					throw new Error("No response body from Ollama API");
 				}
 				await ollamaApi.processStreamingResponse(response.body, trackingProgress, token);
-			} else if (apiMode === "anthropic") {
-				// Anthropic API mode
+			} else if (apiMode === "anthropic" || apiMode === "zai") {
+				// Anthropic API mode (also used for Z.AI which is Anthropic-compatible with Bearer auth)
 				const anthropicApi = new AnthropicApi(model.id);
 				const anthropicMessages = anthropicApi.convertMessages(messages, modelConfig);
 

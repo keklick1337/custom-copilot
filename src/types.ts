@@ -164,4 +164,4 @@ export interface RetryConfig {
 }
 
 /** Supports API mode. */
-export type HFApiMode = "openai" | "openai-responses" | "ollama" | "anthropic" | "gemini";
+export type HFApiMode = "openai" | "openai-responses" | "ollama" | "anthropic" | "gemini" | "zai";

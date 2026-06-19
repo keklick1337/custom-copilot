@@ -31,6 +31,7 @@ export function activate(context: vscode.ExtensionContext) {
 		{ vendor: "copilotcustommodelsendpoint-anthropic", mode: "anthropic" },
 		{ vendor: "copilotcustommodelsendpoint-gemini", mode: "gemini" },
 		{ vendor: "copilotcustommodelsendpoint-ollama", mode: "ollama" },
+		{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai" },
 	];
 	for (const { vendor, mode } of vendorModes) {
 		const provider = new HuggingFaceChatModelProvider(context.secrets, tokenCountStatusBarItem, mode);
