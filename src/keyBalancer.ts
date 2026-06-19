@@ -59,7 +59,6 @@ export function maskApiKey(key: string): string {
 	return `${k.slice(0, 6)}…${k.slice(-4)}`;
 }
 
-
 /**
  * Balances requests across a pool of API keys for a single logical provider.
  *
@@ -233,7 +232,14 @@ class KeyBalancer {
 	public getStats(
 		provider: string,
 		keys: string[]
-	): Array<{ keyMasked: string; requests: number; errors: number; benched: boolean; lastError?: string; lastErrorAt?: number }> {
+	): Array<{
+		keyMasked: string;
+		requests: number;
+		errors: number;
+		benched: boolean;
+		lastError?: string;
+		lastErrorAt?: number;
+	}> {
 		const providerState = this.providers.get(provider);
 		const now = Date.now();
 		return keys.map((key) => {

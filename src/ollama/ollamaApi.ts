@@ -15,7 +15,7 @@ import { isToolResultPart, collectToolResultText, convertToolsToOpenAI, mapRole 
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 import { VersionManager } from "../versionManager";
 
 export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
@@ -301,7 +301,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		const url = `${baseUrl.replace(/\/+$/, "")}/api/chat`;
 
 		// Make the API request
-		const response = await fetch(url, {
+		const response = await proxyFetch(url, {
 			...networkInit,
 			method: "POST",
 			headers,
@@ -377,7 +377,7 @@ export async function fetchOllamaModels(
 	};
 	const headers = customHeaders ? { ...baseHeaders, ...customHeaders } : baseHeaders;
 	const networkInit = buildFetchNetworkInit(networkOptions?.proxyUrl);
-	const resp = await fetch(url, {
+	const resp = await proxyFetch(url, {
 		...networkInit,
 		method: "GET",
 		headers,

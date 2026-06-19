@@ -9,7 +9,6 @@
 	</head>
 	<body>
 		<div class="layout">
-
 			<!-- ── Sidebar ─────────────────────────────────────────── -->
 			<aside class="sidebar">
 				<div class="sidebar-top">
@@ -25,10 +24,9 @@
 
 			<!-- ── Main ────────────────────────────────────────────── -->
 			<main class="main-panel">
-
 				<!-- General / empty state ─────────────────────────── -->
 				<div id="emptyState">
-					<div class="back-bar" id="gitCommitBackBar" style="display:none">
+					<div class="back-bar" id="gitCommitBackBar" style="display: none">
 						<button id="gitCommitBackBtn" class="secondary small back-btn">← Back to Providers</button>
 					</div>
 					<div class="empty-hint" id="emptyHintText">Select a provider from the list, or add a new one.</div>
@@ -43,7 +41,9 @@
 							<div class="field">
 								<label for="commitModel">Commit Model</label>
 								<div class="field-description">Model for Git commit message generation.</div>
-								<select id="commitModel"><option value="">None</option></select>
+								<select id="commitModel">
+									<option value="">None</option>
+								</select>
 							</div>
 							<div class="field">
 								<label for="commitLanguage">Language</label>
@@ -78,9 +78,9 @@
 									Use Copilot Chat without a GitHub account
 								</label>
 								<div class="field-description">
-									Enables VS Code's anonymous chat access (<code>chat.allowAnonymousAccess</code>)
-									so you can use the Chat view with your own providers while signed out of GitHub.
-									Requires reloading the window to take effect.
+									Enables VS Code's anonymous chat access (<code>chat.allowAnonymousAccess</code>) so you can use the
+									Chat view with your own providers while signed out of GitHub. Requires reloading the window to take
+									effect.
 								</div>
 							</div>
 						</div>
@@ -91,11 +91,11 @@
 									Save & restore chat sessions across restarts
 								</label>
 								<div class="field-description">
-									By default VS Code clears the open chat panel on a fresh start, so your
-									conversations disappear after restarting (especially when signed out of GitHub).
-									Enabling this sets <code>chat.restoreLastPanelSession</code> to <code>true</code>
-									so the last chat session is restored from disk on startup. Chat history files are
-									always written to disk; this only controls whether they are re-opened.
+									By default VS Code clears the open chat panel on a fresh start, so your conversations disappear after
+									restarting (especially when signed out of GitHub). Enabling this sets
+									<code>chat.restoreLastPanelSession</code> to <code>true</code>
+									so the last chat session is restored from disk on startup. Chat history files are always written to
+									disk; this only controls whether they are re-opened.
 								</div>
 							</div>
 						</div>
@@ -107,8 +107,8 @@
 								</label>
 								<div class="field-description">
 									VS Code reports the selected model id in its core chat telemetry
-									(<code>interactiveSessionProviderInvoked</code>), which can reveal which
-									third-party API providers and models you use. Enabling this sets
+									(<code>interactiveSessionProviderInvoked</code>), which can reveal which third-party API providers and
+									models you use. Enabling this sets
 									<code>telemetry.telemetryLevel</code> to <code>off</code>. Recommended for anonymity.
 								</div>
 							</div>
@@ -118,9 +118,8 @@
 								<label for="chatRetries">Automatic chat retries</label>
 								<div class="field-description">
 									Auto "Try Again" when a chat request fails before any content is streamed.
-									<code>0</code> = off, <code>-1</code> = infinite, or the max number of extra
-									attempts. Output already streamed is never duplicated. Sets
-									<code>customcopilot.chatRetries</code>.
+									<code>0</code> = off, <code>-1</code> = infinite, or the max number of extra attempts. Output already
+									streamed is never duplicated. Sets <code>customcopilot.chatRetries</code>.
 								</div>
 								<input id="chatRetries" type="number" min="-1" step="1" value="0" />
 							</div>
@@ -134,10 +133,9 @@
 							<div class="field field-wide">
 								<label for="chatRetryJitter">Retry jitter (ms)</label>
 								<div class="field-description">
-									Optional random extra delay (<code>0</code>–this value) added before each retry.
-									Spreads out retries so a batch of chats that failed together don't all hit the
-									endpoint at once. <code>0</code> disables jitter. Sets
-									<code>customcopilot.chatRetryJitter</code>.
+									Optional random extra delay (<code>0</code>–this value) added before each retry. Spreads out retries
+									so a batch of chats that failed together don't all hit the endpoint at once. <code>0</code> disables
+									jitter. Sets <code>customcopilot.chatRetryJitter</code>.
 								</div>
 								<input id="chatRetryJitter" type="number" min="0" step="100" value="0" />
 							</div>
@@ -148,20 +146,23 @@
 							<h2>Chat Generator</h2>
 						</div>
 						<div class="empty-hint">
-							Write a prompt template with a placeholder, provide a list of values, and launch
-							one Copilot chat per value with the mode and model you choose. Great for running the
-							same task across many files, items or variants.
+							Write a prompt template with a placeholder, provide a list of values, and launch one Copilot chat per
+							value with the mode and model you choose. Great for running the same task across many files, items or
+							variants.
 						</div>
 
 						<div class="row">
 							<div class="field field-wide">
 								<label for="chatGenTemplate">Prompt template</label>
 								<div class="field-description">
-									Use <code>[REPLACE_THAT]</code> (simple mode) or <code>[KEY]</code> tokens
-									(advanced mode) as placeholders that get substituted for each generated chat.
+									Use <code>[REPLACE_THAT]</code> (simple mode) or <code>[KEY]</code> tokens (advanced mode) as
+									placeholders that get substituted for each generated chat.
 								</div>
-								<textarea id="chatGenTemplate" rows="5"
-									placeholder="Refactor the file [REPLACE_THAT] and add unit tests."></textarea>
+								<textarea
+									id="chatGenTemplate"
+									rows="5"
+									placeholder="Refactor the file [REPLACE_THAT] and add unit tests."
+								></textarea>
 							</div>
 						</div>
 
@@ -185,21 +186,27 @@
 							<div class="field field-wide">
 								<label for="chatGenSimpleValues">Replacement values (one per line)</label>
 								<div class="field-description">Each non-empty line generates one chat.</div>
-								<textarea id="chatGenSimpleValues" rows="5"
-									placeholder="src/foo.ts&#10;src/bar.ts&#10;src/baz.ts"></textarea>
+								<textarea
+									id="chatGenSimpleValues"
+									rows="5"
+									placeholder="src/foo.ts&#10;src/bar.ts&#10;src/baz.ts"
+								></textarea>
 							</div>
 						</div>
 
-						<div class="row" id="chatGenAdvancedRow" style="display:none">
+						<div class="row" id="chatGenAdvancedRow" style="display: none">
 							<div class="field field-wide">
 								<label for="chatGenJsonl">JSONL replacements</label>
 								<div class="field-description">
-									One JSON object per line. Each key <code>NAME</code> replaces the token
-									<code>[NAME]</code> in the template. Example:
+									One JSON object per line. Each key <code>NAME</code> replaces the token <code>[NAME]</code> in the
+									template. Example:
 									<code>{"FILE":"src/foo.ts","TASK":"add tests"}</code>
 								</div>
-								<textarea id="chatGenJsonl" rows="5"
-									placeholder='{"FILE":"src/foo.ts","TASK":"add tests"}&#10;{"FILE":"src/bar.ts","TASK":"fix lint"}'></textarea>
+								<textarea
+									id="chatGenJsonl"
+									rows="5"
+									placeholder='{"FILE":"src/foo.ts","TASK":"add tests"}&#10;{"FILE":"src/bar.ts","TASK":"fix lint"}'
+								></textarea>
 							</div>
 						</div>
 
@@ -216,7 +223,9 @@
 							<div class="field">
 								<label for="chatGenModel">Model</label>
 								<div class="field-description">Pick one of your configured models, or use the active one.</div>
-								<select id="chatGenModel"><option value="">Use current model</option></select>
+								<select id="chatGenModel">
+									<option value="">Use current model</option>
+								</select>
 							</div>
 						</div>
 
@@ -224,15 +233,15 @@
 							<div class="field">
 								<label for="chatGenStrategy">Launch strategy</label>
 								<div class="field-description">
-									Sequential waits for each chat to finish (reliable). Parallel fires them with a
-									delay so sessions run concurrently (best-effort — VS Code has no true parallel API).
+									Sequential waits for each chat to finish (reliable). Parallel fires them with a delay so sessions run
+									concurrently (best-effort — VS Code has no true parallel API).
 								</div>
 								<select id="chatGenStrategy">
 									<option value="sequential">Sequential (one after another)</option>
 									<option value="parallel">Parallel (best-effort)</option>
 								</select>
 							</div>
-							<div class="field" id="chatGenDelayField" style="display:none">
+							<div class="field" id="chatGenDelayField" style="display: none">
 								<label for="chatGenDelay">Delay between launches (ms)</label>
 								<div class="field-description">Used only in parallel mode.</div>
 								<input id="chatGenDelay" type="number" min="0" max="60000" step="100" value="1500" />
@@ -244,7 +253,7 @@
 							<button id="chatGenLaunchBtn">Launch All</button>
 						</div>
 
-						<div id="chatGenPreview" class="chatgen-preview" style="display:none">
+						<div id="chatGenPreview" class="chatgen-preview" style="display: none">
 							<div class="chatgen-preview-header">
 								<span id="chatGenCount">0 prompts</span>
 							</div>
@@ -254,7 +263,7 @@
 				</div>
 
 				<!-- Provider detail ───────────────────────────────── -->
-				<div id="providerDetail" style="display:none">
+				<div id="providerDetail" style="display: none">
 					<div class="back-bar">
 						<button id="backToHomeBtn" class="secondary small back-btn">← Back to Providers</button>
 					</div>
@@ -264,13 +273,13 @@
 						<div class="section-header">
 							<div class="provider-heading">
 								<h2 id="providerTitle" class="provider-title"></h2>
-								<div id="providerNameField" class="provider-name-input" style="display:none">
+								<div id="providerNameField" class="provider-name-input" style="display: none">
 									<input id="pName" type="text" placeholder="provider-id (lowercase-no-spaces)" />
 								</div>
 							</div>
 							<div class="section-actions">
 								<button id="saveProviderBtn">Save Settings</button>
-								<button id="deleteProviderBtn" class="danger" style="display:none">Delete</button>
+								<button id="deleteProviderBtn" class="danger" style="display: none">Delete</button>
 							</div>
 						</div>
 						<div class="row">
@@ -290,16 +299,25 @@
 							</div>
 							<div class="field">
 								<label for="pApiKey">API Key(s)</label>
-								<div class="field-description">Stored in VS Code secrets. Enter <strong>one key per line</strong> to load-balance requests across keys.</div>
-								<textarea id="pApiKey" rows="2" placeholder="sk-key-1&#10;sk-key-2" autocomplete="new-password" spellcheck="false"></textarea>
+								<div class="field-description">
+									Stored in VS Code secrets. Enter <strong>one key per line</strong> to load-balance requests across
+									keys.
+								</div>
+								<textarea
+									id="pApiKey"
+									rows="2"
+									placeholder="sk-key-1&#10;sk-key-2"
+									autocomplete="new-password"
+									spellcheck="false"
+								></textarea>
 							</div>
 							<div class="field">
 								<label for="pApiMode">API Mode</label>
 								<div class="field-description">
-									Request protocol. OpenAI <strong>pro</strong> and <strong>o-series</strong>
-									reasoning models (e.g. <code>gpt-5.5-pro</code>, <code>o3-pro</code>) are
-									Responses-only — pick <code>OpenAI Responses (/responses)</code>, otherwise
-									<code>/chat/completions</code> returns &quot;This is not a chat model&quot;.
+									Request protocol. OpenAI <strong>pro</strong> and <strong>o-series</strong> reasoning models (e.g.
+									<code>gpt-5.5-pro</code>, <code>o3-pro</code>) are Responses-only — pick
+									<code>OpenAI Responses (/responses)</code>, otherwise <code>/chat/completions</code> returns
+									&quot;This is not a chat model&quot;.
 								</div>
 								<select id="pApiMode">
 									<option value="openai">OpenAI (/chat/completions)</option>
@@ -314,7 +332,7 @@
 						<div class="row">
 							<div class="field">
 								<label for="pProxyUrl">Proxy URL</label>
-								<div class="field-description">socks5://, http://, https://</div>
+								<div class="field-description">socks5://, socks5h://, http://, https:// — clear to remove</div>
 								<input id="pProxyUrl" type="text" placeholder="socks5://127.0.0.1:9150" />
 							</div>
 							<div class="field">
@@ -325,7 +343,9 @@
 									<select id="pUserAgentPreset" class="ua-preset-select" title="Insert a preset User-Agent">
 										<option value="">Preset…</option>
 									</select>
-									<button id="pUserAgentRandom" type="button" class="icon-btn ua-random-btn" title="Random User-Agent">🎲</button>
+									<button id="pUserAgentRandom" type="button" class="icon-btn ua-random-btn" title="Random User-Agent">
+										🎲
+									</button>
 								</div>
 							</div>
 							<div class="field">
@@ -347,7 +367,9 @@
 									<label>API Key Health</label>
 									<button id="refreshKeyStatsBtn" type="button" class="secondary small">↻ Refresh</button>
 								</div>
-								<div class="field-description">Per-key request &amp; error counters. Failing keys are benched automatically and rotated.</div>
+								<div class="field-description">
+									Per-key request &amp; error counters. Failing keys are benched automatically and rotated.
+								</div>
 								<table class="key-stats-table" id="keyStatsTable">
 									<thead>
 										<tr>
@@ -358,7 +380,9 @@
 										</tr>
 									</thead>
 									<tbody id="keyStatsBody">
-										<tr class="key-stats-empty"><td colspan="4">No API keys configured.</td></tr>
+										<tr class="key-stats-empty">
+											<td colspan="4">No API keys configured.</td>
+										</tr>
 									</tbody>
 								</table>
 							</div>
@@ -366,7 +390,7 @@
 					</section>
 
 					<!-- Models ────────────────────────────────────── -->
-					<section id="modelsSection" style="display:none">
+					<section id="modelsSection" style="display: none">
 						<div class="section-header">
 							<h2>Models &nbsp;<span id="modelCount" class="badge">0</span></h2>
 							<div class="section-actions">
@@ -376,7 +400,7 @@
 						</div>
 
 						<!-- Fetch panel -->
-						<div id="fetchPanel" class="fetch-panel" style="display:none">
+						<div id="fetchPanel" class="fetch-panel" style="display: none">
 							<div class="fetch-bar">
 								<span id="fetchStatus">Fetching models…</span>
 								<div class="fetch-bar-actions">
@@ -386,17 +410,15 @@
 									<button id="cancelFetchBtn" class="secondary">Cancel</button>
 								</div>
 							</div>
-							<div id="keyTestStatus" class="key-test-status" style="display:none"></div>
+							<div id="keyTestStatus" class="key-test-status" style="display: none"></div>
 							<div id="fetchResults" class="fetch-results"></div>
 						</div>
 
 						<!-- Model Cards List Instead of Overflowing Table -->
 						<div class="models-cards-container" id="modelCardsContainer"></div>
 
-						<div id="bulkDeleteBar" class="bulk-delete-bar" style="display:none">
-							<div class="bulk-delete-info">
-								Selected: <span id="bulkDeleteCount">0</span>
-							</div>
+						<div id="bulkDeleteBar" class="bulk-delete-bar" style="display: none">
+							<div class="bulk-delete-info">Selected: <span id="bulkDeleteCount">0</span></div>
 							<div class="bulk-delete-actions">
 								<button id="bulkSelectAllBtn" class="secondary small">Select All</button>
 								<button id="bulkClearSelectionBtn" class="secondary small">Clear</button>
@@ -405,7 +427,7 @@
 						</div>
 
 						<!-- Model form -->
-						<div id="modelFormSection" style="display:none">
+						<div id="modelFormSection" style="display: none">
 							<div class="form-section-title" id="modelFormTitle">Add New Model</div>
 							<div class="form-container">
 								<div class="row">
@@ -480,7 +502,7 @@
 								<div class="advanced-toggle" id="toggleAdvancedSettings">
 									<span id="toggleAdvancedLabel">▶ Advanced</span>
 								</div>
-								<div id="advancedSettingsContent" class="advanced-content" style="display:none">
+								<div id="advancedSettingsContent" class="advanced-content" style="display: none">
 									<div class="row">
 										<div class="field">
 											<label for="modelTemperature">Temperature</label>
@@ -595,7 +617,7 @@
 									</div>
 								</div>
 
-								<div id="modelError" class="error-message" style="display:none"></div>
+								<div id="modelError" class="error-message" style="display: none"></div>
 								<div class="form-actions">
 									<button id="saveModel">Save Model</button>
 									<button id="cancelModel" class="secondary">Cancel</button>
@@ -603,8 +625,8 @@
 							</div>
 						</div>
 					</section>
-
-				</div><!-- /providerDetail -->
+				</div>
+				<!-- /providerDetail -->
 			</main>
 		</div>
 

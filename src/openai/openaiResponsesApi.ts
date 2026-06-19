@@ -21,7 +21,7 @@ import {
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 
 export interface ResponsesInputMessage {
 	role: "user" | "assistant" | "system";
@@ -700,7 +700,7 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 		const url = `${baseUrl.replace(/\/+$/, "")}/responses`;
 
 		// Make the API request
-		const response = await fetch(url, {
+		const response = await proxyFetch(url, {
 			...networkInit,
 			method: "POST",
 			headers,

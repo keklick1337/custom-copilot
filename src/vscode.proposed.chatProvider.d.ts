@@ -5,13 +5,11 @@
 
 // version: 5
 
-declare module 'vscode' {
-
+declare module "vscode" {
 	/**
-	* The provider version of {@linkcode LanguageModelChatRequestOptions}
-	*/
+	 * The provider version of {@linkcode LanguageModelChatRequestOptions}
+	 */
 	export interface ProvideLanguageModelChatResponseOptions {
-
 		/**
 		 * What extension initiated the request to the language model, or
 		 * `undefined` if the request was initiated by other functionality in the editor.
@@ -32,7 +30,6 @@ declare module 'vscode' {
 	 * All the information representing a single language model contributed by a {@linkcode LanguageModelChatProvider}.
 	 */
 	export interface LanguageModelChatInformation {
-
 		/**
 		 * When present, this gates the use of `requestLanguageModelAccess` behind an authorization flow where
 		 * the user must approve of another extension accessing the models contributed by this extension.
@@ -98,7 +95,10 @@ declare module 'vscode' {
 		readonly editTools?: string[];
 	}
 
-	export type LanguageModelResponsePart2 = LanguageModelResponsePart | LanguageModelDataPart | LanguageModelThinkingPart;
+	export type LanguageModelResponsePart2 =
+		| LanguageModelResponsePart
+		| LanguageModelDataPart
+		| LanguageModelThinkingPart;
 
 	/**
 	 * A [JSON Schema](https://json-schema.org) describing configuration options for a language model.
@@ -123,8 +123,17 @@ declare module 'vscode' {
 	};
 
 	export interface LanguageModelChatProvider<T extends LanguageModelChatInformation = LanguageModelChatInformation> {
-		provideLanguageModelChatInformation(options: PrepareLanguageModelChatModelOptions, token: CancellationToken): ProviderResult<T[]>;
-		provideLanguageModelChatResponse(model: T, messages: readonly LanguageModelChatRequestMessage[], options: ProvideLanguageModelChatResponseOptions, progress: Progress<LanguageModelResponsePart2>, token: CancellationToken): Thenable<void>;
+		provideLanguageModelChatInformation(
+			options: PrepareLanguageModelChatModelOptions,
+			token: CancellationToken
+		): ProviderResult<T[]>;
+		provideLanguageModelChatResponse(
+			model: T,
+			messages: readonly LanguageModelChatRequestMessage[],
+			options: ProvideLanguageModelChatResponseOptions,
+			progress: Progress<LanguageModelResponsePart2>,
+			token: CancellationToken
+		): Thenable<void>;
 	}
 
 	/**

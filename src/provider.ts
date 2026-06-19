@@ -29,7 +29,7 @@ import { GeminiApi, buildGeminiGenerateContentUrl, type GeminiToolCallMeta } fro
 import type { GeminiGenerateContentRequest } from "./gemini/geminiTypes";
 import { CommonApi } from "./commonApi";
 import { logger } from "./logger";
-import { buildFetchNetworkInit } from "./network";
+import { buildFetchNetworkInit, proxyFetch } from "./network";
 
 /**
  * VS Code Chat provider backed by Hugging Face Inference Providers.
@@ -357,7 +357,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					requestBody: ollamaRequestBody,
 				});
 				const response = await executeWithRetry(async () => {
-					const res = await fetch(url, {
+					const res = await proxyFetch(url, {
 						...requestNetworkInit,
 						method: "POST",
 						headers: selectRequestHeaders(),
@@ -405,7 +405,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					: `${normalizedBaseUrl}/v1/messages`;
 				logger.debug("request.body", { url, requestBody });
 				const response = await executeWithRetry(async () => {
-					const res = await fetch(url, {
+					const res = await proxyFetch(url, {
 						...requestNetworkInit,
 						method: "POST",
 						headers: selectRequestHeaders(),
@@ -487,7 +487,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 				const sendRequest = async (body: Record<string, unknown>) =>
 					await executeWithRetry(async () => {
-						const res = await fetch(url, {
+						const res = await proxyFetch(url, {
 							...requestNetworkInit,
 							method: "POST",
 							headers: selectRequestHeaders(),
@@ -583,7 +583,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				}
 
 				const response = await executeWithRetry(async () => {
-					const res = await fetch(url, {
+					const res = await proxyFetch(url, {
 						...requestNetworkInit,
 						method: "POST",
 						headers: selectRequestHeaders(),
@@ -627,7 +627,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
 				logger.debug("request.body", { url, requestBody });
 				const response = await executeWithRetry(async () => {
-					const res = await fetch(url, {
+					const res = await proxyFetch(url, {
 						...requestNetworkInit,
 						method: "POST",
 						headers: selectRequestHeaders(),

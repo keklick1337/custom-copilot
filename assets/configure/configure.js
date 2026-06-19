@@ -35,144 +35,159 @@ const $ = (id) => document.getElementById(id);
 
 const el = {
 	// Sidebar
-	providerList:        $("providerList"),
-	addProviderBtn:      $("addProviderBtn"),
-	exportConfig:        $("exportConfig"),
-	importConfig:        $("importConfig"),
+	providerList: $("providerList"),
+	addProviderBtn: $("addProviderBtn"),
+	exportConfig: $("exportConfig"),
+	importConfig: $("importConfig"),
 	// Empty / general
-	emptyState:          $("emptyState"),
-	commitModel:         $("commitModel"),
-	commitLanguage:      $("commitLanguage"),
-	saveCommitBtn:       $("saveCommitBtn"),
+	emptyState: $("emptyState"),
+	commitModel: $("commitModel"),
+	commitLanguage: $("commitLanguage"),
+	saveCommitBtn: $("saveCommitBtn"),
 	allowAnonymousAccess: $("allowAnonymousAccess"),
 	restoreChatSessions: $("restoreChatSessions"),
-	telemetryDisabled:   $("telemetryDisabled"),
-	chatRetries:         $("chatRetries"),
-	chatRetryInterval:   $("chatRetryInterval"),
-	chatRetryJitter:     $("chatRetryJitter"),
+	telemetryDisabled: $("telemetryDisabled"),
+	chatRetries: $("chatRetries"),
+	chatRetryInterval: $("chatRetryInterval"),
+	chatRetryJitter: $("chatRetryJitter"),
 	// Chat Generator
-	chatGenTemplate:     $("chatGenTemplate"),
-	chatGenToken:        $("chatGenToken"),
-	chatGenSourceMode:   $("chatGenSourceMode"),
-	chatGenSimpleRow:    $("chatGenSimpleRow"),
+	chatGenTemplate: $("chatGenTemplate"),
+	chatGenToken: $("chatGenToken"),
+	chatGenSourceMode: $("chatGenSourceMode"),
+	chatGenSimpleRow: $("chatGenSimpleRow"),
 	chatGenSimpleValues: $("chatGenSimpleValues"),
-	chatGenAdvancedRow:  $("chatGenAdvancedRow"),
-	chatGenJsonl:        $("chatGenJsonl"),
-	chatGenMode:         $("chatGenMode"),
-	chatGenModel:        $("chatGenModel"),
-	chatGenStrategy:     $("chatGenStrategy"),
-	chatGenDelayField:   $("chatGenDelayField"),
-	chatGenDelay:        $("chatGenDelay"),
-	chatGenPreviewBtn:   $("chatGenPreviewBtn"),
-	chatGenLaunchBtn:    $("chatGenLaunchBtn"),
-	chatGenPreview:      $("chatGenPreview"),
-	chatGenPreviewList:  $("chatGenPreviewList"),
-	chatGenCount:        $("chatGenCount"),
+	chatGenAdvancedRow: $("chatGenAdvancedRow"),
+	chatGenJsonl: $("chatGenJsonl"),
+	chatGenMode: $("chatGenMode"),
+	chatGenModel: $("chatGenModel"),
+	chatGenStrategy: $("chatGenStrategy"),
+	chatGenDelayField: $("chatGenDelayField"),
+	chatGenDelay: $("chatGenDelay"),
+	chatGenPreviewBtn: $("chatGenPreviewBtn"),
+	chatGenLaunchBtn: $("chatGenLaunchBtn"),
+	chatGenPreview: $("chatGenPreview"),
+	chatGenPreviewList: $("chatGenPreviewList"),
+	chatGenCount: $("chatGenCount"),
 	// Provider detail
-	providerDetail:      $("providerDetail"),
-	providerTitle:       $("providerTitle"),
-	providerNameField:   $("providerNameField"),
-	pName:               $("pName"),
-	pBaseUrl:            $("pBaseUrl"),
-	pApiKey:             $("pApiKey"),
-	pApiMode:            $("pApiMode"),
-	pProxyUrl:           $("pProxyUrl"),
-	pUserAgent:          $("pUserAgent"),
-	pUserAgentPreset:    $("pUserAgentPreset"),
-	pUserAgentRandom:    $("pUserAgentRandom"),
-	pDelay:              $("pDelay"),
-	pHeaders:            $("pHeaders"),
-	pPreset:             $("pPreset"),
-	keyStatsTable:       $("keyStatsTable"),
-	keyStatsBody:        $("keyStatsBody"),
-	refreshKeyStatsBtn:  $("refreshKeyStatsBtn"),
-	saveProviderBtn:     $("saveProviderBtn"),
-	deleteProviderBtn:   $("deleteProviderBtn"),
+	providerDetail: $("providerDetail"),
+	providerTitle: $("providerTitle"),
+	providerNameField: $("providerNameField"),
+	pName: $("pName"),
+	pBaseUrl: $("pBaseUrl"),
+	pApiKey: $("pApiKey"),
+	pApiMode: $("pApiMode"),
+	pProxyUrl: $("pProxyUrl"),
+	pUserAgent: $("pUserAgent"),
+	pUserAgentPreset: $("pUserAgentPreset"),
+	pUserAgentRandom: $("pUserAgentRandom"),
+	pDelay: $("pDelay"),
+	pHeaders: $("pHeaders"),
+	pPreset: $("pPreset"),
+	keyStatsTable: $("keyStatsTable"),
+	keyStatsBody: $("keyStatsBody"),
+	refreshKeyStatsBtn: $("refreshKeyStatsBtn"),
+	saveProviderBtn: $("saveProviderBtn"),
+	deleteProviderBtn: $("deleteProviderBtn"),
 	// Models section
-	modelsSection:       $("modelsSection"),
-	modelCount:          $("modelCount"),
-	fetchFromApiBtn:     $("fetchFromApiBtn"),
-	addModelBtn:         $("addModelBtn"),
-	fetchPanel:          $("fetchPanel"),
-	fetchStatus:         $("fetchStatus"),
-	keyTestStatus:       $("keyTestStatus"),
-	fetchResults:        $("fetchResults"),
-	selectAllFetched:    $("selectAllFetched"),
-	deselectAllFetched:  $("deselectAllFetched"),
-	importFetchedBtn:    $("importFetchedBtn"),
-	importCount:         $("importCount"),
-	cancelFetchBtn:      $("cancelFetchBtn"),
+	modelsSection: $("modelsSection"),
+	modelCount: $("modelCount"),
+	fetchFromApiBtn: $("fetchFromApiBtn"),
+	addModelBtn: $("addModelBtn"),
+	fetchPanel: $("fetchPanel"),
+	fetchStatus: $("fetchStatus"),
+	keyTestStatus: $("keyTestStatus"),
+	fetchResults: $("fetchResults"),
+	selectAllFetched: $("selectAllFetched"),
+	deselectAllFetched: $("deselectAllFetched"),
+	importFetchedBtn: $("importFetchedBtn"),
+	importCount: $("importCount"),
+	cancelFetchBtn: $("cancelFetchBtn"),
 	modelCardsContainer: $("modelCardsContainer"),
-	bulkDeleteBar:       $("bulkDeleteBar"),
-	bulkDeleteCount:     $("bulkDeleteCount"),
-	bulkDeleteBtn:       $("bulkDeleteBtn"),
-	bulkSelectAllBtn:    $("bulkSelectAllBtn"),
+	bulkDeleteBar: $("bulkDeleteBar"),
+	bulkDeleteCount: $("bulkDeleteCount"),
+	bulkDeleteBtn: $("bulkDeleteBtn"),
+	bulkSelectAllBtn: $("bulkSelectAllBtn"),
 	bulkClearSelectionBtn: $("bulkClearSelectionBtn"),
-	modelFormSection:    $("modelFormSection"),
-	modelFormTitle:      $("modelFormTitle"),
-	modelError:          $("modelError"),
+	modelFormSection: $("modelFormSection"),
+	modelFormTitle: $("modelFormTitle"),
+	modelError: $("modelError"),
 	// Model form
-	modelIdInput:              $("modelIdInput"),
-	modelIdDropdown:           $("modelIdDropdown"),
-	modelDisplayName:          $("modelDisplayName"),
-	modelConfigId:             $("modelConfigId"),
-	modelContextLength:        $("modelContextLength"),
-	modelMaxTokens:            $("modelMaxTokens"),
-	modelMaxCompletionTokens:  $("modelMaxCompletionTokens"),
-	modelVision:               $("modelVision"),
-	modelTools:                $("modelTools"),
-	modelDelay:                $("modelDelay"),
-	modelTemperature:          $("modelTemperature"),
-	modelTopP:                 $("modelTopP"),
-	modelFamily:               $("modelFamily"),
-	modelTopK:                 $("modelTopK"),
-	modelMinP:                 $("modelMinP"),
-	modelFrequencyPenalty:     $("modelFrequencyPenalty"),
-	modelPresencePenalty:      $("modelPresencePenalty"),
-	modelRepetitionPenalty:    $("modelRepetitionPenalty"),
-	modelReasoningEffort:      $("modelReasoningEffort"),
-	modelEnableThinking:       $("modelEnableThinking"),
-	modelThinkingBudget:       $("modelThinkingBudget"),
-	modelIncludeReasoning:     $("modelIncludeReasoning"),
-	modelThinkingType:         $("modelThinkingType"),
-	modelReasoningEnabled:     $("modelReasoningEnabled"),
-	modelReasoningEffortOR:    $("modelReasoningEffortOR"),
-	modelReasoningExclude:     $("modelReasoningExclude"),
-	modelReasoningMaxTokens:   $("modelReasoningMaxTokens"),
-	modelHeaders:              $("modelHeaders"),
-	modelExtra:                $("modelExtra"),
-	advancedContent:           $("advancedSettingsContent"),
-	toggleAdvanced:            $("toggleAdvancedSettings"),
-	toggleAdvancedLabel:       $("toggleAdvancedLabel"),
+	modelIdInput: $("modelIdInput"),
+	modelIdDropdown: $("modelIdDropdown"),
+	modelDisplayName: $("modelDisplayName"),
+	modelConfigId: $("modelConfigId"),
+	modelContextLength: $("modelContextLength"),
+	modelMaxTokens: $("modelMaxTokens"),
+	modelMaxCompletionTokens: $("modelMaxCompletionTokens"),
+	modelVision: $("modelVision"),
+	modelTools: $("modelTools"),
+	modelDelay: $("modelDelay"),
+	modelTemperature: $("modelTemperature"),
+	modelTopP: $("modelTopP"),
+	modelFamily: $("modelFamily"),
+	modelTopK: $("modelTopK"),
+	modelMinP: $("modelMinP"),
+	modelFrequencyPenalty: $("modelFrequencyPenalty"),
+	modelPresencePenalty: $("modelPresencePenalty"),
+	modelRepetitionPenalty: $("modelRepetitionPenalty"),
+	modelReasoningEffort: $("modelReasoningEffort"),
+	modelEnableThinking: $("modelEnableThinking"),
+	modelThinkingBudget: $("modelThinkingBudget"),
+	modelIncludeReasoning: $("modelIncludeReasoning"),
+	modelThinkingType: $("modelThinkingType"),
+	modelReasoningEnabled: $("modelReasoningEnabled"),
+	modelReasoningEffortOR: $("modelReasoningEffortOR"),
+	modelReasoningExclude: $("modelReasoningExclude"),
+	modelReasoningMaxTokens: $("modelReasoningMaxTokens"),
+	modelHeaders: $("modelHeaders"),
+	modelExtra: $("modelExtra"),
+	advancedContent: $("advancedSettingsContent"),
+	toggleAdvanced: $("toggleAdvancedSettings"),
+	toggleAdvancedLabel: $("toggleAdvancedLabel"),
 };
 
 const dropdownContent = el.modelIdDropdown.querySelector(".dropdown-content");
-const dropdownHeader  = el.modelIdDropdown.querySelector(".dropdown-header");
+const dropdownHeader = el.modelIdDropdown.querySelector(".dropdown-header");
 
 // ── Provider presets (default API endpoints) ────────────────────────────────────
 
 const PROVIDER_PRESETS = [
-	{ label: "OpenAI",                 provider: "openai",      baseUrl: "https://api.openai.com/v1",                       apiMode: "openai" },
-	{ label: "Anthropic (Claude)",     provider: "anthropic",   baseUrl: "https://api.anthropic.com/v1",                    apiMode: "anthropic" },
-	{ label: "Google Gemini",          provider: "google",      baseUrl: "https://generativelanguage.googleapis.com/v1beta", apiMode: "gemini" },
-	{ label: "DeepSeek",               provider: "deepseek",    baseUrl: "https://api.deepseek.com/v1",                     apiMode: "openai" },
-	{ label: "OpenRouter",             provider: "openrouter",  baseUrl: "https://openrouter.ai/api/v1",                    apiMode: "openai" },
-	{ label: "Groq",                   provider: "groq",        baseUrl: "https://api.groq.com/openai/v1",                  apiMode: "openai" },
-	{ label: "Mistral AI",             provider: "mistral",     baseUrl: "https://api.mistral.ai/v1",                       apiMode: "openai" },
-	{ label: "xAI (Grok)",             provider: "xai",         baseUrl: "https://api.x.ai/v1",                             apiMode: "openai" },
-	{ label: "Together AI",            provider: "together",    baseUrl: "https://api.together.xyz/v1",                     apiMode: "openai" },
-	{ label: "Fireworks AI",           provider: "fireworks",   baseUrl: "https://api.fireworks.ai/inference/v1",           apiMode: "openai" },
-	{ label: "Perplexity",             provider: "perplexity",  baseUrl: "https://api.perplexity.ai",                       apiMode: "openai" },
-	{ label: "Cerebras",               provider: "cerebras",    baseUrl: "https://api.cerebras.ai/v1",                      apiMode: "openai" },
-	{ label: "Moonshot (Kimi)",        provider: "moonshot",    baseUrl: "https://api.moonshot.cn/v1",                      apiMode: "openai" },
-	{ label: "ModelScope",             provider: "modelscope",  baseUrl: "https://api-inference.modelscope.cn/v1",          apiMode: "openai" },
-	{ label: "SiliconFlow",            provider: "siliconflow", baseUrl: "https://api.siliconflow.cn/v1",                   apiMode: "openai" },
-	{ label: "Novita AI",              provider: "novita",      baseUrl: "https://api.novita.ai/v3/openai",                 apiMode: "openai" },
-	{ label: "Alibaba (Qwen/DashScope)", provider: "qwen",      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", apiMode: "openai" },
-	{ label: "Zhipu (GLM)",            provider: "zhipu",       baseUrl: "https://open.bigmodel.cn/api/paas/v4",            apiMode: "openai" },
-	{ label: "Ollama (local)",         provider: "ollama",      baseUrl: "http://localhost:11434",                          apiMode: "ollama" },
-	{ label: "LM Studio (local)",      provider: "lmstudio",    baseUrl: "http://localhost:1234/v1",                        apiMode: "openai" },
-	{ label: "Z.AI Free (Claude-compatible)", provider: "zai", baseUrl: "https://api.z.ai/api/anthropic",                 apiMode: "zai" },
+	{ label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai" },
+	{ label: "Anthropic (Claude)", provider: "anthropic", baseUrl: "https://api.anthropic.com/v1", apiMode: "anthropic" },
+	{
+		label: "Google Gemini",
+		provider: "google",
+		baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+		apiMode: "gemini",
+	},
+	{ label: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", apiMode: "openai" },
+	{ label: "OpenRouter", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiMode: "openai" },
+	{ label: "Groq", provider: "groq", baseUrl: "https://api.groq.com/openai/v1", apiMode: "openai" },
+	{ label: "Mistral AI", provider: "mistral", baseUrl: "https://api.mistral.ai/v1", apiMode: "openai" },
+	{ label: "xAI (Grok)", provider: "xai", baseUrl: "https://api.x.ai/v1", apiMode: "openai" },
+	{ label: "Together AI", provider: "together", baseUrl: "https://api.together.xyz/v1", apiMode: "openai" },
+	{ label: "Fireworks AI", provider: "fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", apiMode: "openai" },
+	{ label: "Perplexity", provider: "perplexity", baseUrl: "https://api.perplexity.ai", apiMode: "openai" },
+	{ label: "Cerebras", provider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", apiMode: "openai" },
+	{ label: "Moonshot (Kimi)", provider: "moonshot", baseUrl: "https://api.moonshot.cn/v1", apiMode: "openai" },
+	{ label: "ModelScope", provider: "modelscope", baseUrl: "https://api-inference.modelscope.cn/v1", apiMode: "openai" },
+	{ label: "SiliconFlow", provider: "siliconflow", baseUrl: "https://api.siliconflow.cn/v1", apiMode: "openai" },
+	{ label: "Novita AI", provider: "novita", baseUrl: "https://api.novita.ai/v3/openai", apiMode: "openai" },
+	{
+		label: "Alibaba (Qwen/DashScope)",
+		provider: "qwen",
+		baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		apiMode: "openai",
+	},
+	{ label: "Zhipu (GLM)", provider: "zhipu", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiMode: "openai" },
+	{ label: "Ollama (local)", provider: "ollama", baseUrl: "http://localhost:11434", apiMode: "ollama" },
+	{ label: "LM Studio (local)", provider: "lmstudio", baseUrl: "http://localhost:1234/v1", apiMode: "openai" },
+	{
+		label: "Z.AI Free (Claude-compatible)",
+		provider: "zai",
+		baseUrl: "https://api.z.ai/api/anthropic",
+		apiMode: "zai",
+	},
 ];
 
 function populateProviderPresets() {
@@ -214,16 +229,49 @@ el.pPreset?.addEventListener("change", () => {
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
 const USER_AGENT_PRESETS = [
-	{ label: "Firefox · Windows",  value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0" },
-	{ label: "Firefox · Linux",    value: "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0" },
-	{ label: "Firefox · macOS",    value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0" },
-	{ label: "Chrome · Windows",   value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36" },
-	{ label: "Chrome · Linux",     value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36" },
-	{ label: "Chrome · macOS",     value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36" },
-	{ label: "Edge · Windows",     value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0" },
-	{ label: "Safari · macOS",     value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15" },
-	{ label: "Chrome · Android",   value: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36" },
-	{ label: "Safari · iOS",       value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1" },
+	{
+		label: "Firefox · Windows",
+		value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+	},
+	{ label: "Firefox · Linux", value: "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0" },
+	{
+		label: "Firefox · macOS",
+		value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0",
+	},
+	{
+		label: "Chrome · Windows",
+		value:
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+	},
+	{
+		label: "Chrome · Linux",
+		value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+	},
+	{
+		label: "Chrome · macOS",
+		value:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+	},
+	{
+		label: "Edge · Windows",
+		value:
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0",
+	},
+	{
+		label: "Safari · macOS",
+		value:
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+	},
+	{
+		label: "Chrome · Android",
+		value:
+			"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+	},
+	{
+		label: "Safari · iOS",
+		value:
+			"Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+	},
 ];
 
 function populateUserAgentPresets() {
@@ -268,14 +316,23 @@ function getProviderInfo(name) {
 	const models = state.models.filter((m) => m.owned_by === name);
 	const placeholder = models.find((m) => m.id.startsWith("__provider__"));
 	const first = placeholder || models[0];
+	// Provider-level settings (baseUrl/proxyUrl/userAgent/apiMode) may live on the
+	// __provider__ placeholder OR on any real model (e.g. when models were imported
+	// or edited manually without a placeholder). Prefer the placeholder, then fall
+	// back to the first model that actually defines each field, so discovery/test
+	// requests use the configured proxy even when the placeholder has no proxyUrl.
+	const withProxy = models.find((m) => m.proxyUrl && m.proxyUrl.trim());
+	const withBaseUrl = models.find((m) => m.baseUrl && m.baseUrl.trim());
+	const withUserAgent = models.find((m) => m.userAgent && m.userAgent.trim());
+	const withApiMode = models.find((m) => m.apiMode && m.apiMode.trim());
 	return {
-		baseUrl:   first?.baseUrl   ?? "",
-		proxyUrl:  first?.proxyUrl  ?? "",
-		userAgent: first?.userAgent ?? "",
-		apiMode:   first?.apiMode   ?? "openai",
-		headers:   first?.headers,
-		delay:     first?.delay,
-		apiKey:    state.providerKeys[name] ?? "",
+		baseUrl: placeholder?.baseUrl || withBaseUrl?.baseUrl || first?.baseUrl || "",
+		proxyUrl: placeholder?.proxyUrl || withProxy?.proxyUrl || first?.proxyUrl || "",
+		userAgent: placeholder?.userAgent || withUserAgent?.userAgent || first?.userAgent || "",
+		apiMode: placeholder?.apiMode || withApiMode?.apiMode || first?.apiMode || "openai",
+		headers: placeholder?.headers ?? first?.headers,
+		delay: placeholder?.delay ?? first?.delay,
+		apiKey: state.providerKeys[name] ?? "",
 	};
 }
 
@@ -288,7 +345,9 @@ function getProviderModels(name) {
 // Mirror of parseApiKeys() in src/keyBalancer.ts: split on newlines/commas,
 // trim, drop empties and duplicates — keeps row order in sync with the backend.
 function parseRawKeys(raw) {
-	if (!raw) { return []; }
+	if (!raw) {
+		return [];
+	}
 	const seen = new Set();
 	const out = [];
 	for (const part of String(raw).split(/[\r\n,]+/)) {
@@ -310,15 +369,20 @@ function requestKeyStats(name) {
 }
 
 function clearKeyStats() {
-	if (!el.keyStatsBody) { return; }
-	el.keyStatsBody.innerHTML =
-		'<tr class="key-stats-empty"><td colspan="4">No API keys configured.</td></tr>';
+	if (!el.keyStatsBody) {
+		return;
+	}
+	el.keyStatsBody.innerHTML = '<tr class="key-stats-empty"><td colspan="4">No API keys configured.</td></tr>';
 }
 
 function renderKeyStats(provider, stats) {
-	if (!el.keyStatsBody) { return; }
+	if (!el.keyStatsBody) {
+		return;
+	}
 	// Ignore late responses for a provider that is no longer selected.
-	if (provider !== state.selectedProvider) { return; }
+	if (provider !== state.selectedProvider) {
+		return;
+	}
 	if (!stats || !stats.length) {
 		clearKeyStats();
 		return;
@@ -327,23 +391,25 @@ function renderKeyStats(provider, stats) {
 	// we can recover each full key (kept in memory in state.providerKeys) by
 	// index to surface it as a hover tooltip.
 	const fullKeys = parseRawKeys(state.providerKeys[provider]);
-	el.keyStatsBody.innerHTML = stats.map((s, i) => {
-		const hasErrors = s.errors > 0;
-		const statusLabel = s.benched
-			? '<span class="ks-badge ks-benched" title="Temporarily benched after repeated failures">Benched</span>'
-			: hasErrors
-				? '<span class="ks-badge ks-warn">OK</span>'
-				: '<span class="ks-badge ks-ok">OK</span>';
-		const lastError = s.lastError ? ` title="Last error: ${escAttr(s.lastError)}"` : "";
-		const fullKey = fullKeys[i];
-		const keyTitle = fullKey ? ` title="${escAttr(fullKey)}"` : "";
-		return `<tr class="${hasErrors ? "ks-has-errors" : ""}"${lastError}>
+	el.keyStatsBody.innerHTML = stats
+		.map((s, i) => {
+			const hasErrors = s.errors > 0;
+			const statusLabel = s.benched
+				? '<span class="ks-badge ks-benched" title="Temporarily benched after repeated failures">Benched</span>'
+				: hasErrors
+					? '<span class="ks-badge ks-warn">OK</span>'
+					: '<span class="ks-badge ks-ok">OK</span>';
+			const lastError = s.lastError ? ` title="Last error: ${escAttr(s.lastError)}"` : "";
+			const fullKey = fullKeys[i];
+			const keyTitle = fullKey ? ` title="${escAttr(fullKey)}"` : "";
+			return `<tr class="${hasErrors ? "ks-has-errors" : ""}"${lastError}>
 			<td class="ks-key"><span class="ks-key-text"${keyTitle}>${escHtml(s.keyMasked)}</span></td>
 			<td class="ks-num">${s.requests}</td>
 			<td class="ks-num${hasErrors ? " ks-num-error" : ""}">${s.errors}</td>
 			<td class="ks-status">${statusLabel}</td>
 		</tr>`;
-	}).join("");
+		})
+		.join("");
 }
 
 el.refreshKeyStatsBtn?.addEventListener("click", () => {
@@ -358,18 +424,20 @@ function renderSidebar() {
 	if (!providers.length) {
 		html += '<div class="no-providers">No providers yet</div>';
 	} else {
-		html += providers.map((name) => {
-			const count  = getProviderModels(name).length;
-			const hasKey = !!state.providerKeys[name];
-			const active = !state.isNewProvider && state.selectedProvider === name;
-			return `<div class="provider-item${active ? " active" : ""}" data-provider="${escAttr(name)}">
+		html += providers
+			.map((name) => {
+				const count = getProviderModels(name).length;
+				const hasKey = !!state.providerKeys[name];
+				const active = !state.isNewProvider && state.selectedProvider === name;
+				return `<div class="provider-item${active ? " active" : ""}" data-provider="${escAttr(name)}">
 				<span class="provider-item-name">${escHtml(name)}</span>
 				<span class="provider-item-meta">
 					<span class="badge">${count}</span>
 					<span class="key-icon" title="${hasKey ? "API key set" : "No API key"}">${hasKey ? "🔑" : "🔒"}</span>
 				</span>
 			</div>`;
-		}).join("");
+			})
+			.join("");
 	}
 
 	const gitActive = !state.isNewProvider && state.selectedProvider === "git-commit";
@@ -459,13 +527,13 @@ function selectProvider(name) {
 
 	// Fill provider settings
 	const info = getProviderInfo(name);
-	el.pBaseUrl.value   = info.baseUrl;
-	el.pApiKey.value    = info.apiKey;
-	el.pApiMode.value   = info.apiMode;
-	el.pProxyUrl.value  = info.proxyUrl;
+	el.pBaseUrl.value = info.baseUrl;
+	el.pApiKey.value = info.apiKey;
+	el.pApiMode.value = info.apiMode;
+	el.pProxyUrl.value = info.proxyUrl;
 	el.pUserAgent.value = info.userAgent;
-	el.pDelay.value     = info.delay != null ? info.delay : "";
-	el.pHeaders.value   = info.headers ? JSON.stringify(info.headers, null, 2) : "";
+	el.pDelay.value = info.delay != null ? info.delay : "";
+	el.pHeaders.value = info.headers ? JSON.stringify(info.headers, null, 2) : "";
 
 	// Show models section
 	el.modelsSection.style.display = "";
@@ -495,12 +563,12 @@ function showNewProviderForm() {
 
 	// Clear all fields
 	el.pBaseUrl.value = "";
-	el.pApiKey.value  = "";
+	el.pApiKey.value = "";
 	el.pApiMode.value = "openai";
-	el.pProxyUrl.value  = "";
+	el.pProxyUrl.value = "";
 	el.pUserAgent.value = DEFAULT_USER_AGENT;
-	el.pDelay.value     = "";
-	el.pHeaders.value   = "";
+	el.pDelay.value = "";
+	el.pHeaders.value = "";
 
 	// Hide models section for new providers (created on save)
 	el.modelsSection.style.display = "none";
@@ -647,30 +715,33 @@ el.importConfig.addEventListener("click", () => vscode.postMessage({ type: "impo
 el.saveProviderBtn.addEventListener("click", () => {
 	if (state.isNewProvider) {
 		const name = el.pName.value.trim();
-		if (!name) { showProviderError("Provider ID is required."); return; }
+		if (!name) {
+			showProviderError("Provider ID is required.");
+			return;
+		}
 		state.pendingNewProvider = name;
 		vscode.postMessage({
-			type:      "addProvider",
-			provider:  name,
-			baseUrl:   el.pBaseUrl.value.trim()   || undefined,
-			apiKey:    el.pApiKey.value.trim()    || undefined,
-			apiMode:   el.pApiMode.value          || undefined,
-			proxyUrl:  el.pProxyUrl.value.trim()  || undefined,
+			type: "addProvider",
+			provider: name,
+			baseUrl: el.pBaseUrl.value.trim() || undefined,
+			apiKey: el.pApiKey.value.trim() || undefined,
+			apiMode: el.pApiMode.value || undefined,
+			proxyUrl: el.pProxyUrl.value.trim() || undefined,
 			userAgent: el.pUserAgent.value.trim() || undefined,
-			delay:     numOrUndef(el.pDelay.value),
-			headers:   parseJson(el.pHeaders.value),
+			delay: numOrUndef(el.pDelay.value),
+			headers: parseJson(el.pHeaders.value),
 		});
 	} else if (state.selectedProvider) {
 		vscode.postMessage({
-			type:      "updateProvider",
-			provider:  state.selectedProvider,
-			baseUrl:   el.pBaseUrl.value.trim()   || undefined,
-			apiKey:    el.pApiKey.value.trim()    || undefined,
-			apiMode:   el.pApiMode.value          || undefined,
-			proxyUrl:  el.pProxyUrl.value.trim()  || undefined,
+			type: "updateProvider",
+			provider: state.selectedProvider,
+			baseUrl: el.pBaseUrl.value.trim() || undefined,
+			apiKey: el.pApiKey.value.trim() || undefined,
+			apiMode: el.pApiMode.value || undefined,
+			proxyUrl: el.pProxyUrl.value.trim() || undefined,
 			userAgent: el.pUserAgent.value.trim() || undefined,
-			delay:     numOrUndef(el.pDelay.value),
-			headers:   parseJson(el.pHeaders.value),
+			delay: numOrUndef(el.pDelay.value),
+			headers: parseJson(el.pHeaders.value),
 		});
 	}
 });
@@ -682,10 +753,10 @@ el.deleteProviderBtn.addEventListener("click", () => {
 		action: () => vscode.postMessage({ type: "deleteProvider", provider: state.selectedProvider }),
 	});
 	vscode.postMessage({
-		type:    "requestConfirm",
+		type: "requestConfirm",
 		id,
 		message: `Delete provider "${state.selectedProvider}" and all its models?`,
-		action:  "deleteProvider",
+		action: "deleteProvider",
 	});
 });
 
@@ -698,8 +769,8 @@ function showProviderError(msg) {
 
 el.saveCommitBtn.addEventListener("click", () => {
 	vscode.postMessage({
-		type:           "saveCommitSettings",
-		commitModel:    el.commitModel.value,
+		type: "saveCommitSettings",
+		commitModel: el.commitModel.value,
 		commitLanguage: el.commitLanguage.value,
 	});
 });
@@ -707,7 +778,7 @@ el.saveCommitBtn.addEventListener("click", () => {
 if (el.allowAnonymousAccess) {
 	el.allowAnonymousAccess.addEventListener("change", () => {
 		vscode.postMessage({
-			type:    "setAnonymousAccess",
+			type: "setAnonymousAccess",
 			enabled: el.allowAnonymousAccess.checked,
 		});
 	});
@@ -716,7 +787,7 @@ if (el.allowAnonymousAccess) {
 if (el.restoreChatSessions) {
 	el.restoreChatSessions.addEventListener("change", () => {
 		vscode.postMessage({
-			type:    "setRestoreChatSessions",
+			type: "setRestoreChatSessions",
 			enabled: el.restoreChatSessions.checked,
 		});
 	});
@@ -725,7 +796,7 @@ if (el.restoreChatSessions) {
 if (el.telemetryDisabled) {
 	el.telemetryDisabled.addEventListener("change", () => {
 		vscode.postMessage({
-			type:     "setTelemetryDisabled",
+			type: "setTelemetryDisabled",
 			disabled: el.telemetryDisabled.checked,
 		});
 	});
@@ -877,9 +948,9 @@ function renderChatGenPreview(prompts) {
 		btn.addEventListener("click", () => {
 			const idx = parseInt(btn.getAttribute("data-idx"), 10);
 			vscode.postMessage({
-				type:        "prefillChat",
-				prompt:      prompts[idx],
-				mode:        el.chatGenMode?.value ?? "agent",
+				type: "prefillChat",
+				prompt: prompts[idx],
+				mode: el.chatGenMode?.value ?? "agent",
 				modelFullId: el.chatGenModel?.value || undefined,
 			});
 		});
@@ -932,12 +1003,12 @@ if (el.chatGenLaunchBtn) {
 		renderChatGenPreview(prompts);
 		const delayMs = parseInt(el.chatGenDelay?.value ?? "1500", 10);
 		vscode.postMessage({
-			type:        "launchChats",
+			type: "launchChats",
 			prompts,
-			mode:        el.chatGenMode?.value ?? "agent",
+			mode: el.chatGenMode?.value ?? "agent",
 			modelFullId: el.chatGenModel?.value || undefined,
-			strategy:    el.chatGenStrategy?.value === "parallel" ? "parallel" : "sequential",
-			delayMs:     Number.isFinite(delayMs) ? delayMs : 1500,
+			strategy: el.chatGenStrategy?.value === "parallel" ? "parallel" : "sequential",
+			delayMs: Number.isFinite(delayMs) ? delayMs : 1500,
 		});
 	});
 }
@@ -966,26 +1037,27 @@ function renderModelTable(providerName) {
 	state.selectedModelIds = new Set([...state.selectedModelIds].filter((id) => validIds.has(id)));
 
 	if (!models.length) {
-		el.modelCardsContainer.innerHTML =
-			'<div class="no-data">No models — add manually or fetch from API</div>';
+		el.modelCardsContainer.innerHTML = '<div class="no-data">No models — add manually or fetch from API</div>';
 		updateBulkDeleteBar();
 		return;
 	}
 
-	el.modelCardsContainer.innerHTML = models.map((m) => {
-		const mid = m.configId ? `${m.id}::${m.configId}` : m.id;
-		const checked = state.selectedModelIds.has(mid);
-		const maxOutput = m.max_tokens != null ? m.max_tokens : m.max_completion_tokens != null ? m.max_completion_tokens : null;
+	el.modelCardsContainer.innerHTML = models
+		.map((m) => {
+			const mid = m.configId ? `${m.id}::${m.configId}` : m.id;
+			const checked = state.selectedModelIds.has(mid);
+			const maxOutput =
+				m.max_tokens != null ? m.max_tokens : m.max_completion_tokens != null ? m.max_completion_tokens : null;
 
-		const tags = [];
-		if (m.context_length) tags.push(`${fmtNum(m.context_length)} ctx`);
-		if (maxOutput) tags.push(`${fmtNum(maxOutput)} max`);
-		if (m.vision) tags.push("vision");
-		if (m.delay) tags.push(`${m.delay}ms delay`);
+			const tags = [];
+			if (m.context_length) tags.push(`${fmtNum(m.context_length)} ctx`);
+			if (maxOutput) tags.push(`${fmtNum(maxOutput)} max`);
+			if (m.vision) tags.push("vision");
+			if (m.delay) tags.push(`${m.delay}ms delay`);
 
-		const tagsHtml = tags.map(tag => `<span class="model-badge">${escHtml(tag)}</span>`).join("");
+			const tagsHtml = tags.map((tag) => `<span class="model-badge">${escHtml(tag)}</span>`).join("");
 
-		return `
+			return `
 		<div class="model-card${checked ? " selected" : ""}">
 			<div class="model-card-select-row">
 				<label class="model-card-select" title="Select for bulk delete">
@@ -1012,7 +1084,8 @@ function renderModelTable(providerName) {
 				</button>
 			</div>
 		</div>`;
-	}).join("");
+		})
+		.join("");
 
 	el.modelCardsContainer.querySelectorAll(".model-select-checkbox").forEach((cb) => {
 		cb.addEventListener("change", (e) => {
@@ -1031,11 +1104,10 @@ function renderModelTable(providerName) {
 
 	el.modelCardsContainer.querySelectorAll(".edit-model-btn").forEach((btn) => {
 		btn.addEventListener("click", (e) => {
-			const mid    = e.currentTarget.getAttribute("data-id");
+			const mid = e.currentTarget.getAttribute("data-id");
 			const parsed = parseFullModelId(mid);
-			const model  = state.models.find(
-				(m) => m.id === parsed.baseId &&
-					(parsed.configId ? m.configId === parsed.configId : !m.configId)
+			const model = state.models.find(
+				(m) => m.id === parsed.baseId && (parsed.configId ? m.configId === parsed.configId : !m.configId)
 			);
 			if (model) {
 				showModelForm(`Edit: ${mid}`);
@@ -1043,13 +1115,13 @@ function renderModelTable(providerName) {
 				// Pre-load dropdown for the current provider
 				const info = getProviderInfo(model.owned_by || state.selectedProvider);
 				vscode.postMessage({
-					type:      "fetchModels",
-					baseUrl:   model.baseUrl  || info.baseUrl,
-					apiKey:    info.apiKey,
-					apiMode:   model.apiMode  || info.apiMode,
-					proxyUrl:  model.proxyUrl || info.proxyUrl || undefined,
+					type: "fetchModels",
+					baseUrl: model.baseUrl || info.baseUrl,
+					apiKey: info.apiKey,
+					apiMode: model.apiMode || info.apiMode,
+					proxyUrl: model.proxyUrl || info.proxyUrl || undefined,
 					userAgent: model.userAgent || info.userAgent || undefined,
-					headers:   model.headers,
+					headers: model.headers,
 				});
 			}
 		});
@@ -1058,15 +1130,15 @@ function renderModelTable(providerName) {
 	el.modelCardsContainer.querySelectorAll(".delete-model-btn").forEach((btn) => {
 		btn.addEventListener("click", (e) => {
 			const mid = e.currentTarget.getAttribute("data-id");
-			const id  = `delModel_${Date.now()}`;
+			const id = `delModel_${Date.now()}`;
 			pendingConfirmations.set(id, {
 				action: () => vscode.postMessage({ type: "deleteModel", modelId: mid }),
 			});
 			vscode.postMessage({
-				type:    "requestConfirm",
+				type: "requestConfirm",
 				id,
 				message: `Delete model "${mid}"?`,
-				action:  "deleteModel",
+				action: "deleteModel",
 			});
 		});
 	});
@@ -1134,7 +1206,7 @@ el.fetchFromApiBtn.addEventListener("click", () => {
 	state.fetchedModels = [];
 	el.fetchPanel.style.display = "";
 	el.fetchStatus.textContent = "Fetching models…";
-	el.fetchResults.innerHTML  = '<div class="fetch-loading">Loading…</div>';
+	el.fetchResults.innerHTML = '<div class="fetch-loading">Loading…</div>';
 	if (el.keyTestStatus) {
 		el.keyTestStatus.style.display = "none";
 		el.keyTestStatus.innerHTML = "";
@@ -1143,13 +1215,13 @@ el.fetchFromApiBtn.addEventListener("click", () => {
 	el.importCount.textContent = "0";
 
 	vscode.postMessage({
-		type:      "fetchModels",
-		baseUrl:   info.baseUrl,
-		apiKey:    info.apiKey,
-		apiMode:   info.apiMode,
-		proxyUrl:  info.proxyUrl  || undefined,
+		type: "fetchModels",
+		baseUrl: info.baseUrl,
+		apiKey: info.apiKey,
+		apiMode: info.apiMode,
+		proxyUrl: info.proxyUrl || undefined,
 		userAgent: info.userAgent || undefined,
-		headers:   info.headers,
+		headers: info.headers,
 	});
 });
 
@@ -1179,8 +1251,8 @@ el.importFetchedBtn.addEventListener("click", () => {
 		return;
 	}
 	vscode.postMessage({
-		type:     "importModels",
-		models:   selected,
+		type: "importModels",
+		models: selected,
 		provider: state.selectedProvider,
 	});
 	hideFetchPanel();
@@ -1221,22 +1293,23 @@ function showFetchResults(models, keyResults) {
 		: `Found ${models.length} model(s) — select to import`;
 
 	const existingIds = new Set(
-		getProviderModels(state.selectedProvider).map((m) =>
-			m.configId ? `${m.id}::${m.configId}` : m.id
-		)
+		getProviderModels(state.selectedProvider).map((m) => (m.configId ? `${m.id}::${m.configId}` : m.id))
 	);
 
-	el.fetchResults.innerHTML = models.map((m, i) => {
-		const alreadyAdded = existingIds.has(m.id);
-		const checked      = !alreadyAdded;
-		const meta = [
-			m.context_length ? `${fmtNum(m.context_length)} ctx` : null,
-			m.vision ? "vision" : null,
-			m.tool_calling ? "tools" : null,
-			alreadyAdded ? "already added" : null,
-		].filter(Boolean).join(" · ");
+	el.fetchResults.innerHTML = models
+		.map((m, i) => {
+			const alreadyAdded = existingIds.has(m.id);
+			const checked = !alreadyAdded;
+			const meta = [
+				m.context_length ? `${fmtNum(m.context_length)} ctx` : null,
+				m.vision ? "vision" : null,
+				m.tool_calling ? "tools" : null,
+				alreadyAdded ? "already added" : null,
+			]
+				.filter(Boolean)
+				.join(" · ");
 
-		return `<label class="fetch-item${alreadyAdded ? " already-added" : ""}">
+			return `<label class="fetch-item${alreadyAdded ? " already-added" : ""}">
 			<input type="checkbox" data-idx="${i}" ${checked ? "checked" : ""} ${alreadyAdded ? "disabled" : ""} />
 			<div class="fetch-item-info">
 				<div class="fetch-item-id">${escHtml(m.id)}${m.displayName ? `<span class="fetch-item-tag">${escHtml(m.displayName)}</span>` : ""}</div>
@@ -1245,7 +1318,8 @@ function showFetchResults(models, keyResults) {
 			</div>
 			<button type="button" class="secondary small key-test-btn" data-model="${escHtml(m.id)}" title="Send a hello-world request with every API key">Test keys</button>
 		</label>`;
-	}).join("");
+		})
+		.join("");
 
 	el.fetchResults.querySelectorAll("input[type='checkbox']").forEach((cb) => {
 		cb.addEventListener("change", updateImportCount);
@@ -1269,11 +1343,13 @@ function renderKeyTestStatus(keyResults) {
 		return;
 	}
 	const okCount = keyResults.filter((r) => r && r.ok).length;
-	const marks = keyResults.map((r, i) => {
-		const ok = r && r.ok;
-		const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
-		return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
-	}).join("");
+	const marks = keyResults
+		.map((r, i) => {
+			const ok = r && r.ok;
+			const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
+			return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
+		})
+		.join("");
 	el.keyTestStatus.style.display = "";
 	el.keyTestStatus.innerHTML = `<span class="key-test-label">Keys ${okCount}/${keyResults.length} OK:</span> ${marks}`;
 }
@@ -1288,14 +1364,14 @@ function testModelKeys(modelId) {
 		target.className = "fetch-item-keytest testing";
 	}
 	vscode.postMessage({
-		type:      "testModelKeys",
-		baseUrl:   info.baseUrl,
-		apiKey:    info.apiKey,
-		apiMode:   info.apiMode,
-		modelId:   modelId,
-		proxyUrl:  info.proxyUrl  || undefined,
+		type: "testModelKeys",
+		baseUrl: info.baseUrl,
+		apiKey: info.apiKey,
+		apiMode: info.apiMode,
+		modelId: modelId,
+		proxyUrl: info.proxyUrl || undefined,
 		userAgent: info.userAgent || undefined,
-		headers:   info.headers,
+		headers: info.headers,
 	});
 }
 
@@ -1311,11 +1387,13 @@ function renderModelKeyTestResults(modelId, results) {
 		return;
 	}
 	const okCount = results.filter((r) => r && r.ok).length;
-	const marks = results.map((r, i) => {
-		const ok = r && r.ok;
-		const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
-		return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
-	}).join("");
+	const marks = results
+		.map((r, i) => {
+			const ok = r && r.ok;
+			const title = ok ? `Key #${i + 1}: OK` : `Key #${i + 1}: ${escHtml((r && r.error) || "failed")}`;
+			return `<span class="key-mark ${ok ? "ok" : "fail"}" title="${title}">${ok ? "✓" : "✗"}</span>`;
+		})
+		.join("");
 	target.className = "fetch-item-keytest done";
 	target.innerHTML = `<span class="key-test-label">${okCount}/${results.length} OK:</span> ${marks}`;
 }
@@ -1338,13 +1416,13 @@ el.addModelBtn.addEventListener("click", () => {
 		const info = getProviderInfo(state.selectedProvider);
 		state.isFetchingForPanel = false;
 		vscode.postMessage({
-			type:      "fetchModels",
-			baseUrl:   info.baseUrl,
-			apiKey:    info.apiKey,
-			apiMode:   info.apiMode,
-			proxyUrl:  info.proxyUrl  || undefined,
+			type: "fetchModels",
+			baseUrl: info.baseUrl,
+			apiKey: info.apiKey,
+			apiMode: info.apiMode,
+			proxyUrl: info.proxyUrl || undefined,
 			userAgent: info.userAgent || undefined,
-			headers:   info.headers,
+			headers: info.headers,
 		});
 	}
 });
@@ -1367,9 +1445,9 @@ $("saveModel").addEventListener("click", () => {
 
 	if (el.modelIdInput.hasAttribute("data-editing")) {
 		vscode.postMessage({
-			type:             "updateModel",
-			model:            data,
-			originalModelId:  el.modelIdInput.getAttribute("data-original-id"),
+			type: "updateModel",
+			model: data,
+			originalModelId: el.modelIdInput.getAttribute("data-original-id"),
 			originalConfigId: el.modelIdInput.getAttribute("data-original-configId"),
 		});
 	} else {
@@ -1399,17 +1477,42 @@ function hideModelForm() {
 function resetModelForm() {
 	showModelError("");
 	[
-		"modelIdInput", "modelDisplayName", "modelConfigId", "modelContextLength",
-		"modelMaxTokens", "modelMaxCompletionTokens", "modelDelay", "modelTemperature",
-		"modelTopP", "modelFamily", "modelTopK", "modelMinP", "modelFrequencyPenalty",
-		"modelPresencePenalty", "modelRepetitionPenalty", "modelThinkingBudget",
-		"modelReasoningMaxTokens", "modelHeaders", "modelExtra",
-	].forEach((f) => { if (el[f]) el[f].value = ""; });
+		"modelIdInput",
+		"modelDisplayName",
+		"modelConfigId",
+		"modelContextLength",
+		"modelMaxTokens",
+		"modelMaxCompletionTokens",
+		"modelDelay",
+		"modelTemperature",
+		"modelTopP",
+		"modelFamily",
+		"modelTopK",
+		"modelMinP",
+		"modelFrequencyPenalty",
+		"modelPresencePenalty",
+		"modelRepetitionPenalty",
+		"modelThinkingBudget",
+		"modelReasoningMaxTokens",
+		"modelHeaders",
+		"modelExtra",
+	].forEach((f) => {
+		if (el[f]) el[f].value = "";
+	});
 
 	[
-		"modelVision", "modelTools", "modelReasoningEffort", "modelEnableThinking", "modelThinkingType",
-		"modelIncludeReasoning", "modelReasoningEnabled", "modelReasoningExclude", "modelReasoningEffortOR",
-	].forEach((f) => { if (el[f] && el[f].tagName === "SELECT") el[f].selectedIndex = 0; });
+		"modelVision",
+		"modelTools",
+		"modelReasoningEffort",
+		"modelEnableThinking",
+		"modelThinkingType",
+		"modelIncludeReasoning",
+		"modelReasoningEnabled",
+		"modelReasoningExclude",
+		"modelReasoningEffortOR",
+	].forEach((f) => {
+		if (el[f] && el[f].tagName === "SELECT") el[f].selectedIndex = 0;
+	});
 
 	el.advancedContent.style.display = "none";
 	el.toggleAdvancedLabel.textContent = "▶ Advanced";
@@ -1424,87 +1527,94 @@ function resetModelForm() {
 function populateModelForm(model) {
 	showModelError("");
 	el.modelIdInput.setAttribute("data-editing", "true");
-	el.modelIdInput.setAttribute("data-original-id",       model.id       || "");
+	el.modelIdInput.setAttribute("data-original-id", model.id || "");
 	el.modelIdInput.setAttribute("data-original-configId", model.configId || "");
 
-	el.modelIdInput.value            = model.id             || "";
-	el.modelDisplayName.value        = model.displayName    || "";
-	el.modelConfigId.value           = model.configId       || "";
-	el.modelContextLength.value      = model.context_length != null ? model.context_length : "";
-	el.modelMaxTokens.value          = model.max_tokens     != null ? model.max_tokens     : "";
+	el.modelIdInput.value = model.id || "";
+	el.modelDisplayName.value = model.displayName || "";
+	el.modelConfigId.value = model.configId || "";
+	el.modelContextLength.value = model.context_length != null ? model.context_length : "";
+	el.modelMaxTokens.value = model.max_tokens != null ? model.max_tokens : "";
 	el.modelMaxCompletionTokens.value = model.max_completion_tokens != null ? model.max_completion_tokens : "";
-	el.modelVision.value             = model.vision         != null ? String(model.vision) : "";
-	el.modelTools.value              = model.tool_calling   != null ? String(model.tool_calling) : "";
-	el.modelDelay.value              = model.delay          != null ? model.delay          : "";
-	el.modelTemperature.value        = model.temperature    != null ? model.temperature    : "";
-	el.modelTopP.value               = model.top_p          != null ? model.top_p          : "";
-	el.modelFamily.value             = model.family         || "";
-	el.modelTopK.value               = model.top_k          != null ? model.top_k          : "";
-	el.modelMinP.value               = model.min_p          != null ? model.min_p          : "";
-	el.modelFrequencyPenalty.value   = model.frequency_penalty   != null ? model.frequency_penalty   : "";
-	el.modelPresencePenalty.value    = model.presence_penalty    != null ? model.presence_penalty    : "";
-	el.modelRepetitionPenalty.value  = model.repetition_penalty  != null ? model.repetition_penalty  : "";
-	el.modelReasoningEffort.value    = model.reasoning_effort    || "";
-	el.modelEnableThinking.value     = model.enable_thinking     != null ? String(model.enable_thinking) : "";
-	el.modelThinkingBudget.value     = model.thinking_budget     != null ? model.thinking_budget         : "";
-	el.modelIncludeReasoning.value   = model.include_reasoning_in_request != null
-		? String(model.include_reasoning_in_request) : "";
-	el.modelThinkingType.value       = model.thinking?.type || "";
-	el.modelReasoningEnabled.value   = model.reasoning?.enabled  != null ? String(model.reasoning.enabled)  : "";
-	el.modelReasoningEffortOR.value  = model.reasoning?.effort   || "";
-	el.modelReasoningExclude.value   = model.reasoning?.exclude  != null ? String(model.reasoning.exclude)  : "";
-	el.modelReasoningMaxTokens.value = model.reasoning?.max_tokens != null ? model.reasoning.max_tokens      : "";
-	el.modelHeaders.value            = model.headers ? JSON.stringify(model.headers, null, 2) : "";
-	el.modelExtra.value              = model.extra   ? JSON.stringify(model.extra,   null, 2) : "";
+	el.modelVision.value = model.vision != null ? String(model.vision) : "";
+	el.modelTools.value = model.tool_calling != null ? String(model.tool_calling) : "";
+	el.modelDelay.value = model.delay != null ? model.delay : "";
+	el.modelTemperature.value = model.temperature != null ? model.temperature : "";
+	el.modelTopP.value = model.top_p != null ? model.top_p : "";
+	el.modelFamily.value = model.family || "";
+	el.modelTopK.value = model.top_k != null ? model.top_k : "";
+	el.modelMinP.value = model.min_p != null ? model.min_p : "";
+	el.modelFrequencyPenalty.value = model.frequency_penalty != null ? model.frequency_penalty : "";
+	el.modelPresencePenalty.value = model.presence_penalty != null ? model.presence_penalty : "";
+	el.modelRepetitionPenalty.value = model.repetition_penalty != null ? model.repetition_penalty : "";
+	el.modelReasoningEffort.value = model.reasoning_effort || "";
+	el.modelEnableThinking.value = model.enable_thinking != null ? String(model.enable_thinking) : "";
+	el.modelThinkingBudget.value = model.thinking_budget != null ? model.thinking_budget : "";
+	el.modelIncludeReasoning.value =
+		model.include_reasoning_in_request != null ? String(model.include_reasoning_in_request) : "";
+	el.modelThinkingType.value = model.thinking?.type || "";
+	el.modelReasoningEnabled.value = model.reasoning?.enabled != null ? String(model.reasoning.enabled) : "";
+	el.modelReasoningEffortOR.value = model.reasoning?.effort || "";
+	el.modelReasoningExclude.value = model.reasoning?.exclude != null ? String(model.reasoning.exclude) : "";
+	el.modelReasoningMaxTokens.value = model.reasoning?.max_tokens != null ? model.reasoning.max_tokens : "";
+	el.modelHeaders.value = model.headers ? JSON.stringify(model.headers, null, 2) : "";
+	el.modelExtra.value = model.extra ? JSON.stringify(model.extra, null, 2) : "";
 }
 
 function collectModelFormData() {
 	return {
-		id:           el.modelIdInput.value.trim(),
-		owned_by:     state.selectedProvider || "",
-		displayName:  el.modelDisplayName.value.trim()  || undefined,
-		configId:     el.modelConfigId.value.trim()     || undefined,
-		context_length:            numOrUndef(el.modelContextLength.value),
-		max_tokens:                numOrUndef(el.modelMaxTokens.value),
-		max_completion_tokens:     numOrUndef(el.modelMaxCompletionTokens.value),
-		vision:                    boolOrUndef(el.modelVision.value),
-		tool_calling:              boolOrUndef(el.modelTools.value),
-		delay:                     numOrUndef(el.modelDelay.value),
-		temperature:               floatOrUndef(el.modelTemperature.value),
-		top_p:                     floatOrUndef(el.modelTopP.value),
-		family:                    el.modelFamily.value.trim() || undefined,
-		top_k:                     numOrUndef(el.modelTopK.value),
-		min_p:                     floatOrUndef(el.modelMinP.value),
-		frequency_penalty:         floatOrUndef(el.modelFrequencyPenalty.value),
-		presence_penalty:          floatOrUndef(el.modelPresencePenalty.value),
-		repetition_penalty:        floatOrUndef(el.modelRepetitionPenalty.value),
-		reasoning_effort:          el.modelReasoningEffort.value || undefined,
-		enable_thinking:           boolOrUndef(el.modelEnableThinking.value),
-		thinking_budget:           numOrUndef(el.modelThinkingBudget.value),
+		id: el.modelIdInput.value.trim(),
+		owned_by: state.selectedProvider || "",
+		displayName: el.modelDisplayName.value.trim() || undefined,
+		configId: el.modelConfigId.value.trim() || undefined,
+		context_length: numOrUndef(el.modelContextLength.value),
+		max_tokens: numOrUndef(el.modelMaxTokens.value),
+		max_completion_tokens: numOrUndef(el.modelMaxCompletionTokens.value),
+		vision: boolOrUndef(el.modelVision.value),
+		tool_calling: boolOrUndef(el.modelTools.value),
+		delay: numOrUndef(el.modelDelay.value),
+		temperature: floatOrUndef(el.modelTemperature.value),
+		top_p: floatOrUndef(el.modelTopP.value),
+		family: el.modelFamily.value.trim() || undefined,
+		top_k: numOrUndef(el.modelTopK.value),
+		min_p: floatOrUndef(el.modelMinP.value),
+		frequency_penalty: floatOrUndef(el.modelFrequencyPenalty.value),
+		presence_penalty: floatOrUndef(el.modelPresencePenalty.value),
+		repetition_penalty: floatOrUndef(el.modelRepetitionPenalty.value),
+		reasoning_effort: el.modelReasoningEffort.value || undefined,
+		enable_thinking: boolOrUndef(el.modelEnableThinking.value),
+		thinking_budget: numOrUndef(el.modelThinkingBudget.value),
 		include_reasoning_in_request: boolOrUndef(el.modelIncludeReasoning.value),
-		thinking:  el.modelThinkingType.value ? { type: el.modelThinkingType.value } : undefined,
+		thinking: el.modelThinkingType.value ? { type: el.modelThinkingType.value } : undefined,
 		reasoning: buildReasoningObj(),
-		headers:   parseJson(el.modelHeaders.value),
-		extra:     parseJson(el.modelExtra.value),
+		headers: parseJson(el.modelHeaders.value),
+		extra: parseJson(el.modelExtra.value),
 	};
 }
 
 function buildReasoningObj() {
-	const enabled   = boolOrUndef(el.modelReasoningEnabled.value);
-	const effort    = el.modelReasoningEffortOR.value || undefined;
-	const exclude   = boolOrUndef(el.modelReasoningExclude.value);
+	const enabled = boolOrUndef(el.modelReasoningEnabled.value);
+	const effort = el.modelReasoningEffortOR.value || undefined;
+	const exclude = boolOrUndef(el.modelReasoningExclude.value);
 	const maxTokens = numOrUndef(el.modelReasoningMaxTokens.value);
-	if (enabled === undefined && effort === undefined && exclude === undefined && maxTokens === undefined) return undefined;
+	if (enabled === undefined && effort === undefined && exclude === undefined && maxTokens === undefined)
+		return undefined;
 	return { enabled, effort, exclude, max_tokens: maxTokens };
 }
 
 function validateModelData(d) {
 	showModelError("");
-	if (!d.id)       { showModelError("Model ID is required.");  return false; }
-	if (!d.owned_by) { showModelError("No provider selected."); return false; }
+	if (!d.id) {
+		showModelError("Model ID is required.");
+		return false;
+	}
+	if (!d.owned_by) {
+		showModelError("No provider selected.");
+		return false;
+	}
 
-	const editing      = el.modelIdInput.hasAttribute("data-editing");
-	const origId       = el.modelIdInput.getAttribute("data-original-id");
+	const editing = el.modelIdInput.hasAttribute("data-editing");
+	const origId = el.modelIdInput.getAttribute("data-original-id");
 	const origConfigId = el.modelIdInput.getAttribute("data-original-configId");
 
 	const dup = state.models
@@ -1517,14 +1627,23 @@ function validateModelData(d) {
 		})
 		.some((m) => m.id === d.id && (d.configId ? m.configId === d.configId : !m.configId));
 
-	if (dup) { showModelError(`"${d.id}${d.configId ? "::" + d.configId : ""}" already exists.`); return false; }
+	if (dup) {
+		showModelError(`"${d.id}${d.configId ? "::" + d.configId : ""}" already exists.`);
+		return false;
+	}
 
-	if (d.max_tokens != null && d.max_completion_tokens != null)
-		{ showModelError("Cannot set both max_tokens and max_completion_tokens."); return false; }
-	if (d.temperature != null && (d.temperature < 0 || d.temperature > 2))
-		{ showModelError("Temperature must be 0–2."); return false; }
-	if (d.top_p != null && (d.top_p < 0 || d.top_p > 1))
-		{ showModelError("Top P must be 0–1."); return false; }
+	if (d.max_tokens != null && d.max_completion_tokens != null) {
+		showModelError("Cannot set both max_tokens and max_completion_tokens.");
+		return false;
+	}
+	if (d.temperature != null && (d.temperature < 0 || d.temperature > 2)) {
+		showModelError("Temperature must be 0–2.");
+		return false;
+	}
+	if (d.top_p != null && (d.top_p < 0 || d.top_p > 1)) {
+		showModelError("Top P must be 0–1.");
+		return false;
+	}
 	return true;
 }
 
@@ -1571,7 +1690,9 @@ function populateModelDropdown(models) {
 function showDropdown() {
 	if (dropdownContent.children.length > 0) el.modelIdDropdown.classList.add("show");
 }
-function hideDropdown() { el.modelIdDropdown.classList.remove("show"); }
+function hideDropdown() {
+	el.modelIdDropdown.classList.remove("show");
+}
 
 el.modelIdInput.addEventListener("focus", () => showDropdown());
 el.modelIdInput.addEventListener("input", () => {
@@ -1603,13 +1724,13 @@ window.addEventListener("message", ({ data: msg }) => {
 	switch (msg.type) {
 		case "init": {
 			const p = msg.payload;
-			state.models         = p.models         || [];
-			state.providerKeys   = p.providerKeys   || {};
-			state.commitModel    = p.commitModel    || "";
+			state.models = p.models || [];
+			state.providerKeys = p.providerKeys || {};
+			state.commitModel = p.commitModel || "";
 			state.commitLanguage = p.commitLanguage || "English";
 
 			populateCommitModelDropdown();
-			el.commitModel.value    = state.commitModel;
+			el.commitModel.value = state.commitModel;
 			el.commitLanguage.value = state.commitLanguage;
 			populateChatGenModelDropdown();
 
@@ -1707,20 +1828,22 @@ window.addEventListener("message", ({ data: msg }) => {
 
 function parseFullModelId(mid) {
 	const sep = mid.indexOf("::");
-	return sep !== -1
-		? { baseId: mid.slice(0, sep), configId: mid.slice(sep + 2) }
-		: { baseId: mid, configId: null };
+	return sep !== -1 ? { baseId: mid.slice(0, sep), configId: mid.slice(sep + 2) } : { baseId: mid, configId: null };
 }
 
 function fmtNum(n) {
 	if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-	if (n >= 1000)    return (n / 1000).toFixed(0) + "k";
+	if (n >= 1000) return (n / 1000).toFixed(0) + "k";
 	return String(n);
 }
 
 function parseJson(str) {
 	if (!str || !str.trim()) return undefined;
-	try { return JSON.parse(str.trim()); } catch { return undefined; }
+	try {
+		return JSON.parse(str.trim());
+	} catch {
+		return undefined;
+	}
 }
 
 function numOrUndef(val) {
@@ -1736,7 +1859,7 @@ function floatOrUndef(val) {
 }
 
 function boolOrUndef(val) {
-	if (val === "true")  return true;
+	if (val === "true") return true;
 	if (val === "false") return false;
 	return undefined;
 }

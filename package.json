@@ -159,7 +159,7 @@
 				"customcopilot.proxyUrl": {
 					"type": "string",
 					"default": "",
-					"description": "Optional global proxy URL for API requests (supports socks5://, http://, https://)."
+					"description": "Optional global proxy URL for API requests (supports socks5://, socks5h://, http://, https://)."
 				},
 				"customcopilot.models": {
 					"type": "array",
@@ -201,7 +201,7 @@
 							},
 							"proxyUrl": {
 								"type": "string",
-								"description": "Optional proxy URL for this source (supports socks5://, http://, https://)."
+								"description": "Optional proxy URL for this source (supports socks5://, socks5h://, http://, https://)."
 							},
 							"userAgent": {
 								"type": "string",

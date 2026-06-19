@@ -22,7 +22,7 @@ import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsT
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 
 export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBody> {
 	constructor(modelId: string) {
@@ -415,7 +415,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			: `${normalizedBaseUrl}/v1/messages`;
 
 		// Make the API request
-		const response = await fetch(url, {
+		const response = await proxyFetch(url, {
 			...networkInit,
 			method: "POST",
 			headers,
@@ -520,7 +520,7 @@ export async function fetchAnthropicModels(
 			url.searchParams.set("after_id", afterId);
 		}
 
-		const resp = await fetch(url.toString(), {
+		const resp = await proxyFetch(url.toString(), {
 			...networkInit,
 			method: "GET",
 			headers,

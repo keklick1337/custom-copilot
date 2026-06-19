@@ -29,7 +29,7 @@ import {
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 
 export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unknown>> {
 	constructor(modelId: string) {
@@ -497,7 +497,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
 		// Make the API request
-		const response = await fetch(url, {
+		const response = await proxyFetch(url, {
 			...networkInit,
 			method: "POST",
 			headers,

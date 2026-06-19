@@ -12,7 +12,7 @@ import type { OpenAIFunctionToolDef } from "../openai/openaiTypes";
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 
 import {
 	isImageMimeType,
@@ -554,9 +554,9 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		}): boolean => {
 			return Boolean(
 				extracted.toolResults.length > 0 &&
-				!extracted.text &&
-				extracted.imageParts.length === 0 &&
-				extracted.toolCalls.length === 0
+					!extracted.text &&
+					extracted.imageParts.length === 0 &&
+					extracted.toolCalls.length === 0
 			);
 		};
 
@@ -1049,7 +1049,7 @@ export async function fetchGeminiModels(
 			url.searchParams.set("pageToken", nextPageToken);
 		}
 
-		const resp = await fetch(url.toString(), {
+		const resp = await proxyFetch(url.toString(), {
 			...networkInit,
 			method: "GET",
 			headers,

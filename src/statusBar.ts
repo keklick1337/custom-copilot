@@ -35,8 +35,8 @@ export function initStatusBar(context: vscode.ExtensionContext): vscode.StatusBa
 	tokenCountStatusBarItem.text = "$(sparkle) Copilot: Ready";
 	tokenCountStatusBarItem.tooltip = new vscode.MarkdownString(
 		"### 💫 **Custom Copilot Connection Diagnostics**\n\n" +
-		"Status: **Ready**\n\n" +
-		"Click to check token usage, proxy settings, or configure the extension."
+			"Status: **Ready**\n\n" +
+			"Click to check token usage, proxy settings, or configure the extension."
 	);
 	tokenCountStatusBarItem.command = "customcopilot.showStatusBarMenu";
 	context.subscriptions.push(tokenCountStatusBarItem);
@@ -52,13 +52,16 @@ export function initStatusBar(context: vscode.ExtensionContext): vscode.StatusBa
 				},
 				{
 					label: `$(symbol-parameter) Usage: ${formatTokenCount(lastStats.totalTokenCount)} / ${formatTokenCount(lastStats.maxTokens)}`,
-					description: lastStats.maxTokens > 0 ? `${((lastStats.totalTokenCount / lastStats.maxTokens) * 100).toFixed(1)}%` : "0%",
+					description:
+						lastStats.maxTokens > 0 ? `${((lastStats.totalTokenCount / lastStats.maxTokens) * 100).toFixed(1)}%` : "0%",
 					detail: `Prompt-to-Response Window: Messages (${formatTokenCount(lastStats.messagesTokens)}) • Tools (${formatTokenCount(lastStats.toolTokens)})`,
 				},
 				{
 					label: `$(globe) Network Proxy: ${lastStats.isProxyUsed ? "Configured" : "Direct Connection"}`,
 					description: lastStats.isProxyUsed ? `${lastStats.proxyUrl}` : "Bypass (No Proxy)",
-					detail: lastStats.isProxyUsed ? "Sourced proxy is active for all outgoing target endpoints." : "Direct standard NAT routing bypasses active proxies.",
+					detail: lastStats.isProxyUsed
+						? "Sourced proxy is active for all outgoing target endpoints."
+						: "Direct standard NAT routing bypasses active proxies.",
 				},
 				{
 					label: "",
@@ -165,8 +168,7 @@ export async function updateContextStatusBar(
 	let um = userModels.find(
 		(u) =>
 			u.id === parsedModelId.baseId &&
-			((parsedModelId.configId && u.configId === parsedModelId.configId) ||
-				(!parsedModelId.configId && !u.configId))
+			((parsedModelId.configId && u.configId === parsedModelId.configId) || (!parsedModelId.configId && !u.configId))
 	);
 	if (!um) {
 		um = userModels.find((u) => u.id === parsedModelId.baseId);
@@ -193,9 +195,15 @@ export async function updateContextStatusBar(
 	tooltipMarkdown.appendMarkdown(`- **Active Model**: \`${model.name}\`\n`);
 	tooltipMarkdown.appendMarkdown(`- **Context Limit**: ${formatTokenCount(maxTokens)} tokens\n`);
 	tooltipMarkdown.appendMarkdown(`- **Usage Intensity**: ${progressBar} (${formatTokenCount(totalTokenCount)} used)\n`);
-	tooltipMarkdown.appendMarkdown(`- **Messages Contribution**: ${formatTokenCount(messagesTokens)} (${Math.min((messagesTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`);
-	tooltipMarkdown.appendMarkdown(`- **Tool Definitions**: ${formatTokenCount(toolTokens)} (${Math.min((toolTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`);
-	tooltipMarkdown.appendMarkdown(`- **Network Routing**: ${lastStats.isProxyUsed ? `🌐 Proxy (\`${lastStats.proxyUrl}\`)` : "🔌 Direct Connection"}\n\n`);
+	tooltipMarkdown.appendMarkdown(
+		`- **Messages Contribution**: ${formatTokenCount(messagesTokens)} (${Math.min((messagesTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`
+	);
+	tooltipMarkdown.appendMarkdown(
+		`- **Tool Definitions**: ${formatTokenCount(toolTokens)} (${Math.min((toolTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`
+	);
+	tooltipMarkdown.appendMarkdown(
+		`- **Network Routing**: ${lastStats.isProxyUsed ? `🌐 Proxy (\`${lastStats.proxyUrl}\`)` : "🔌 Direct Connection"}\n\n`
+	);
 	tooltipMarkdown.appendMarkdown(`---\n\n`);
 	tooltipMarkdown.appendMarkdown(`[⚙️ Open Settings](command:customcopilot.openConfig)`);
 
@@ -213,4 +221,3 @@ export async function updateContextStatusBar(
 
 	statusBarItem.show();
 }
-

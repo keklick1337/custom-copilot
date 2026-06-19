@@ -4,7 +4,7 @@ import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
 import { fetchModels, fetchModelsIntersection } from "../provideModel";
 import { parseApiKeys, keyBalancer } from "../keyBalancer";
 import { CommonApi } from "../commonApi";
-import { buildFetchNetworkInit } from "../network";
+import { buildFetchNetworkInit, proxyFetch } from "../network";
 import { VersionManager } from "../versionManager";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 
@@ -466,7 +466,10 @@ export class ConfigViewController {
 		const effectiveBaseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
 		const mode = (apiMode as string) || "openai";
 		const config = vscode.workspace.getConfiguration();
-		const effectiveProxyUrl = resolveProxyUrl((proxyUrl || "").trim(), config.get<string>("customcopilot.proxyUrl", "").trim());
+		const effectiveProxyUrl = resolveProxyUrl(
+			(proxyUrl || "").trim(),
+			config.get<string>("customcopilot.proxyUrl", "").trim()
+		);
 		const networkInit = buildFetchNetworkInit(effectiveProxyUrl);
 
 		const buildRequest = (): { url: string; body: Record<string, unknown> } => {
@@ -509,7 +512,7 @@ export class ConfigViewController {
 				if (mode === "gemini") {
 					requestHeaders["Accept"] = "application/json";
 				}
-				const res = await fetch(url, {
+				const res = await proxyFetch(url, {
 					...networkInit,
 					method: "POST",
 					headers: requestHeaders,
@@ -534,7 +537,8 @@ export class ConfigViewController {
 		this.webview.postMessage({ type: "modelKeysTested", modelId, results });
 	}
 
-	private async refreshModelsFromApi(baseUrl: string, apiKey: string, proxyUrl?: string, userAgent?: string) {		try {
+	private async refreshModelsFromApi(baseUrl: string, apiKey: string, proxyUrl?: string, userAgent?: string) {
+		try {
 			const normalizedBaseUrl = baseUrl.trim();
 			const normalizedApiKey = apiKey.trim();
 			const normalizedProxyUrl = (proxyUrl || "").trim();
@@ -542,13 +546,18 @@ export class ConfigViewController {
 			const config = vscode.workspace.getConfiguration();
 			const effectiveBaseUrl = normalizedBaseUrl;
 			const effectiveApiKey = normalizedApiKey;
-			const effectiveProxyUrl = resolveProxyUrl(normalizedProxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
+			const effectiveProxyUrl = resolveProxyUrl(
+				normalizedProxyUrl,
+				config.get<string>("customcopilot.proxyUrl", "").trim()
+			);
 			const effectiveUserAgent =
 				normalizedUserAgent ||
-				config.get<string>(
-					"customcopilot.userAgent",
-					"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
-				).trim();
+				config
+					.get<string>(
+						"customcopilot.userAgent",
+						"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+					)
+					.trim();
 
 			// If no API key was passed — try per-provider refresh instead
 			if (!effectiveApiKey) {
@@ -573,9 +582,7 @@ export class ConfigViewController {
 			// Save fetched models to VS Code configuration
 			await config.update("customcopilot.models", fetchedModels, vscode.ConfigurationTarget.Global);
 
-			vscode.window.showInformationMessage(
-				`Successfully refreshed ${fetchedModels.length} models from API endpoint.`
-			);
+			vscode.window.showInformationMessage(`Successfully refreshed ${fetchedModels.length} models from API endpoint.`);
 
 			// Refresh the frontend
 			await this.sendInit();
@@ -596,9 +603,7 @@ export class ConfigViewController {
 		const providers = Array.from(new Set(currentModels.map((m) => m.owned_by).filter(Boolean)));
 
 		if (providers.length === 0) {
-			vscode.window.showErrorMessage(
-				"No API Key configured. Add providers with API keys first."
-			);
+			vscode.window.showErrorMessage("No API Key configured. Add providers with API keys first.");
 			return;
 		}
 
@@ -613,11 +618,21 @@ export class ConfigViewController {
 			}
 
 			const providerModels = currentModels.filter((m) => m.owned_by === provider);
-			const firstModel = providerModels[0];
-			const providerBaseUrl = firstModel?.baseUrl || "";
-			const providerProxyUrl = firstModel?.proxyUrl || globalProxyUrl;
-			const providerUserAgent = firstModel?.userAgent || globalUserAgent;
-			const providerApiMode = firstModel?.apiMode;
+			// Prefer the __provider__ placeholder for provider-level settings, then
+			// fall back to whichever model actually defines each field (mirrors the
+			// frontend getProviderInfo) so the proxy is picked up even when the
+			// placeholder has none.
+			const placeholder = providerModels.find((m) => m.id.startsWith("__provider__"));
+			const firstModel = placeholder || providerModels[0];
+			const withProxy = providerModels.find((m) => m.proxyUrl && m.proxyUrl.trim());
+			const withBaseUrl = providerModels.find((m) => m.baseUrl && m.baseUrl.trim());
+			const withUserAgent = providerModels.find((m) => m.userAgent && m.userAgent.trim());
+			const providerBaseUrl = (placeholder?.baseUrl || withBaseUrl?.baseUrl || firstModel?.baseUrl || "").trim();
+			const providerProxyUrl =
+				(placeholder?.proxyUrl || withProxy?.proxyUrl || firstModel?.proxyUrl || "").trim() || globalProxyUrl;
+			const providerUserAgent =
+				(placeholder?.userAgent || withUserAgent?.userAgent || firstModel?.userAgent || "").trim() || globalUserAgent;
+			const providerApiMode = placeholder?.apiMode || firstModel?.apiMode;
 
 			if (!providerBaseUrl || !providerBaseUrl.startsWith("http")) {
 				console.warn(`[customcopilot] No valid base URL for provider: ${provider}, skipping refresh`);
@@ -809,18 +824,19 @@ export class ConfigViewController {
 
 		const updatedModels = models.map((model) => {
 			if (model.owned_by === trimmedProvider) {
-				// Create a new object with updated properties
+				// Create a new object with updated properties.
+				// NOTE: the frontend always sends the current value of every provider
+				// field (empty string is coerced to `undefined` via `value.trim() || undefined`).
+				// Treat `undefined`/empty as "clear" so the user can actually remove a
+				// value (previously empty === "keep old", so proxyUrl/userAgent could
+				// never be deleted and kept being refilled onto models on save).
 				const updatedModel = { ...model };
-				updatedModel.baseUrl = baseUrl || model.baseUrl;
-				updatedModel.apiMode = (apiMode as HFApiMode) || model.apiMode;
-				updatedModel.proxyUrl = proxyUrl !== undefined ? proxyUrl : model.proxyUrl;
-				updatedModel.userAgent = userAgent !== undefined ? userAgent : model.userAgent;
-				if (headers !== undefined) {
-					updatedModel.headers = headers;
-				}
-				if (delay !== undefined) {
-					updatedModel.delay = delay;
-				}
+				updatedModel.baseUrl = (baseUrl ?? "").trim() || undefined;
+				updatedModel.apiMode = (apiMode as HFApiMode | undefined) || undefined;
+				updatedModel.proxyUrl = (proxyUrl ?? "").trim() || undefined;
+				updatedModel.userAgent = (userAgent ?? "").trim() || undefined;
+				updatedModel.headers = headers;
+				updatedModel.delay = delay;
 				return updatedModel;
 			}
 			return model;
@@ -969,13 +985,13 @@ export class ConfigViewController {
 	private async deleteModels(modelIds: string[]) {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
-		const parsedIds = modelIds.map(id => parseModelId(id));
+		const parsedIds = modelIds.map((id) => parseModelId(id));
 
 		const filteredModels = models.filter((model) => {
-			return !parsedIds.some(parsed =>
-				model.id === parsed.baseId &&
-				((parsed.configId && model.configId === parsed.configId) ||
-					(!parsed.configId && !model.configId))
+			return !parsedIds.some(
+				(parsed) =>
+					model.id === parsed.baseId &&
+					((parsed.configId && model.configId === parsed.configId) || (!parsed.configId && !model.configId))
 			);
 		});
 
@@ -996,17 +1012,15 @@ export class ConfigViewController {
 			const existing = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 			// Retrieve provider settings from placeholder entry
-			const placeholder = existing.find(
-				(m) => m.owned_by === trimmedProvider && m.id.startsWith("__provider__")
-			);
+			const placeholder = existing.find((m) => m.owned_by === trimmedProvider && m.id.startsWith("__provider__"));
 			const providerBase = {
-				owned_by:  trimmedProvider,
-				baseUrl:   placeholder?.baseUrl,
-				proxyUrl:  placeholder?.proxyUrl,
+				owned_by: trimmedProvider,
+				baseUrl: placeholder?.baseUrl,
+				proxyUrl: placeholder?.proxyUrl,
 				userAgent: placeholder?.userAgent,
-				apiMode:   placeholder?.apiMode,
-				headers:   placeholder?.headers,
-				delay:     placeholder?.delay,
+				apiMode: placeholder?.apiMode,
+				headers: placeholder?.headers,
+				delay: placeholder?.delay,
 			};
 
 			const existingIds = new Set(
@@ -1018,7 +1032,9 @@ export class ConfigViewController {
 			let added = 0;
 			for (const m of models) {
 				const fid = m.configId ? `${m.id}::${m.configId}` : m.id;
-				if (existingIds.has(fid)) { continue; }
+				if (existingIds.has(fid)) {
+					continue;
+				}
 				existing.push({ ...providerBase, ...m, owned_by: trimmedProvider });
 				existingIds.add(fid);
 				added++;
@@ -1141,11 +1157,11 @@ export class ConfigViewController {
 		const match = models.find((m) => (m.configId ? `${m.id}::${m.configId}` : m.id) === modelFullId);
 		const apiMode = (match?.apiMode ?? "openai") as HFApiMode;
 		const vendorByMode: Record<string, string> = {
-			"openai": "copilotcustommodelsendpoint",
+			openai: "copilotcustommodelsendpoint",
 			"openai-responses": "copilotcustommodelsendpoint-responses",
-			"anthropic": "copilotcustommodelsendpoint-anthropic",
-			"gemini": "copilotcustommodelsendpoint-gemini",
-			"ollama": "copilotcustommodelsendpoint-ollama",
+			anthropic: "copilotcustommodelsendpoint-anthropic",
+			gemini: "copilotcustommodelsendpoint-gemini",
+			ollama: "copilotcustommodelsendpoint-ollama",
 		};
 		return { id: modelFullId, vendor: vendorByMode[apiMode] ?? "copilotcustommodelsendpoint" };
 	}
@@ -1177,9 +1193,7 @@ export class ConfigViewController {
 			await vscode.commands.executeCommand("workbench.action.chat.open", opts);
 		} catch (err) {
 			console.error("[customcopilot] prefillChat failed", err);
-			vscode.window.showErrorMessage(
-				`Failed to open chat: ${err instanceof Error ? err.message : String(err)}`
-			);
+			vscode.window.showErrorMessage(`Failed to open chat: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -1465,8 +1479,8 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
 			enableScripts: true,
 			localResourceRoots: [
 				vscode.Uri.joinPath(this.extensionUri, "out"),
-				vscode.Uri.joinPath(this.extensionUri, "assets")
-			]
+				vscode.Uri.joinPath(this.extensionUri, "assets"),
+			],
 		};
 
 		this.controller = new ConfigViewController(webviewView.webview, this.extensionUri, this.secrets);

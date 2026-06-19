@@ -8,7 +8,7 @@ import { fetchGeminiModels } from "./gemini/geminiApi";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
 import { fetchAnthropicModels } from "./anthropic/anthropicApi";
 import { logger } from "./logger";
-import { buildFetchNetworkInit } from "./network";
+import { buildFetchNetworkInit, proxyFetch } from "./network";
 import { inferModelCapabilities } from "./modelCapabilities";
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
@@ -57,55 +57,53 @@ export async function prepareLanguageModelChatInformation(
 	// surface models for that protocol so each vendor renders as its own group in
 	// the model picker. Models default to the "openai" protocol when unspecified.
 	const vendorMode = options.apiMode;
-	const matchesVendor = (m: HFModelItem): boolean =>
-		!vendorMode || (m.apiMode ?? "openai") === vendorMode;
+	const matchesVendor = (m: HFModelItem): boolean => !vendorMode || (m.apiMode ?? "openai") === vendorMode;
 
 	let infos: LanguageModelChatInformation[];
 	const scopedModels = userModels?.filter((m) => !m.id.startsWith("__provider__") && matchesVendor(m)) ?? [];
 	if (scopedModels.length > 0) {
 		// Return user-provided models directly
-		infos = scopedModels
-			.map((m) => {
-				const contextLen = m?.context_length ?? DEFAULT_CONTEXT_LENGTH;
-				const maxOutput = m?.max_completion_tokens ?? m?.max_tokens ?? DEFAULT_MAX_TOKENS;
-				const maxInput = Math.max(1, contextLen - maxOutput);
+		infos = scopedModels.map((m) => {
+			const contextLen = m?.context_length ?? DEFAULT_CONTEXT_LENGTH;
+			const maxOutput = m?.max_completion_tokens ?? m?.max_tokens ?? DEFAULT_MAX_TOKENS;
+			const maxInput = Math.max(1, contextLen - maxOutput);
 
-				// 使用配置ID（如果存在）来生成唯一的模型ID
-				const modelId = m.configId ? `${m.id}::${m.configId}` : m.id;
-				const modelName = m.displayName || (m.configId ? `${m.id}::${m.configId}` : `${m.id}`);
+			// 使用配置ID（如果存在）来生成唯一的模型ID
+			const modelId = m.configId ? `${m.id}::${m.configId}` : m.id;
+			const modelName = m.displayName || (m.configId ? `${m.id}::${m.configId}` : `${m.id}`);
 
-				const provider = getProviderLabel(m);
-				const contextText = formatContextSize(contextLen);
-				const caps: string[] = [];
-				if (m.tool_calling || m.extra?.tool_calling) {
-					caps.push("tools");
-				}
-				if (m.vision) {
-					caps.push("vision");
-				}
-				if (m.enable_thinking || m.thinking || m.reasoning_effort || m.reasoning?.enabled) {
-					caps.push("thinking");
-				}
-				const capsText = caps.length > 0 ? ` • ${caps.join(", ")}` : "";
-				const detail = `${provider} (${EXTENSION_LABEL}) • ${contextText}${capsText}`;
-				const tooltip = `Model: ${modelName}\nProvider: ${provider}\nContext: ${contextText}\nCapabilities: ${caps.join(", ") || "none"}`;
+			const provider = getProviderLabel(m);
+			const contextText = formatContextSize(contextLen);
+			const caps: string[] = [];
+			if (m.tool_calling || m.extra?.tool_calling) {
+				caps.push("tools");
+			}
+			if (m.vision) {
+				caps.push("vision");
+			}
+			if (m.enable_thinking || m.thinking || m.reasoning_effort || m.reasoning?.enabled) {
+				caps.push("thinking");
+			}
+			const capsText = caps.length > 0 ? ` • ${caps.join(", ")}` : "";
+			const detail = `${provider} (${EXTENSION_LABEL}) • ${contextText}${capsText}`;
+			const tooltip = `Model: ${modelName}\nProvider: ${provider}\nContext: ${contextText}\nCapabilities: ${caps.join(", ") || "none"}`;
 
-				return {
-					id: modelId,
-					name: modelName,
-					detail: detail,
-					tooltip: tooltip,
-					family: m.family ?? EXTENSION_LABEL,
-					version: "1.0.0",
-					maxInputTokens: maxInput,
-					maxOutputTokens: maxOutput,
-					isUserSelectable: true,
-					capabilities: {
-						toolCalling: m?.tool_calling === true,
-						imageInput: m?.vision ?? false,
-					},
-				} satisfies LanguageModelChatInformation;
-			});
+			return {
+				id: modelId,
+				name: modelName,
+				detail: detail,
+				tooltip: tooltip,
+				family: m.family ?? EXTENSION_LABEL,
+				version: "1.0.0",
+				maxInputTokens: maxInput,
+				maxOutputTokens: maxOutput,
+				isUserSelectable: true,
+				capabilities: {
+					toolCalling: m?.tool_calling === true,
+					imageInput: m?.vision ?? false,
+				},
+			} satisfies LanguageModelChatInformation;
+		});
 	} else {
 		// User has models configured but none belong to this vendor's protocol.
 		infos = [];
@@ -149,7 +147,7 @@ export async function fetchModels(
 			"User-Agent": userAgent,
 		};
 		const headers = customHeaders ? { ...baseHeaders, ...customHeaders } : baseHeaders;
-		const resp = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
+		const resp = await proxyFetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
 			...networkInit,
 			method: "GET",
 			headers,
@@ -161,9 +159,7 @@ export async function fetchModels(
 			} catch (error) {
 				console.error("[customcopilot] Failed to read response text", error);
 			}
-			const err = new Error(
-				`Failed to fetch models: ${resp.status} ${resp.statusText}${text ? `\n${text}` : ""}`
-			);
+			const err = new Error(`Failed to fetch models: ${resp.status} ${resp.statusText}${text ? `\n${text}` : ""}`);
 			console.error("[customcopilot] Failed to fetch models", err);
 			throw err;
 		}
@@ -175,7 +171,7 @@ export async function fetchModels(
 		const apiModels = await modelsList;
 
 		// Convert APIModelItem to HFModelItem
-		const models: HFModelItem[] = apiModels.map(apiModel => {
+		const models: HFModelItem[] = apiModels.map((apiModel) => {
 			// Infer capabilities (vision, tools, context, reasoning) from any rich
 			// fields the endpoint exposes, falling back to model-id inference and
 			// safe defaults. Mirrors VS Code's BYOK capability resolution but is
@@ -290,6 +286,3 @@ export async function fetchModelsIntersection(
 
 	return { models: intersected, keyResults };
 }
-
-
-
