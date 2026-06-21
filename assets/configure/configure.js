@@ -47,6 +47,24 @@ const el = {
 	allowAnonymousAccess: $("allowAnonymousAccess"),
 	restoreChatSessions: $("restoreChatSessions"),
 	telemetryDisabled: $("telemetryDisabled"),
+	debugRequestLogging: $("debugRequestLogging"),
+	promptOverrideEnabled: $("promptOverrideEnabled"),
+	promptOverrideBody: $("promptOverrideBody"),
+	promptOverrideMode: $("promptOverrideMode"),
+	promptOverrideText: $("promptOverrideText"),
+	promptOverrideReplacements: $("promptOverrideReplacements"),
+	promptOverrideReplacementsError: $("promptOverrideReplacementsError"),
+	promptOverrideSave: $("promptOverrideSave"),
+	promptOverrideStatus: $("promptOverrideStatus"),
+	promptOverrideTest: $("promptOverrideTest"),
+	promptOverrideTestRow: $("promptOverrideTestRow"),
+	promptOverrideTestSummary: $("promptOverrideTestSummary"),
+	promptOverrideDiff: $("promptOverrideDiff"),
+	promptCaptureText: $("promptCaptureText"),
+	promptCaptureRefresh: $("promptCaptureRefresh"),
+	promptCaptureCopy: $("promptCaptureCopy"),
+	promptCaptureUseAsText: $("promptCaptureUseAsText"),
+	promptCaptureStatus: $("promptCaptureStatus"),
 	chatRetries: $("chatRetries"),
 	chatRetryInterval: $("chatRetryInterval"),
 	chatRetryJitter: $("chatRetryJitter"),
@@ -799,6 +817,170 @@ if (el.telemetryDisabled) {
 			type: "setTelemetryDisabled",
 			disabled: el.telemetryDisabled.checked,
 		});
+	});
+}
+
+if (el.debugRequestLogging) {
+	el.debugRequestLogging.addEventListener("change", () => {
+		vscode.postMessage({
+			type: "setDebugRequestLogging",
+			enabled: el.debugRequestLogging.checked,
+		});
+	});
+}
+
+function updatePromptOverrideVisibility() {
+	if (el.promptOverrideBody && el.promptOverrideEnabled) {
+		el.promptOverrideBody.style.display = el.promptOverrideEnabled.checked ? "" : "none";
+	}
+}
+
+if (el.promptOverrideEnabled) {
+	el.promptOverrideEnabled.addEventListener("change", () => {
+		updatePromptOverrideVisibility();
+		vscode.postMessage({
+			type: "setPromptOverrideEnabled",
+			enabled: el.promptOverrideEnabled.checked,
+		});
+	});
+}
+
+// Parse the find/replace rules textarea (one JSON object per non-empty line).
+// Returns { replacements, errors }. Shared by Save and Test.
+function parsePromptOverrideReplacements() {
+	const lines = (el.promptOverrideReplacements ? el.promptOverrideReplacements.value : "").split("\n");
+	const replacements = [];
+	const errors = [];
+	lines.forEach((line, idx) => {
+		const trimmed = line.trim();
+		if (!trimmed) {
+			return;
+		}
+		try {
+			const obj = JSON.parse(trimmed);
+			if (!obj || typeof obj !== "object" || typeof obj.find !== "string") {
+				errors.push("Line " + (idx + 1) + ": must be a JSON object with a string \"find\".");
+				return;
+			}
+			replacements.push({
+				find: obj.find,
+				replace: typeof obj.replace === "string" ? obj.replace : "",
+				isRegex: !!obj.isRegex,
+				flags: typeof obj.flags === "string" && obj.flags ? obj.flags : "g",
+			});
+		} catch (e) {
+			errors.push("Line " + (idx + 1) + ": invalid JSON.");
+		}
+	});
+	return { replacements, errors };
+}
+
+function showPromptOverrideReplacementsErrors(errors) {
+	if (el.promptOverrideReplacementsError) {
+		if (errors.length > 0) {
+			el.promptOverrideReplacementsError.textContent = errors.join(" ");
+			el.promptOverrideReplacementsError.style.display = "";
+		} else {
+			el.promptOverrideReplacementsError.style.display = "none";
+		}
+	}
+}
+
+if (el.promptOverrideSave) {
+	el.promptOverrideSave.addEventListener("click", () => {
+		const { replacements, errors } = parsePromptOverrideReplacements();
+		showPromptOverrideReplacementsErrors(errors);
+		if (errors.length > 0) {
+			return;
+		}
+
+		vscode.postMessage({
+			type: "savePromptOverride",
+			mode: el.promptOverrideMode ? el.promptOverrideMode.value : "append",
+			text: el.promptOverrideText ? el.promptOverrideText.value : "",
+			replacements,
+		});
+		if (el.promptOverrideStatus) {
+			el.promptOverrideStatus.textContent = "Saved.";
+			setTimeout(() => {
+				if (el.promptOverrideStatus) {
+					el.promptOverrideStatus.textContent = "";
+				}
+			}, 2000);
+		}
+	});
+}
+
+if (el.promptOverrideTest) {
+	el.promptOverrideTest.addEventListener("click", () => {
+		const { replacements, errors } = parsePromptOverrideReplacements();
+		showPromptOverrideReplacementsErrors(errors);
+		if (errors.length > 0) {
+			return;
+		}
+		vscode.postMessage({
+			type: "testPromptOverride",
+			mode: el.promptOverrideMode ? el.promptOverrideMode.value : "append",
+			text: el.promptOverrideText ? el.promptOverrideText.value : "",
+			replacements,
+		});
+	});
+}
+
+function setPromptCaptureStatus(text) {
+	if (el.promptCaptureStatus) {
+		el.promptCaptureStatus.textContent = text;
+		if (text) {
+			setTimeout(() => {
+				if (el.promptCaptureStatus) {
+					el.promptCaptureStatus.textContent = "";
+				}
+			}, 2500);
+		}
+	}
+}
+
+if (el.promptCaptureRefresh) {
+	el.promptCaptureRefresh.addEventListener("click", () => {
+		vscode.postMessage({ type: "requestCapturedPrompt" });
+		setPromptCaptureStatus("Refreshing…");
+	});
+}
+
+if (el.promptCaptureCopy) {
+	el.promptCaptureCopy.addEventListener("click", () => {
+		const text = el.promptCaptureText ? el.promptCaptureText.value : "";
+		if (!text) {
+			setPromptCaptureStatus("Nothing to copy.");
+			return;
+		}
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(
+				() => setPromptCaptureStatus("Copied."),
+				() => setPromptCaptureStatus("Copy failed.")
+			);
+		} else if (el.promptCaptureText) {
+			el.promptCaptureText.select();
+			document.execCommand("copy");
+			setPromptCaptureStatus("Copied.");
+		}
+	});
+}
+
+if (el.promptCaptureUseAsText) {
+	el.promptCaptureUseAsText.addEventListener("click", () => {
+		const text = el.promptCaptureText ? el.promptCaptureText.value : "";
+		if (!text) {
+			setPromptCaptureStatus("Nothing to use.");
+			return;
+		}
+		if (el.promptOverrideText) {
+			el.promptOverrideText.value = text;
+		}
+		if (el.promptOverrideMode) {
+			el.promptOverrideMode.value = "replace";
+		}
+		setPromptCaptureStatus("Loaded into override text (mode set to Replace). Edit it, then Save.");
 	});
 }
 
@@ -1743,6 +1925,26 @@ window.addEventListener("message", ({ data: msg }) => {
 			if (el.telemetryDisabled) {
 				el.telemetryDisabled.checked = p.telemetryDisabled === true;
 			}
+			if (el.debugRequestLogging) {
+				el.debugRequestLogging.checked = p.debugRequestLogging === true;
+			}
+			if (el.promptOverrideEnabled) {
+				el.promptOverrideEnabled.checked = p.promptOverrideEnabled === true;
+			}
+			if (el.promptOverrideMode) {
+				el.promptOverrideMode.value = p.promptOverrideMode || "append";
+			}
+			if (el.promptOverrideText) {
+				el.promptOverrideText.value = p.promptOverrideText || "";
+			}
+			if (el.promptOverrideReplacements) {
+				const rules = Array.isArray(p.promptOverrideReplacements) ? p.promptOverrideReplacements : [];
+				el.promptOverrideReplacements.value = rules
+					.map((r) => JSON.stringify(r))
+					.join("\n");
+			}
+			updatePromptOverrideVisibility();
+			vscode.postMessage({ type: "requestCapturedPrompt" });
 			if (el.chatRetries) {
 				el.chatRetries.value = String(p.chatRetries != null ? p.chatRetries : 0);
 			}
@@ -1800,6 +2002,23 @@ window.addEventListener("message", ({ data: msg }) => {
 		}
 		case "modelKeysTested": {
 			renderModelKeyTestResults(msg.modelId, msg.results || []);
+			break;
+		}
+		case "capturedPrompt": {
+			if (el.promptCaptureText) {
+				el.promptCaptureText.value = msg.text || "";
+			}
+			if (msg.text) {
+				const when = msg.capturedAt ? new Date(msg.capturedAt).toLocaleString() : "";
+				const model = msg.modelId ? " · " + msg.modelId : "";
+				setPromptCaptureStatus("Captured" + model + (when ? " · " + when : ""));
+			} else {
+				setPromptCaptureStatus("No prompt captured yet. Send a chat message first.");
+			}
+			break;
+		}
+		case "promptOverrideTestResult": {
+			renderPromptOverrideTest(msg);
 			break;
 		}
 		case "modelsFetchError": {
@@ -1872,6 +2091,93 @@ function escHtml(str) {
 		.replace(/"/g, "&quot;");
 }
 const escAttr = escHtml;
+
+// ── Prompt override test / diff ─────────────────────────────────────────────────
+
+// Simple line-based LCS diff between two texts. Returns an array of
+// { type: "ctx"|"add"|"del", text } describing how to turn `before` into `after`.
+function lineDiff(before, after) {
+	const a = before.split("\n");
+	const b = after.split("\n");
+	const n = a.length;
+	const m = b.length;
+	// LCS length table.
+	const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+	for (let i = n - 1; i >= 0; i--) {
+		for (let j = m - 1; j >= 0; j--) {
+			lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+		}
+	}
+	const out = [];
+	let i = 0;
+	let j = 0;
+	while (i < n && j < m) {
+		if (a[i] === b[j]) {
+			out.push({ type: "ctx", text: a[i] });
+			i++;
+			j++;
+		} else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+			out.push({ type: "del", text: a[i] });
+			i++;
+		} else {
+			out.push({ type: "add", text: b[j] });
+			j++;
+		}
+	}
+	while (i < n) {
+		out.push({ type: "del", text: a[i++] });
+	}
+	while (j < m) {
+		out.push({ type: "add", text: b[j++] });
+	}
+	return out;
+}
+
+function renderPromptOverrideTest(msg) {
+	if (el.promptOverrideTestRow) {
+		el.promptOverrideTestRow.style.display = "";
+	}
+
+	// Summary line: per-rule match counts + char delta.
+	const diags = Array.isArray(msg.diagnostics) ? msg.diagnostics : [];
+	const summaryParts = [];
+	if (!msg.hasCapture) {
+		summaryParts.push("⚠️ No captured prompt yet — send a chat message first, then Refresh. Showing diff against empty text.");
+	}
+	diags.forEach((d) => {
+		const label = "Rule " + (d.index + 1) + (d.isRegex ? " (regex)" : "");
+		if (d.error) {
+			summaryParts.push(label + ": ERROR " + d.error);
+		} else if (d.matches === 0) {
+			summaryParts.push(label + ": ⚠️ 0 matches");
+		} else {
+			summaryParts.push(label + ": " + d.matches + " match" + (d.matches === 1 ? "" : "es"));
+		}
+	});
+	const before = msg.original || "";
+	const after = msg.result || "";
+	summaryParts.push("Length: " + before.length + " → " + after.length + " chars");
+	if (el.promptOverrideTestSummary) {
+		el.promptOverrideTestSummary.innerHTML = summaryParts.map((s) => escHtml(s)).join("<br />");
+	}
+
+	// Render the line diff.
+	if (el.promptOverrideDiff) {
+		if (before === after) {
+			el.promptOverrideDiff.innerHTML = '<span class="diff-line diff-ctx">(no changes)</span>';
+		} else {
+			const diff = lineDiff(before, after);
+			const html = diff
+				.map((d) => {
+					const cls = d.type === "add" ? "diff-add" : d.type === "del" ? "diff-del" : "diff-ctx";
+					const prefix = d.type === "add" ? "+ " : d.type === "del" ? "- " : "  ";
+					return '<span class="diff-line ' + cls + '">' + escHtml(prefix + d.text) + "</span>";
+				})
+				.join("");
+			el.promptOverrideDiff.innerHTML = html;
+		}
+	}
+}
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 

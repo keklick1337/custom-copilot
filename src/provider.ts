@@ -30,6 +30,7 @@ import type { GeminiGenerateContentRequest } from "./gemini/geminiTypes";
 import { CommonApi } from "./commonApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
+import { applyPromptOverride } from "./promptOverride";
 
 /**
  * VS Code Chat provider backed by Hugging Face Inference Providers.
@@ -176,6 +177,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	): Promise<void> {
 		const requestStartTime = Date.now();
 		try {
+			// Rewrite the system prompt that Copilot Chat assembled, per the user's
+			// customcopilot.promptOverride.* settings (no-op when disabled). This is
+			// the single chokepoint before any adapter converts the messages. It also
+			// captures the original system prompt so it can be viewed/reused in the UI.
+			messages = applyPromptOverride(messages, model.id);
+
 			// get model config from user settings
 			const config = vscode.workspace.getConfiguration();
 			const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));

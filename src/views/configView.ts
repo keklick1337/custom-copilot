@@ -7,6 +7,8 @@ import { CommonApi } from "../commonApi";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
 import { VersionManager } from "../versionManager";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
+import { getCapturedSystemPrompt } from "../promptCapture";
+import { testPromptOverride, type PromptOverrideMode, type PromptReplacement } from "../promptOverride";
 
 interface InitPayload {
 	proxyUrl: string;
@@ -26,6 +28,11 @@ interface InitPayload {
 	allowAnonymousAccess: boolean;
 	restoreChatSessions: boolean;
 	telemetryDisabled: boolean;
+	debugRequestLogging: boolean;
+	promptOverrideEnabled: boolean;
+	promptOverrideMode: string;
+	promptOverrideText: string;
+	promptOverrideReplacements: unknown[];
 	chatRetries: number;
 	chatRetryInterval: number;
 	chatRetryJitter: number;
@@ -121,6 +128,11 @@ type IncomingMessage =
 	| { type: "setAnonymousAccess"; enabled: boolean }
 	| { type: "setRestoreChatSessions"; enabled: boolean }
 	| { type: "setTelemetryDisabled"; disabled: boolean }
+	| { type: "setDebugRequestLogging"; enabled: boolean }
+	| { type: "setPromptOverrideEnabled"; enabled: boolean }
+	| { type: "savePromptOverride"; mode: string; text: string; replacements: unknown[] }
+	| { type: "requestCapturedPrompt" }
+	| { type: "testPromptOverride"; mode: string; text: string; replacements: unknown[] }
 	| { type: "setChatRetries"; value: number }
 	| { type: "setChatRetryInterval"; value: number }
 	| { type: "setChatRetryJitter"; value: number }
@@ -152,7 +164,15 @@ type OutgoingMessage =
 				lastErrorAt?: number;
 			}>;
 	  }
-	| { type: "confirmResponse"; id: string; confirmed: boolean };
+	| { type: "confirmResponse"; id: string; confirmed: boolean }
+	| { type: "capturedPrompt"; text: string; capturedAt?: number; modelId?: string }
+	| {
+			type: "promptOverrideTestResult";
+			original: string;
+			result: string;
+			diagnostics: Array<{ index: number; find: string; isRegex: boolean; matches: number | null; error?: string }>;
+			hasCapture: boolean;
+	  };
 
 export class ConfigViewController {
 	private readonly webview: vscode.Webview;
@@ -308,6 +328,21 @@ export class ConfigViewController {
 			case "setTelemetryDisabled":
 				await this.setTelemetryDisabled(message.disabled);
 				break;
+			case "setDebugRequestLogging":
+				await this.setDebugRequestLogging(message.enabled);
+				break;
+			case "setPromptOverrideEnabled":
+				await this.setPromptOverrideEnabled(message.enabled);
+				break;
+			case "savePromptOverride":
+				await this.savePromptOverride(message.mode, message.text, message.replacements);
+				break;
+			case "requestCapturedPrompt":
+				this.sendCapturedPrompt();
+				break;
+			case "testPromptOverride":
+				this.sendPromptOverrideTest(message.mode, message.text, message.replacements);
+				break;
 			case "setChatRetries":
 				await this.setChatRetries(message.value);
 				break;
@@ -425,6 +460,11 @@ export class ConfigViewController {
 		const allowAnonymousAccess = config.get<boolean>("chat.allowAnonymousAccess", false);
 		const restoreChatSessions = config.get<boolean>("chat.restoreLastPanelSession", false);
 		const telemetryDisabled = config.get<string>("telemetry.telemetryLevel", "all") === "off";
+		const debugRequestLogging = config.get<boolean>("customcopilot.debugRequestLogging", false);
+		const promptOverrideEnabled = config.get<boolean>("customcopilot.promptOverride.enabled", false);
+		const promptOverrideMode = config.get<string>("customcopilot.promptOverride.mode", "append");
+		const promptOverrideText = config.get<string>("customcopilot.promptOverride.text", "");
+		const promptOverrideReplacements = config.get<unknown[]>("customcopilot.promptOverride.replacements", []);
 		const chatRetries = config.get<number>("customcopilot.chatRetries", 0);
 		const chatRetryInterval = config.get<number>("customcopilot.chatRetryInterval", 1000);
 		const chatRetryJitter = config.get<number>("customcopilot.chatRetryJitter", 0);
@@ -441,6 +481,11 @@ export class ConfigViewController {
 			allowAnonymousAccess,
 			restoreChatSessions,
 			telemetryDisabled,
+			debugRequestLogging,
+			promptOverrideEnabled,
+			promptOverrideMode,
+			promptOverrideText,
+			promptOverrideReplacements,
 			chatRetries,
 			chatRetryInterval,
 			chatRetryJitter,
@@ -1118,6 +1163,79 @@ export class ConfigViewController {
 				: "VS Code telemetry re-enabled (level: all)."
 		);
 		await this.sendInit();
+	}
+
+	private async setDebugRequestLogging(enabled: boolean) {
+		const config = vscode.workspace.getConfiguration();
+		// When enabled, failed API requests are printed to the Developer Tools console as a
+		// reproducible curl command plus the server response body (sensitive headers masked).
+		await config.update("customcopilot.debugRequestLogging", enabled, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			enabled
+				? "Debug request logging enabled. Failed requests are printed to the Developer Tools console as curl + response."
+				: "Debug request logging disabled."
+		);
+		await this.sendInit();
+	}
+
+	private async setPromptOverrideEnabled(enabled: boolean) {
+		const config = vscode.workspace.getConfiguration();
+		// When enabled, the system prompt Copilot assembled is rewritten (per the
+		// promptOverride.mode/text/replacements settings) before being forwarded to
+		// the endpoint, for ALL models served by this extension.
+		await config.update("customcopilot.promptOverride.enabled", enabled, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			enabled
+				? "System prompt override enabled. The system prompt will be rewritten for all models."
+				: "System prompt override disabled. The original Copilot system prompt is used."
+		);
+		await this.sendInit();
+	}
+
+	private async savePromptOverride(mode: string, text: string, replacements: unknown[]) {
+		const config = vscode.workspace.getConfiguration();
+		const allowedModes = ["off", "append", "prepend", "replace"];
+		const normalizedMode = allowedModes.includes(mode) ? mode : "append";
+		const normalizedReplacements = Array.isArray(replacements) ? replacements : [];
+		await config.update("customcopilot.promptOverride.mode", normalizedMode, vscode.ConfigurationTarget.Global);
+		await config.update("customcopilot.promptOverride.text", text ?? "", vscode.ConfigurationTarget.Global);
+		await config.update(
+			"customcopilot.promptOverride.replacements",
+			normalizedReplacements,
+			vscode.ConfigurationTarget.Global
+		);
+		vscode.window.showInformationMessage("System prompt override saved.");
+		await this.sendInit();
+	}
+
+	private sendCapturedPrompt() {
+		// Send the most recent ORIGINAL system prompt Copilot assembled, so the
+		// webview can show it and the user can copy it as a base for their override.
+		const captured = getCapturedSystemPrompt();
+		this.webview.postMessage({
+			type: "capturedPrompt",
+			text: captured?.text ?? "",
+			capturedAt: captured?.capturedAt,
+			modelId: captured?.modelId,
+		} as OutgoingMessage);
+	}
+
+	private sendPromptOverrideTest(mode: string, text: string, replacements: unknown[]) {
+		// Dry-run the (possibly unsaved) override against the captured prompt so
+		// the UI can show a before/after diff without sending a real chat request.
+		const captured = getCapturedSystemPrompt();
+		const original = captured?.text ?? "";
+		const allowedModes = ["off", "append", "prepend", "replace"];
+		const normalizedMode = (allowedModes.includes(mode) ? mode : "append") as PromptOverrideMode;
+		const rules = Array.isArray(replacements) ? (replacements as PromptReplacement[]) : [];
+		const test = testPromptOverride(original, normalizedMode, text ?? "", rules);
+		this.webview.postMessage({
+			type: "promptOverrideTestResult",
+			original: test.original,
+			result: test.result,
+			diagnostics: test.diagnostics,
+			hasCapture: !!captured && original.trim().length > 0,
+		} as OutgoingMessage);
 	}
 
 	private async setChatRetries(value: number) {

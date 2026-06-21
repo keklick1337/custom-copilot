@@ -114,6 +114,117 @@
 							</div>
 						</div>
 						<div class="row">
+							<div class="field field-wide">
+								<label class="checkbox-label">
+									<input id="debugRequestLogging" type="checkbox" />
+									Debug request logging (curl + response on errors)
+								</label>
+								<div class="field-description">
+									When a request to a provider fails, print a reproducible <code>curl</code> command and the server's
+									response body to the Developer Tools console (Help &gt; Toggle Developer Tools). Sensitive headers
+									(API keys, tokens) are masked. Sets <code>customcopilot.debugRequestLogging</code>. Useful for
+									debugging request/response problems.
+								</div>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label class="checkbox-label">
+									<input id="promptOverrideEnabled" type="checkbox" />
+									Override the system prompt (all models)
+								</label>
+								<div class="field-description">
+									This extension is a provider: Copilot Chat builds the full system prompt (its identity, safety
+									rules, tool instructions) and sends it here. Enable this to rewrite that system prompt before it is
+									forwarded to your endpoint — replace or extend the default prompt and its parts (e.g. stricter safety
+									rules) for all models. Sets <code>customcopilot.promptOverride.*</code>.
+								</div>
+							</div>
+						</div>
+						<div id="promptOverrideBody">
+							<div class="row">
+								<div class="field field-wide">
+									<label>Default system prompt (captured)</label>
+									<div class="field-description">
+										The original system prompt Copilot Chat assembled and sent on the most recent request. Send a
+										chat message first, then refresh to capture it. Copy it here as a starting point, then paste into
+										the box below and switch the mode to "Replace" to fully rewrite it.
+									</div>
+									<div class="row" style="gap: 8px; margin: 0">
+										<button id="promptCaptureRefresh" class="secondary-btn" type="button">Refresh captured prompt</button>
+										<button id="promptCaptureCopy" class="secondary-btn" type="button">Copy</button>
+										<button id="promptCaptureUseAsText" class="secondary-btn" type="button">Use as override text</button>
+										<span id="promptCaptureStatus" class="field-description" style="align-self: center"></span>
+									</div>
+									<textarea
+										id="promptCaptureText"
+										rows="8"
+										readonly
+										placeholder="No prompt captured yet. Send a chat message to one of your models, then click Refresh."
+									></textarea>
+								</div>
+							</div>
+							<div class="row">
+								<div class="field">
+									<label for="promptOverrideMode">Combine mode</label>
+									<div class="field-description">
+										How your text below is combined with Copilot's system prompt.
+									</div>
+									<select id="promptOverrideMode">
+										<option value="off">Off (only run find/replace rules)</option>
+										<option value="append">Append (Copilot's prompt, then your text)</option>
+										<option value="prepend">Prepend (your text, then Copilot's prompt)</option>
+										<option value="replace">Replace (use only your text)</option>
+									</select>
+								</div>
+							</div>
+							<div class="row">
+								<div class="field field-wide">
+									<label for="promptOverrideText">Custom system prompt text</label>
+									<div class="field-description">
+										Combined with the original prompt per the mode above. Use it to add stricter rules, change the
+										assistant's identity, or fully replace the default prompt.
+									</div>
+									<textarea
+										id="promptOverrideText"
+										rows="6"
+										placeholder="You are a senior engineer. Follow these stricter rules: ..."
+									></textarea>
+								</div>
+							</div>
+							<div class="row">
+								<div class="field field-wide">
+									<label for="promptOverrideReplacements">Find / replace rules (rewrite parts)</label>
+									<div class="field-description">
+										One JSON object per line to rewrite individual parts of the prompt — e.g. swap the safety block.
+										Keys: <code>find</code> (required), <code>replace</code>, <code>isRegex</code> (true/false),
+										<code>flags</code> (default "g"). Applied in order, after the combine step.
+										Example: <code>{"find":"Keep your answers short and impersonal.","replace":"Be thorough and detailed."}</code>
+									</div>
+									<textarea
+										id="promptOverrideReplacements"
+										rows="5"
+										placeholder='{"find":"Sorry, I can&apos;t assist with that.","replace":"I will not help with that request."}'
+									></textarea>
+									<div id="promptOverrideReplacementsError" class="field-description" style="display: none; color: var(--vscode-errorForeground)"></div>
+								</div>
+							</div>
+							<div class="row">
+								<div class="field field-wide">
+									<button id="promptOverrideSave" class="secondary-btn" type="button">Save prompt override</button>
+									<button id="promptOverrideTest" class="secondary-btn" type="button">Test (preview diff)</button>
+									<span id="promptOverrideStatus" class="field-description" style="margin-left: 8px"></span>
+								</div>
+							</div>
+							<div class="row" id="promptOverrideTestRow" style="display: none">
+								<div class="field field-wide">
+									<label>Test result</label>
+									<div id="promptOverrideTestSummary" class="field-description"></div>
+									<div id="promptOverrideDiff" class="prompt-diff"></div>
+								</div>
+							</div>
+						</div>
+						<div class="row">
 							<div class="field">
 								<label for="chatRetries">Automatic chat retries</label>
 								<div class="field-description">

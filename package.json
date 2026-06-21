@@ -25,7 +25,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.12",
+	"version": "1.0.19",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -160,6 +160,70 @@
 					"type": "string",
 					"default": "",
 					"description": "Optional global proxy URL for API requests (supports socks5://, socks5h://, http://, https://)."
+				},
+				"customcopilot.debugRequestLogging": {
+					"type": "boolean",
+					"default": false,
+					"description": "When enabled, failed API requests are printed to the console (Help > Toggle Developer Tools) as a reproducible curl command plus the server response body. Sensitive headers (API keys, tokens) are masked. Useful for debugging request/response issues."
+				},
+				"customcopilot.promptOverride.enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "Override the system prompt that Copilot Chat sends for ALL models served by this extension. When enabled, the system prompt is rewritten (per the settings below) before being forwarded to your endpoint. Lets you replace or extend the default prompt and its parts (e.g. safety rules) with your own."
+				},
+				"customcopilot.promptOverride.mode": {
+					"type": "string",
+					"default": "append",
+					"enum": [
+						"off",
+						"append",
+						"prepend",
+						"replace"
+					],
+					"enumDescriptions": [
+						"Do not change the system text with your text (find/replace rules still run).",
+						"Keep Copilot's system prompt and add your text after it.",
+						"Add your text before Copilot's system prompt.",
+						"Discard Copilot's system prompt entirely and use only your text."
+					],
+					"description": "How 'customcopilot.promptOverride.text' is combined with the system prompt Copilot assembled. Only applies when 'customcopilot.promptOverride.enabled' is true."
+				},
+				"customcopilot.promptOverride.text": {
+					"type": "string",
+					"default": "",
+					"editPresentation": "multilineText",
+					"description": "Your custom system prompt text. Combined with the original system prompt per 'customcopilot.promptOverride.mode'. Use this to add stricter rules, change the assistant's identity, or fully replace the default prompt."
+				},
+				"customcopilot.promptOverride.replacements": {
+					"type": "array",
+					"default": [],
+					"description": "Surgical find/replace rules applied to the (combined) system prompt. Use these to rewrite individual PARTS of the default prompt — e.g. swap Copilot's safety block for your own stricter rules. Applied in order, after the mode/text combination.",
+					"items": {
+						"type": "object",
+						"required": [
+							"find"
+						],
+						"properties": {
+							"find": {
+								"type": "string",
+								"description": "Text (or regular expression, if 'isRegex' is true) to search for in the system prompt."
+							},
+							"replace": {
+								"type": "string",
+								"description": "Replacement text. Leave empty to delete the matched text."
+							},
+							"isRegex": {
+								"type": "boolean",
+								"default": false,
+								"description": "Treat 'find' as a regular expression."
+							},
+							"flags": {
+								"type": "string",
+								"default": "g",
+								"description": "Regular expression flags (default 'g'). Only used when 'isRegex' is true."
+							}
+						}
+					}
 				},
 				"customcopilot.models": {
 					"type": "array",

@@ -1197,3 +1197,38 @@ tr:hover td {
 	font-size: 12px;
 	opacity: 0.9;
 }
+
+.prompt-diff {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+	border-radius: 4px;
+	padding: 8px;
+	max-height: 360px;
+	overflow: auto;
+	background: var(--vscode-editor-background);
+}
+
+.prompt-diff .diff-line {
+	display: block;
+	padding: 0 4px;
+}
+
+.prompt-diff .diff-add {
+	background: var(--vscode-diffEditor-insertedTextBackground, rgba(70, 160, 70, 0.25));
+	color: var(--vscode-foreground);
+}
+
+.prompt-diff .diff-del {
+	background: var(--vscode-diffEditor-removedTextBackground, rgba(200, 70, 70, 0.25));
+	color: var(--vscode-foreground);
+	text-decoration: line-through;
+	opacity: 0.85;
+}
+
+.prompt-diff .diff-ctx {
+	opacity: 0.7;
+}
+
