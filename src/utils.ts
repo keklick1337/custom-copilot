@@ -12,6 +12,31 @@ const RETRY_MAX_INTERVAL_MS = 60000;
 // HTTP status codes that should trigger a retry
 const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 
+// HTTP status codes that are PERMANENT for this request body and must NEVER be
+// retried or key-rotated: the payload itself is the problem, so re-sending it
+// (even with a different key) just wastes attempts. 413 = body too large,
+// 414 = URI too long, 431 = headers too large, 400/422 = malformed/invalid
+// request. These win even if the user added them to the retryable list.
+const NON_RETRYABLE_STATUS_CODES = [400, 413, 414, 422, 431];
+
+/**
+ * True when the error represents a PERMANENT failure that must never be retried
+ * (regardless of which retry layer is asking): a user cancellation, or a
+ * permanent HTTP status like 413 where re-sending the same body cannot succeed.
+ * Used by BOTH the per-request retry (`executeWithRetry`) and the chat-level
+ * "auto Try Again" loop so neither one re-sends an oversized/aborted request.
+ */
+export function isNonRetryableError(error: unknown, token?: vscode.CancellationToken): boolean {
+	if (token?.isCancellationRequested) {
+		return true;
+	}
+	if (error instanceof vscode.CancellationError) {
+		return true;
+	}
+	const message = error instanceof Error ? error.message : String(error ?? "");
+	return NON_RETRYABLE_STATUS_CODES.some((code) => message.includes(`[${code}]`));
+}
+
 // Network error patterns to retry
 const networkErrorPatterns = [
 	"fetch failed",
@@ -278,10 +303,20 @@ export function createRetryConfig(): RetryConfig {
  * Execute a function with retry logic for rate limiting.
  * @param fn The async function to execute
  * @param retryConfig Retry configuration
- * @param token Cancellation token
+ * @param token Optional cancellation token. When the user presses Stop in VS
+ *   Code, the loop aborts immediately instead of continuing to re-send the
+ *   request and rotate keys.
  * @returns Result of the function execution
  */
-export async function executeWithRetry<T>(fn: () => Promise<T>, retryConfig: RetryConfig): Promise<T> {
+export async function executeWithRetry<T>(
+	fn: () => Promise<T>,
+	retryConfig: RetryConfig,
+	token?: vscode.CancellationToken
+): Promise<T> {
+	// If cancellation was already requested before we start, do nothing.
+	if (token?.isCancellationRequested) {
+		throw new vscode.CancellationError();
+	}
 	if (!retryConfig.enabled) {
 		return await fn();
 	}
@@ -295,10 +330,22 @@ export async function executeWithRetry<T>(fn: () => Promise<T>, retryConfig: Ret
 	let lastError: Error | undefined;
 
 	for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+		// Stop was pressed between attempts — bail out without re-sending.
+		if (token?.isCancellationRequested) {
+			throw new vscode.CancellationError();
+		}
 		try {
 			return await fn();
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
+
+			// Permanent failures — user cancellation or a permanent HTTP status like
+			// 413 (body too large) — must never be retried or key-rotated: re-sending
+			// the same payload can never succeed. This check wins over the user's
+			// retryable list.
+			if (isNonRetryableError(lastError, token)) {
+				throw lastError;
+			}
 
 			// Check if error is retryable based on status codes
 			const isRetryableStatusError = retryableStatusCodes.some((code) => lastError?.message.includes(`[${code}]`));
@@ -332,8 +379,12 @@ export async function executeWithRetry<T>(fn: () => Promise<T>, retryConfig: Ret
 				lastError instanceof Error ? { name: lastError.name, message: lastError.message } : String(lastError)
 			);
 
-			// Wait for the calculated interval before retrying
-			await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+			// Wait for the calculated interval before retrying, but wake up early
+			// (and abort) if the user cancels during the backoff.
+			const cancelled = await delayOrCancel(delayMs, token);
+			if (cancelled) {
+				throw new vscode.CancellationError();
+			}
 		}
 	}
 
@@ -343,6 +394,31 @@ export async function executeWithRetry<T>(fn: () => Promise<T>, retryConfig: Ret
 		lastError: lastError ? { name: lastError.name, message: lastError.message } : String(lastError),
 	});
 	throw lastError || new Error("Retry failed");
+}
+
+/**
+ * Sleep for `delayMs`, resolving early with `true` if the cancellation token
+ * fires during the wait. Resolves with `false` on a normal timeout.
+ */
+export function delayOrCancel(delayMs: number, token?: vscode.CancellationToken): Promise<boolean> {
+	return new Promise<boolean>((resolve) => {
+		if (token?.isCancellationRequested) {
+			resolve(true);
+			return;
+		}
+		const timer = setTimeout(() => {
+			sub?.dispose();
+			resolve(false);
+		}, delayMs);
+		// `sub` is referenced by the timer callback above, but that callback only
+		// runs asynchronously (after this function returns), so a `const` declared
+		// here is safely initialised before any access.
+		const sub = token?.onCancellationRequested(() => {
+			clearTimeout(timer);
+			sub?.dispose();
+			resolve(true);
+		});
+	});
 }
 
 /**

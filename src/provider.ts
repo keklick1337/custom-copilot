@@ -13,7 +13,15 @@ import type { HFApiMode, HFModelItem } from "./types";
 
 import type { OllamaRequestBody } from "./ollama/ollamaTypes";
 
-import { parseModelId, createRetryConfig, executeWithRetry, normalizeUserModels, resolveProxyUrl } from "./utils";
+import {
+	parseModelId,
+	createRetryConfig,
+	executeWithRetry,
+	normalizeUserModels,
+	resolveProxyUrl,
+	isNonRetryableError,
+	delayOrCancel,
+} from "./utils";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { countMessageTokens } from "./provideToken";
@@ -138,12 +146,26 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 		const chatRetryJitterMs = Math.max(0, retrySettings.get<number>("customcopilot.chatRetryJitter", 0));
 		let chatAttempt = 0;
 		for (;;) {
+			// Bail out before (re)starting if the user already pressed Stop.
+			if (token.isCancellationRequested) {
+				return;
+			}
 			try {
 				await this.runChatResponse(model, messages, options, trackingProgress, token);
 				return;
 			} catch (err) {
+				// Never retry when: the user cancelled, the error is permanent for this
+				// payload (e.g. 413 Request Entity Too Large — re-sending the same body
+				// can never succeed), something was already streamed, or attempts are
+				// exhausted. This loop is independent from `executeWithRetry`, so it must
+				// apply the same non-retryable rules or a 413 would loop here forever.
 				const canRetry = chatRetries < 0 || chatAttempt < chatRetries;
-				if (token.isCancellationRequested || hasReported || !canRetry) {
+				if (
+					token.isCancellationRequested ||
+					isNonRetryableError(err, token) ||
+					hasReported ||
+					!canRetry
+				) {
 					throw err;
 				}
 				chatAttempt++;
@@ -156,8 +178,13 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					delayMs,
 					errorMessage: err instanceof Error ? err.message : String(err),
 				});
+				// Cancellable wait: if Stop is pressed during the backoff, abort the
+				// loop instead of firing another request.
 				if (delayMs > 0) {
-					await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+					const cancelled = await delayOrCancel(delayMs, token);
+					if (cancelled) {
+						return;
+					}
 				}
 			}
 		}
@@ -176,6 +203,9 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 		token: CancellationToken
 	): Promise<void> {
 		const requestStartTime = Date.now();
+		// Declared here so the `finally` block can always dispose it. Set once the
+		// request's AbortController is wired to the cancellation token below.
+		let cancelSub: vscode.Disposable | undefined;
 		try {
 			// Rewrite the system prompt that Copilot Chat assembled, per the user's
 			// customcopilot.promptOverride.* settings (no-op when disabled). This is
@@ -290,6 +320,19 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			const proxyUrl = resolveProxyUrl(um?.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
 			const requestNetworkInit = buildFetchNetworkInit(proxyUrl);
 
+			// Abort the in-flight HTTP request the moment the user presses Stop in VS
+			// Code. Without this, a large body (e.g. a 1.8MB request that the server
+			// rejects with 413) keeps uploading and the retry loop keeps re-sending
+			// it. Wiring the token to an AbortController and attaching its signal to
+			// every fetch (all sites spread `...requestNetworkInit`) cuts the request
+			// off immediately. `executeWithRetry` separately stops looping on cancel.
+			const abortController = new AbortController();
+			cancelSub = token.onCancellationRequested(() => abortController.abort());
+			if (token.isCancellationRequested) {
+				abortController.abort();
+			}
+			(requestNetworkInit as RequestInit).signal = abortController.signal;
+
 			// Per-attempt header builder: picks the healthiest key from the balancer
 			// each time it is called so executeWithRetry rotates keys across attempts.
 			// `triedKeys` makes each retry prefer a key not yet used in this request,
@@ -384,7 +427,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
-				}, retryConfig);
+				}, retryConfig, token);
 
 				if (!response.body) {
 					throw new Error("No response body from Ollama API");
@@ -432,7 +475,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
-				}, retryConfig);
+				}, retryConfig, token);
 
 				if (!response.body) {
 					throw new Error("No response body from Anthropic API");
@@ -513,7 +556,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 						keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 						return res;
-					}, retryConfig);
+					}, retryConfig, token);
 
 				let response: Response;
 				try {
@@ -610,7 +653,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
-				}, retryConfig);
+				}, retryConfig, token);
 
 				if (!response.body) {
 					throw new Error("No response body from Gemini API");
@@ -654,7 +697,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
 					return res;
-				}, retryConfig);
+				}, retryConfig, token);
 
 				if (!response.body) {
 					throw new Error("No response body from API");
@@ -679,6 +722,8 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			logger.info("request.end", { modelId: model.id, durationMs });
 			// Update last request time after successful completion
 			this._lastRequestTime = Date.now();
+			// Stop listening for cancellation; the request is done.
+			cancelSub?.dispose();
 		}
 	}
 
