@@ -3,6 +3,7 @@ import type { HFApiMode, HFModelItem } from "../types";
 import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
 import { fetchModels, fetchModelsIntersection } from "../provideModel";
 import { parseApiKeys, keyBalancer } from "../keyBalancer";
+import { resolveApiKeysFromSource } from "../apiKeySource";
 import { CommonApi } from "../commonApi";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
 import { VersionManager } from "../versionManager";
@@ -25,6 +26,7 @@ interface InitPayload {
 	commitLanguage: string;
 	models: HFModelItem[];
 	providerKeys: Record<string, string>;
+	providerKeySources: Record<string, string>;
 	allowAnonymousAccess: boolean;
 	restoreChatSessions: boolean;
 	telemetryDisabled: boolean;
@@ -53,6 +55,7 @@ interface ExportConfig {
 	commitModel: string;
 	models: HFModelItem[];
 	providerKeys: Record<string, string>;
+	providerKeySources?: Record<string, string>;
 	readFileLines: number;
 }
 
@@ -73,6 +76,7 @@ type IncomingMessage =
 			type: "fetchModels";
 			baseUrl: string;
 			apiKey: string;
+			apiKeySource?: string;
 			apiMode?: HFApiMode | string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
@@ -82,6 +86,7 @@ type IncomingMessage =
 			type: "testModelKeys";
 			baseUrl: string;
 			apiKey: string;
+			apiKeySource?: string;
 			apiMode?: HFApiMode | string;
 			modelId: string;
 			headers?: Record<string, string>;
@@ -92,6 +97,7 @@ type IncomingMessage =
 			type: "refreshModelsFromApi";
 			baseUrl: string;
 			apiKey: string;
+			apiKeySource?: string;
 			proxyUrl?: string;
 			userAgent?: string;
 	  }
@@ -100,6 +106,7 @@ type IncomingMessage =
 			provider: string;
 			baseUrl?: string;
 			apiKey?: string;
+			apiKeySource?: string;
 			apiMode?: string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
@@ -111,6 +118,7 @@ type IncomingMessage =
 			provider: string;
 			baseUrl?: string;
 			apiKey?: string;
+			apiKeySource?: string;
 			apiMode?: string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
@@ -238,7 +246,7 @@ export class ConfigViewController {
 				break;
 			case "fetchModels": {
 				try {
-					const apiKeys = parseApiKeys(message.apiKey);
+					const apiKeys = await this.resolveKeysForRequest(message.apiKey, message.apiKeySource, message.proxyUrl);
 					const { models, keyResults } = await fetchModelsIntersection(
 						message.baseUrl,
 						apiKeys.length ? apiKeys : [message.apiKey],
@@ -258,12 +266,17 @@ export class ConfigViewController {
 				break;
 			}
 			case "refreshModelsFromApi":
-				await this.refreshModelsFromApi(message.baseUrl, message.apiKey, message.proxyUrl, message.userAgent);
+				await this.refreshModelsFromApi(
+					message.baseUrl,
+					await this.resolveKeyStringForRequest(message.apiKey, message.apiKeySource, message.proxyUrl),
+					message.proxyUrl,
+					message.userAgent
+				);
 				break;
 			case "testModelKeys":
 				await this.testModelKeys(
 					message.baseUrl,
-					message.apiKey,
+					await this.resolveKeyStringForRequest(message.apiKey, message.apiKeySource, message.proxyUrl),
 					message.modelId,
 					message.apiMode,
 					message.headers,
@@ -276,6 +289,7 @@ export class ConfigViewController {
 					message.provider,
 					message.baseUrl,
 					message.apiKey,
+					message.apiKeySource,
 					message.apiMode,
 					message.headers,
 					message.proxyUrl,
@@ -288,6 +302,7 @@ export class ConfigViewController {
 					message.provider,
 					message.baseUrl,
 					message.apiKey,
+					message.apiKeySource,
 					message.apiMode,
 					message.headers,
 					message.proxyUrl,
@@ -378,6 +393,30 @@ export class ConfigViewController {
 		}
 	}
 
+	/**
+	 * Resolve the API keys to use for a one-off discovery/test request from the
+	 * configuration UI. Inline keys (from the textarea) take precedence; when they
+	 * are empty but a remote source is provided, the list is fetched from it so
+	 * discovery works for providers that only configure a remote key source.
+	 */
+	private async resolveKeysForRequest(apiKey?: string, apiKeySource?: string, proxyUrl?: string): Promise<string[]> {
+		const inline = parseApiKeys(apiKey ?? "");
+		if (inline.length > 0) {
+			return inline;
+		}
+		const source = (apiKeySource ?? "").trim();
+		if (source) {
+			return await resolveApiKeysFromSource(source, { proxyUrl });
+		}
+		return [];
+	}
+
+	/** Newline-joined variant of {@link resolveKeysForRequest} for callers that re-parse the string. */
+	private async resolveKeyStringForRequest(apiKey?: string, apiKeySource?: string, proxyUrl?: string): Promise<string> {
+		const keys = await this.resolveKeysForRequest(apiKey, apiKeySource, proxyUrl);
+		return keys.join("\n");
+	}
+
 	private async sendKeyStats(provider: string) {
 		const normalized = (provider || "").toLowerCase();
 		if (!normalized) {
@@ -388,7 +427,15 @@ export class ConfigViewController {
 		if (!key && normalized !== provider) {
 			key = await this.secrets.get(`customcopilot.apiKey.${provider}`);
 		}
-		const keys = parseApiKeys(key ?? "");
+		let keys = parseApiKeys(key ?? "");
+		// When keys are sourced remotely, resolve them so the health table reflects
+		// the current pool instead of appearing empty.
+		if (keys.length === 0) {
+			const source = await this.secrets.get(`customcopilot.apiKeySource.${normalized}`);
+			if (source && source.trim()) {
+				keys = await resolveApiKeysFromSource(source);
+			}
+		}
 		const stats = keyBalancer.getStats(normalized, keys);
 		this.webview.postMessage({ type: "keyStats", provider, stats } as OutgoingMessage);
 	}
@@ -423,6 +470,7 @@ export class ConfigViewController {
 		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 		const providerKeys: Record<string, string> = {};
+		const providerKeySources: Record<string, string> = {};
 		const providers = Array.from(new Set(models.map((m) => m.owned_by).filter(Boolean)));
 		for (const provider of providers) {
 			const normalized = provider.toLowerCase();
@@ -438,6 +486,10 @@ export class ConfigViewController {
 			}
 			if (key) {
 				providerKeys[provider] = key;
+			}
+			const source = await this.secrets.get(`customcopilot.apiKeySource.${normalized}`);
+			if (source) {
+				providerKeySources[provider] = source;
 			}
 		}
 
@@ -478,6 +530,7 @@ export class ConfigViewController {
 			commitLanguage,
 			models,
 			providerKeys,
+			providerKeySources,
 			allowAnonymousAccess,
 			restoreChatSessions,
 			telemetryDisabled,
@@ -788,6 +841,7 @@ export class ConfigViewController {
 		provider: string,
 		baseUrl?: string,
 		apiKey?: string,
+		apiKeySource?: string,
 		apiMode?: string,
 		headers?: Record<string, string>,
 		proxyUrl?: string,
@@ -807,6 +861,8 @@ export class ConfigViewController {
 				await this.secrets.delete(`customcopilot.apiKey.${trimmedProvider}`);
 			}
 		}
+		// Save (or clear) the remote API-key source for the provider.
+		await this.storeApiKeySource(normalizedProvider, apiKeySource);
 
 		// Save provider configuration to the model list
 		const config = vscode.workspace.getConfiguration();
@@ -838,6 +894,7 @@ export class ConfigViewController {
 		provider: string,
 		baseUrl?: string,
 		apiKey?: string,
+		apiKeySource?: string,
 		apiMode?: string,
 		headers?: Record<string, string>,
 		proxyUrl?: string,
@@ -862,6 +919,8 @@ export class ConfigViewController {
 				await this.secrets.delete(`customcopilot.apiKey.${trimmedProvider}`);
 			}
 		}
+		// Update (or clear) the remote API-key source for the provider.
+		await this.storeApiKeySource(normalizedProvider, apiKeySource);
 
 		// Update the provider's configuration in the model list
 		const config = vscode.workspace.getConfiguration();
@@ -893,6 +952,20 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
+	/**
+	 * Store (or delete when empty) the remote API-key source secret for a provider.
+	 * @param normalizedProvider Lowercased provider id.
+	 * @param source URL/file path to fetch keys from; empty/undefined clears it.
+	 */
+	private async storeApiKeySource(normalizedProvider: string, source?: string) {
+		const trimmed = (source ?? "").trim();
+		if (trimmed) {
+			await this.secrets.store(`customcopilot.apiKeySource.${normalizedProvider}`, trimmed);
+		} else {
+			await this.secrets.delete(`customcopilot.apiKeySource.${normalizedProvider}`);
+		}
+	}
+
 	private async deleteProvider(provider: string) {
 		const trimmedProvider = provider.trim();
 		if (!trimmedProvider) {
@@ -904,6 +977,11 @@ export class ConfigViewController {
 		await this.secrets.delete(`customcopilot.apiKey.${normalizedProvider}`);
 		if (trimmedProvider !== normalizedProvider) {
 			await this.secrets.delete(`customcopilot.apiKey.${trimmedProvider}`);
+		}
+		// Delete the remote API-key source
+		await this.secrets.delete(`customcopilot.apiKeySource.${normalizedProvider}`);
+		if (trimmedProvider !== normalizedProvider) {
+			await this.secrets.delete(`customcopilot.apiKeySource.${trimmedProvider}`);
 		}
 
 		// Remove all models of this provider from the model list
@@ -1444,12 +1522,17 @@ export class ConfigViewController {
 			const commitModel = foundModel ? `${foundModel.id}${foundModel.configId ? "::" + foundModel.configId : ""}` : "";
 
 			const providerKeys: Record<string, string> = {};
+			const providerKeySources: Record<string, string> = {};
 			const providers = Array.from(new Set(models.map((m) => m.owned_by).filter(Boolean)));
 			for (const provider of providers) {
 				const normalized = provider.toLowerCase();
 				const key = await this.secrets.get(`customcopilot.apiKey.${normalized}`);
 				if (key) {
 					providerKeys[provider] = key;
+				}
+				const source = await this.secrets.get(`customcopilot.apiKeySource.${normalized}`);
+				if (source) {
+					providerKeySources[provider] = source;
 				}
 			}
 
@@ -1464,6 +1547,7 @@ export class ConfigViewController {
 				models,
 				readFileLines,
 				providerKeys,
+				providerKeySources,
 			};
 
 			const uri = await vscode.window.showSaveDialog({
@@ -1527,6 +1611,12 @@ export class ConfigViewController {
 					await this.secrets.store(`customcopilot.apiKey.${normalized}`, key);
 				} else {
 					await this.secrets.delete(`customcopilot.apiKey.${normalized}`);
+				}
+			}
+
+			if (importData.providerKeySources) {
+				for (const [provider, source] of Object.entries(importData.providerKeySources)) {
+					await this.storeApiKeySource(provider.toLowerCase(), source);
 				}
 			}
 

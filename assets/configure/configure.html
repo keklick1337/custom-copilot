@@ -411,8 +411,20 @@
 							<div class="field">
 								<label for="pApiKey">API Key(s)</label>
 								<div class="field-description">
-									Stored in VS Code secrets. Enter <strong>one key per line</strong> to load-balance requests across
-									keys.
+									Stored in VS Code secrets. Choose how keys are provided:
+									paste them <strong>inline</strong> (one per line to load-balance), or point to a
+									<strong>file/URL</strong> that returns a key list — fetched fresh on every request so
+									rotated keys are picked up automatically.
+								</div>
+								<div class="key-source-toggle" role="radiogroup" aria-label="API key source">
+									<label class="key-source-opt">
+										<input type="radio" name="pKeyMode" id="pKeyModeInline" value="inline" checked />
+										<span>Inline keys</span>
+									</label>
+									<label class="key-source-opt">
+										<input type="radio" name="pKeyMode" id="pKeyModeRemote" value="remote" />
+										<span>File / URL</span>
+									</label>
 								</div>
 								<textarea
 									id="pApiKey"
@@ -421,6 +433,14 @@
 									autocomplete="new-password"
 									spellcheck="false"
 								></textarea>
+								<input
+									id="pApiKeySource"
+									type="text"
+									class="hidden"
+									placeholder="https://example.com/apilist.txt  or  file:///home/user/api.txt"
+									autocomplete="off"
+									spellcheck="false"
+								/>
 							</div>
 							<div class="field">
 								<label for="pApiMode">API Mode</label>

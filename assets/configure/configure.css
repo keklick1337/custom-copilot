@@ -534,6 +534,31 @@ textarea::placeholder {
 	grid-column: 1 / -1;
 }
 
+/* ── API key source toggle ─────────────────────────────────────── */
+
+.hidden {
+	display: none !important;
+}
+
+.key-source-toggle {
+	display: flex;
+	gap: 14px;
+	margin-bottom: 6px;
+}
+
+.key-source-opt {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 12px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.key-source-opt input {
+	margin: 0;
+}
+
 /* ── Subsection ─────────────────────────────────────────────────── */
 
 .subsection {

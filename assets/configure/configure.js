@@ -10,6 +10,8 @@ const state = {
 	models: [],
 	/** provider name → API key */
 	providerKeys: {},
+	/** provider name → remote API key source (URL / file path) */
+	providerKeySources: {},
 	/** Currently selected provider name, or null = general state */
 	selectedProvider: null,
 	/** True while adding a new provider */
@@ -93,6 +95,9 @@ const el = {
 	pName: $("pName"),
 	pBaseUrl: $("pBaseUrl"),
 	pApiKey: $("pApiKey"),
+	pApiKeySource: $("pApiKeySource"),
+	pKeyModeInline: $("pKeyModeInline"),
+	pKeyModeRemote: $("pKeyModeRemote"),
 	pApiMode: $("pApiMode"),
 	pProxyUrl: $("pProxyUrl"),
 	pUserAgent: $("pUserAgent"),
@@ -351,8 +356,44 @@ function getProviderInfo(name) {
 		headers: placeholder?.headers ?? first?.headers,
 		delay: placeholder?.delay ?? first?.delay,
 		apiKey: state.providerKeys[name] ?? "",
+		apiKeySource: state.providerKeySources[name] ?? "",
 	};
 }
+
+// ── API key source (inline vs remote file/URL) ──────────────────────────────────
+
+/** Reflect the selected key-source mode: show textarea for inline, input for remote. */
+function updateKeyModeVisibility() {
+	const remote = !!el.pKeyModeRemote && el.pKeyModeRemote.checked;
+	if (el.pApiKey) {
+		el.pApiKey.classList.toggle("hidden", remote);
+	}
+	if (el.pApiKeySource) {
+		el.pApiKeySource.classList.toggle("hidden", !remote);
+	}
+}
+
+/** Set both key fields and select the correct mode based on whether a source is set. */
+function setKeyFields(apiKey, apiKeySource) {
+	el.pApiKey.value = apiKey || "";
+	el.pApiKeySource.value = apiKeySource || "";
+	const remote = !!(apiKeySource && apiKeySource.trim());
+	if (el.pKeyModeRemote && el.pKeyModeInline) {
+		el.pKeyModeRemote.checked = remote;
+		el.pKeyModeInline.checked = !remote;
+	}
+	updateKeyModeVisibility();
+}
+
+el.pKeyModeInline?.addEventListener("change", updateKeyModeVisibility);
+el.pKeyModeRemote?.addEventListener("change", updateKeyModeVisibility);
+
+/** The remote source to send when in "File / URL" mode; empty string clears it in inline mode. */
+function getKeyModeSource() {
+	const remote = !!el.pKeyModeRemote && el.pKeyModeRemote.checked;
+	return remote ? el.pApiKeySource.value.trim() : "";
+}
+
 
 function getProviderModels(name) {
 	return state.models.filter((m) => m.owned_by === name && !m.id.startsWith("__provider__"));
@@ -546,7 +587,7 @@ function selectProvider(name) {
 	// Fill provider settings
 	const info = getProviderInfo(name);
 	el.pBaseUrl.value = info.baseUrl;
-	el.pApiKey.value = info.apiKey;
+	setKeyFields(info.apiKey, info.apiKeySource);
 	el.pApiMode.value = info.apiMode;
 	el.pProxyUrl.value = info.proxyUrl;
 	el.pUserAgent.value = info.userAgent;
@@ -581,7 +622,7 @@ function showNewProviderForm() {
 
 	// Clear all fields
 	el.pBaseUrl.value = "";
-	el.pApiKey.value = "";
+	setKeyFields("", "");
 	el.pApiMode.value = "openai";
 	el.pProxyUrl.value = "";
 	el.pUserAgent.value = DEFAULT_USER_AGENT;
@@ -743,6 +784,7 @@ el.saveProviderBtn.addEventListener("click", () => {
 			provider: name,
 			baseUrl: el.pBaseUrl.value.trim() || undefined,
 			apiKey: el.pApiKey.value.trim() || undefined,
+			apiKeySource: getKeyModeSource(),
 			apiMode: el.pApiMode.value || undefined,
 			proxyUrl: el.pProxyUrl.value.trim() || undefined,
 			userAgent: el.pUserAgent.value.trim() || undefined,
@@ -755,6 +797,7 @@ el.saveProviderBtn.addEventListener("click", () => {
 			provider: state.selectedProvider,
 			baseUrl: el.pBaseUrl.value.trim() || undefined,
 			apiKey: el.pApiKey.value.trim() || undefined,
+			apiKeySource: getKeyModeSource(),
 			apiMode: el.pApiMode.value || undefined,
 			proxyUrl: el.pProxyUrl.value.trim() || undefined,
 			userAgent: el.pUserAgent.value.trim() || undefined,
@@ -1300,6 +1343,7 @@ function renderModelTable(providerName) {
 					type: "fetchModels",
 					baseUrl: model.baseUrl || info.baseUrl,
 					apiKey: info.apiKey,
+					apiKeySource: info.apiKeySource,
 					apiMode: model.apiMode || info.apiMode,
 					proxyUrl: model.proxyUrl || info.proxyUrl || undefined,
 					userAgent: model.userAgent || info.userAgent || undefined,
@@ -1400,6 +1444,7 @@ el.fetchFromApiBtn.addEventListener("click", () => {
 		type: "fetchModels",
 		baseUrl: info.baseUrl,
 		apiKey: info.apiKey,
+		apiKeySource: info.apiKeySource,
 		apiMode: info.apiMode,
 		proxyUrl: info.proxyUrl || undefined,
 		userAgent: info.userAgent || undefined,
@@ -1549,6 +1594,7 @@ function testModelKeys(modelId) {
 		type: "testModelKeys",
 		baseUrl: info.baseUrl,
 		apiKey: info.apiKey,
+		apiKeySource: info.apiKeySource,
 		apiMode: info.apiMode,
 		modelId: modelId,
 		proxyUrl: info.proxyUrl || undefined,
@@ -1601,6 +1647,7 @@ el.addModelBtn.addEventListener("click", () => {
 			type: "fetchModels",
 			baseUrl: info.baseUrl,
 			apiKey: info.apiKey,
+			apiKeySource: info.apiKeySource,
 			apiMode: info.apiMode,
 			proxyUrl: info.proxyUrl || undefined,
 			userAgent: info.userAgent || undefined,
@@ -1908,6 +1955,7 @@ window.addEventListener("message", ({ data: msg }) => {
 			const p = msg.payload;
 			state.models = p.models || [];
 			state.providerKeys = p.providerKeys || {};
+			state.providerKeySources = p.providerKeySources || {};
 			state.commitModel = p.commitModel || "";
 			state.commitLanguage = p.commitLanguage || "English";
 

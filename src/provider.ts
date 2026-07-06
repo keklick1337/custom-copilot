@@ -28,6 +28,7 @@ import { countMessageTokens } from "./provideToken";
 import { updateContextStatusBar } from "./statusBar";
 import { notifyChatRequestStart } from "./chatActivity";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
+import { resolveApiKeysFromSource } from "./apiKeySource";
 import { OllamaApi } from "./ollama/ollamaApi";
 import { OpenaiApi } from "./openai/openaiApi";
 import { OpenaiResponsesApi } from "./openai/openaiResponsesApi";
@@ -294,7 +295,8 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			// newline-separated under the same secret) are load-balanced per request.
 			const provider = um?.owned_by;
 			const normalizedProvider = (provider ?? "").trim().toLowerCase();
-			const apiKeys = await this.resolveApiKeys(provider);
+			const keySourceProxyUrl = resolveProxyUrl(um?.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
+			const apiKeys = await this.resolveApiKeys(provider, keySourceProxyUrl);
 			if (apiKeys.length === 0) {
 				logger.warn("apiKey.missing", {
 					provider: provider ?? "",
@@ -728,12 +730,30 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	}
 
 	/**
-	 * Resolve the pool of API keys for a provider. Multiple keys are stored
-	 * newline-separated under the same per-provider secret; a single key (legacy
-	 * format) yields a one-element pool. Prompts the user once when none exist.
+	 * Resolve the pool of API keys for a provider. Keys come either from an inline
+	 * secret (multiple keys stored newline-separated under the same per-provider
+	 * secret; a single key yields a one-element pool) or, when a remote key source
+	 * is configured for the provider, from that URL/file — fetched fresh on every
+	 * request so a rotated key list at the source is picked up automatically.
+	 * Prompts the user once when neither a source nor an inline key exists.
 	 * @param provider Provider name used to look up the provider-specific secret.
+	 * @param proxyUrl Proxy applied when the remote source is an HTTP(S) URL.
 	 */
-	private async resolveApiKeys(provider?: string): Promise<string[]> {
+	private async resolveApiKeys(provider?: string, proxyUrl?: string): Promise<string[]> {
+		if (provider && provider.trim() !== "") {
+			const normalizedProvider = provider.trim().toLowerCase();
+			const source = await this.secrets.get(`customcopilot.apiKeySource.${normalizedProvider}`);
+			if (source && source.trim()) {
+				// Remote source configured: fetch a fresh key list per request.
+				const remoteKeys = await resolveApiKeysFromSource(source, { proxyUrl });
+				if (remoteKeys.length > 0) {
+					return remoteKeys;
+				}
+				// Source unreachable/empty: fall back to any inline keys (no prompt).
+				const inline = await this.secrets.get(`customcopilot.apiKey.${normalizedProvider}`);
+				return parseApiKeys(inline ?? "");
+			}
+		}
 		const existing = await this.ensureApiKey(provider);
 		return parseApiKeys(existing);
 	}
