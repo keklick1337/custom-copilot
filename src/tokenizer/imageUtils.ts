@@ -106,7 +106,7 @@ export function getWebPDimensions(base64String: string) {
 }
 
 export function getMimeType(base64String: string): string | undefined {
-	const mimeTypes: { [key: string]: string } = {
+	const mimeTypes: Record<string, string> = {
 		"/9j/": "image/jpeg",
 		iVBOR: "image/png",
 		R0lGOD: "image/gif",

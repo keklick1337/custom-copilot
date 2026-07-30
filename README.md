@@ -68,8 +68,19 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
 ## 📦 Requirements
 
 - VS Code **1.104.0** or newer.
-- GitHub Copilot Chat installed and signed in.
+- GitHub Copilot Chat installed.
 - An endpoint URL and (usually) an API key.
+
+> **ℹ️ Proposed API note.** This extension uses the `chatProvider` proposed API.  VS Code logs a
+> warning (`CANNOT USE these API proposals 'chatProvider'`) if the extension isn't in VS Code's
+> pre-approved allowlist, but this is **non-blocking** — the extension only uses the proposed API
+> for model registration, not for the gated enhanced capabilities (`editTools`, `isDefault`,
+> `requiresAuthorization`).  Models appear in the picker and chat works normally without any
+> extra flags.  If you want to silence the warning, launch with:
+>
+> ```
+> code --enable-proposed-api=keklick1337.keklick-copilot
+> ```
 
 ## 🚀 Install & First Run
 
@@ -82,6 +93,15 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
    from the Command Palette.
 5. In Copilot Chat, open the model picker → **Manage Models…** → choose **CustomCopilot**, and
    enable the models you want.
+
+> **Using Copilot Chat without a GitHub account.** This extension registers BYOK (Bring Your
+> Own Key) models, which normally lets you use Copilot Chat while signed out of GitHub.  On
+> first launch, the extension attempts to create provider groups in VS Code's language-models
+> config automatically (via the `lm.addLanguageModelsProviderGroup` command).  If that fails
+> (e.g. the command isn't available in your VS Code version), you can do it manually: in
+> Copilot Chat → model picker → **Manage Models…** → select one of the Custom providers →
+> **Configure** → enter the base URL → save.  Once a provider group exists, the "Sign in to
+> use Copilot" gate disappears and you can chat with your own models without a GitHub account.
 
 ## 🛠 Configuration UI
 
@@ -96,7 +116,10 @@ The configuration panel is a webview hosted in its own activity‑bar container.
   (`proxyUrl` on a model entry). Supports `socks5://`, `socks5h://` (remote DNS, auto‑normalised
   to SOCKS5), `http://`, and `https://` schemes.
 - **Global Settings** — toggle privacy‑ and persistence‑related options:
-  - **Anonymous access** (`chat.allowAnonymousAccess`).
+  - **Use Copilot Chat without a GitHub account** — since this extension registers BYOK
+    models, Copilot Chat works while signed out of GitHub out of the box; no extra setting is
+    needed. The toggle also sets VS Code's experimental `chat.allowAnonymousAccess` (hidden,
+    experiment‑gated, may be unavailable in some VS Code versions) for advanced scenarios.
   - **Save & restore chat sessions across restarts** (`chat.restoreLastPanelSession`) — keep
     your last chat after VS Code is fully restarted, even without a GitHub account.
   - **Disable telemetry** (`telemetry.telemetryLevel`), which is also set off on first run.

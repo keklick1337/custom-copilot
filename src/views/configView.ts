@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { HFApiMode, HFModelItem } from "../types";
-import { normalizeUserModels, parseModelId, resolveProxyUrl } from "../utils";
+import { normalizeUserModels, resolveProxyUrl } from "../utils";
 import { fetchModels, fetchModelsIntersection } from "../provideModel";
 import { parseApiKeys, keyBalancer } from "../keyBalancer";
 import { resolveApiKeysFromSource } from "../apiKeySource";
@@ -127,7 +127,7 @@ type IncomingMessage =
 	  }
 	| { type: "deleteProvider"; provider: string }
 	| { type: "addModel"; model: HFModelItem }
-	| { type: "updateModel"; model: HFModelItem; originalModelId?: string; originalConfigId?: string }
+	| { type: "updateModel"; model: HFModelItem; originalModelId?: string; originalConfigId?: string; originalKey?: string }
 	| { type: "deleteModel"; modelId: string }
 	| { type: "deleteModels"; modelIds: string[] }
 	| { type: "importModels"; models: HFModelItem[]; provider: string }
@@ -317,7 +317,7 @@ export class ConfigViewController {
 				await this.addModel(message.model);
 				break;
 			case "updateModel":
-				await this.updateModel(message.model, message.originalModelId, message.originalConfigId);
+				await this.updateModel(message.model, message.originalModelId, message.originalConfigId, message.originalKey);
 				break;
 			case "requestConfirm":
 				await this.handleConfirmRequest(message.id, message.message, message.action);
@@ -505,8 +505,25 @@ export class ConfigViewController {
 			interval_ms: 1000,
 		});
 
-		const foundModel = models.find((model) => model.useForCommitGeneration === true);
-		const commitModel = foundModel ? `${foundModel.id}${foundModel.configId ? "::" + foundModel.configId : ""}` : "";
+		const foundModelIndex = models.findIndex((model) => model.useForCommitGeneration === true);
+		let commitModel = "";
+		if (foundModelIndex >= 0) {
+			const foundModel = models[foundModelIndex];
+			const base = foundModel.configId ? `${foundModel.id}::${foundModel.configId}` : foundModel.id;
+			// Count how many models before this one share the same id+configId
+			// so the webview dropdown can match the correct duplicate.
+			const dupCount = models
+				.slice(0, foundModelIndex)
+				.filter((m) => {
+					const mBase = m.configId ? `${m.id}::${m.configId}` : m.id;
+					return mBase === base;
+				}).length;
+			const totalDups = models.filter((m) => {
+				const mBase = m.configId ? `${m.id}::${m.configId}` : m.id;
+				return mBase === base;
+			}).length;
+			commitModel = totalDups > 1 ? `${base}#${dupCount}` : base;
+		}
 		const commitLanguage = config.get<string>("customcopilot.commitLanguage", "English");
 		const readFileLines = config.get<number>("customcopilot.readFileLines", 0);
 		const allowAnonymousAccess = config.get<boolean>("chat.allowAnonymousAccess", false);
@@ -786,15 +803,31 @@ export class ConfigViewController {
 		await config.update("customcopilot.retry", retry, vscode.ConfigurationTarget.Global);
 		await config.update("customcopilot.commitLanguage", commitLanguage, vscode.ConfigurationTarget.Global);
 
-		// Update models to set useForCommitGeneration based on selected commitModel
+		// Update models to set useForCommitGeneration based on selected commitModel.
+		// The commitModel key may include a #index suffix to disambiguate duplicates.
 		if (commitModel) {
+			const parsed = parseWebviewModelKey(commitModel);
 			const models = config.get<HFModelItem[]>("customcopilot.models", []);
-			const updatedModels = models.map((model) => {
-				const fullModelId = `${model.id}${model.configId ? "::" + model.configId : ""}`;
-				if (fullModelId === commitModel) {
+			// Find the matching model entry, using the #index if present
+			let matchIndex = -1;
+			let dupCounter = 0;
+			for (let i = 0; i < models.length; i++) {
+				const m = models[i];
+				if (
+					m.id === parsed.baseId &&
+					((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
+				) {
+					if (parsed.index < 0 || dupCounter === parsed.index) {
+						matchIndex = i;
+						break;
+					}
+					dupCounter++;
+				}
+			}
+			const updatedModels = models.map((model, i) => {
+				if (i === matchIndex) {
 					return { ...model, useForCommitGeneration: true };
 				} else {
-					// Create a new object without the useForCommitGeneration property
 					const updatedModel = { ...model };
 					delete updatedModel.useForCommitGeneration;
 					return updatedModel;
@@ -1075,20 +1108,40 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private async updateModel(model: HFModelItem, originalModelId?: string, originalConfigId?: string) {
+	private async updateModel(model: HFModelItem, originalModelId?: string, originalConfigId?: string, originalKey?: string) {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
 
-		// Find the model to update based on original id and configId
-		const updatedModels = models.map((m) => {
-			// Check if this is the model we want to update
-			// If originalConfigId is undefined (meaning it was originally null/undefined),
-			// then look for a model with no configId
-			const isTargetModel =
-				m.id === originalModelId &&
-				((originalConfigId && m.configId === originalConfigId) || (!originalConfigId && !m.configId));
+		// When originalKey is provided (includes a #index suffix), use it to
+		// find the exact model among duplicates that share the same id+configId.
+		// Otherwise fall back to the first match by id+configId.
+		let targetIndex = -1;
+		if (originalKey) {
+			const parsed = parseWebviewModelKey(originalKey);
+			let dupCounter = 0;
+			for (let i = 0; i < models.length; i++) {
+				const m = models[i];
+				if (
+					m.id === parsed.baseId &&
+					((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
+				) {
+					if (parsed.index < 0 || dupCounter === parsed.index) {
+						targetIndex = i;
+						break;
+					}
+					dupCounter++;
+				}
+			}
+		} else if (originalModelId) {
+			targetIndex = models.findIndex(
+				(m) =>
+					m.id === originalModelId &&
+					((originalConfigId && m.configId === originalConfigId) || (!originalConfigId && !m.configId))
+			);
+		}
 
-			if (isTargetModel) {
+		const updatedModels = models.map((m, i) => {
+			if (i === targetIndex) {
 				// Update with new values, but keep provider-level settings
 				// (baseUrl, apiMode, ...) that the model form does not carry by
 				// inheriting them from the original model, then provider defaults.
@@ -1110,15 +1163,11 @@ export class ConfigViewController {
 	private async deleteModel(modelId: string) {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
-		const parsedModelId = parseModelId(modelId);
 
-		const filteredModels = models.filter((model) => {
-			return !(
-				model.id === parsedModelId.baseId &&
-				((parsedModelId.configId && model.configId === parsedModelId.configId) ||
-					(!parsedModelId.configId && !model.configId))
-			);
-		});
+		// modelId comes from the webview in the format "baseId::configId#index"
+		// or "baseId::configId" or "baseId#index" or "baseId". The #index suffix
+		// disambiguates multiple models that share the same id+configId.
+		const filteredModels = filterModelsByIdentifier(models, modelId);
 
 		await config.update("customcopilot.models", filteredModels, vscode.ConfigurationTarget.Global);
 		vscode.window.showInformationMessage(`Model ${modelId} has been deleted.`);
@@ -1129,17 +1178,15 @@ export class ConfigViewController {
 	private async deleteModels(modelIds: string[]) {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
-		const parsedIds = modelIds.map((id) => parseModelId(id));
 
-		const filteredModels = models.filter((model) => {
-			return !parsedIds.some(
-				(parsed) =>
-					model.id === parsed.baseId &&
-					((parsed.configId && model.configId === parsed.configId) || (!parsed.configId && !model.configId))
-			);
-		});
+		// Apply all deletions in a single pass. Each modelId may include a
+		// #index suffix to target one specific duplicate.
+		let remaining = models;
+		for (const id of modelIds) {
+			remaining = filterModelsByIdentifier(remaining, id);
+		}
 
-		await config.update("customcopilot.models", filteredModels, vscode.ConfigurationTarget.Global);
+		await config.update("customcopilot.models", remaining, vscode.ConfigurationTarget.Global);
 		vscode.window.showInformationMessage(`Deleted ${modelIds.length} models.`);
 		// Send refresh signal to frontend
 		await this.sendInit();
@@ -1708,6 +1755,63 @@ export class SettingsPanel {
 		this.panel.dispose();
 		this.controller.dispose();
 	}
+}
+
+/**
+ * Parse a webview model key in the format "baseId::configId#index",
+ * "baseId::configId", "baseId#index", or "baseId". The #index suffix
+ * disambiguates multiple models that share the same id+configId.
+ * Returns the parsed components plus the 0-based index among duplicates
+ * (or -1 when no #index suffix is present).
+ */
+function parseWebviewModelKey(key: string): { baseId: string; configId: string | undefined; index: number } {
+	const hashIdx = key.lastIndexOf("#");
+	let index = -1;
+	let idPart = key;
+	if (hashIdx >= 0) {
+		const suffix = key.slice(hashIdx + 1);
+		if (/^\d+$/.test(suffix)) {
+			index = parseInt(suffix, 10);
+			idPart = key.slice(0, hashIdx);
+		}
+	}
+	const sep = idPart.indexOf("::");
+	if (sep >= 0) {
+		return { baseId: idPart.slice(0, sep), configId: idPart.slice(sep + 2), index };
+	}
+	return { baseId: idPart, configId: undefined, index };
+}
+
+/**
+ * Remove the model identified by a webview model key from the models array.
+ * When a #index suffix is present, only that specific duplicate is removed.
+ * Without it, the first matching model (by id+configId) is removed.
+ */
+function filterModelsByIdentifier(models: HFModelItem[], key: string): HFModelItem[] {
+	const parsed = parseWebviewModelKey(key);
+	// Build the list of matching models in array order so the index maps
+	// correctly to the #index suffix used in the webview.
+	const matchingIndices: number[] = [];
+	for (let i = 0; i < models.length; i++) {
+		const m = models[i];
+		if (
+			m.id === parsed.baseId &&
+			((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
+		) {
+			matchingIndices.push(i);
+		}
+	}
+	if (parsed.index >= 0 && parsed.index < matchingIndices.length) {
+		// Remove the specific duplicate at the given index
+		const targetIdx = matchingIndices[parsed.index];
+		return models.filter((_, i) => i !== targetIdx);
+	}
+	// No #index: remove the first matching model
+	const targetIdx = matchingIndices[0];
+	if (targetIdx === undefined) {
+		return models;
+	}
+	return models.filter((_, i) => i !== targetIdx);
 }
 
 export class SettingsViewProvider implements vscode.WebviewViewProvider {

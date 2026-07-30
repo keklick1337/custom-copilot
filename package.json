@@ -25,7 +25,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.25",
+	"version": "1.0.28",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -70,27 +70,94 @@
 		"languageModelChatProviders": [
 			{
 				"vendor": "copilotcustommodelsendpoint",
-				"displayName": "Custom OpenAI"
+				"displayName": "Custom OpenAI",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"description": "The endpoint URL for this provider (e.g. https://api.openai.com/v1).",
+							"default": "https://api.openai.com/v1"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-responses",
-				"displayName": "Custom OpenAI Responses"
+				"displayName": "Custom OpenAI Responses",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"default": "https://api.openai.com/v1"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-anthropic",
-				"displayName": "Custom Anthropic"
+				"displayName": "Custom Anthropic",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"default": "https://api.anthropic.com/v1"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-gemini",
-				"displayName": "Custom Gemini"
+				"displayName": "Custom Gemini",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"default": "https://generativelanguage.googleapis.com/v1beta"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-ollama",
-				"displayName": "Custom Ollama"
+				"displayName": "Custom Ollama",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"default": "http://localhost:11434"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-zai",
-				"displayName": "Z.AI Free"
+				"displayName": "Z.AI Free",
+				"configuration": {
+					"type": "object",
+					"properties": {
+						"baseUrl": {
+							"type": "string",
+							"title": "Base URL",
+							"default": "https://api.z.ai/api/anthropic"
+						}
+					},
+					"required": ["baseUrl"]
+				}
 			}
 		],
 		"commands": [

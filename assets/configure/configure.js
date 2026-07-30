@@ -1075,7 +1075,7 @@ function populateChatGenModelDropdown() {
 		.filter((m) => !m.id.startsWith("__provider__"))
 		.sort((a, b) => a.id.localeCompare(b.id))
 		.forEach((m) => {
-			const fid = m.configId ? `${m.id}::${m.configId}` : m.id;
+			const fid = modelKey(m, state.models);
 			const opt = document.createElement("option");
 			opt.value = fid;
 			opt.textContent = m.displayName || fid;
@@ -1245,7 +1245,7 @@ function populateCommitModelDropdown() {
 		.filter((m) => !m.id.startsWith("__provider__"))
 		.sort((a, b) => a.id.localeCompare(b.id))
 		.forEach((m) => {
-			const fid = m.configId ? `${m.id}::${m.configId}` : m.id;
+			const fid = modelKey(m, state.models);
 			const opt = document.createElement("option");
 			opt.value = fid;
 			opt.textContent = m.displayName || fid;
@@ -1259,7 +1259,11 @@ function renderModelTable(providerName) {
 	const models = getProviderModels(providerName).sort((a, b) => a.id.localeCompare(b.id));
 	el.modelCount.textContent = models.length;
 
-	const validIds = new Set(models.map((m) => (m.configId ? `${m.id}::${m.configId}` : m.id)));
+	// Build unique keys using modelKey (adds #index for duplicates) so each
+	// card can be individually edited/deleted even when multiple models share
+	// the same id+configId.
+	const modelKeys = models.map((m) => modelKey(m, state.models));
+	const validIds = new Set(modelKeys);
 	state.selectedModelIds = new Set([...state.selectedModelIds].filter((id) => validIds.has(id)));
 
 	if (!models.length) {
@@ -1269,8 +1273,8 @@ function renderModelTable(providerName) {
 	}
 
 	el.modelCardsContainer.innerHTML = models
-		.map((m) => {
-			const mid = m.configId ? `${m.id}::${m.configId}` : m.id;
+		.map((m, i) => {
+			const mid = modelKeys[i];
 			const checked = state.selectedModelIds.has(mid);
 			const maxOutput =
 				m.max_tokens != null ? m.max_tokens : m.max_completion_tokens != null ? m.max_completion_tokens : null;
@@ -1331,13 +1335,10 @@ function renderModelTable(providerName) {
 	el.modelCardsContainer.querySelectorAll(".edit-model-btn").forEach((btn) => {
 		btn.addEventListener("click", (e) => {
 			const mid = e.currentTarget.getAttribute("data-id");
-			const parsed = parseFullModelId(mid);
-			const model = state.models.find(
-				(m) => m.id === parsed.baseId && (parsed.configId ? m.configId === parsed.configId : !m.configId)
-			);
+			const model = findModelByKey(mid);
 			if (model) {
 				showModelForm(`Edit: ${mid}`);
-				populateModelForm(model);
+				populateModelForm(model, mid);
 				// Pre-load dropdown for the current provider
 				const info = getProviderInfo(model.owned_by || state.selectedProvider);
 				vscode.postMessage({
@@ -1398,7 +1399,7 @@ el.bulkSelectAllBtn?.addEventListener("click", () => {
 	if (!state.selectedProvider) {
 		return;
 	}
-	const ids = getProviderModels(state.selectedProvider).map((m) => (m.configId ? `${m.id}::${m.configId}` : m.id));
+	const ids = getProviderModels(state.selectedProvider).map((m) => modelKey(m, state.models));
 	state.selectedModelIds = new Set(ids);
 	renderModelTable(state.selectedProvider);
 });
@@ -1698,6 +1699,7 @@ $("saveModel").addEventListener("click", () => {
 			model: data,
 			originalModelId: el.modelIdInput.getAttribute("data-original-id"),
 			originalConfigId: el.modelIdInput.getAttribute("data-original-configId"),
+			originalKey: el.modelIdInput.getAttribute("data-original-key") || undefined,
 		});
 	} else {
 		vscode.postMessage({ type: "addModel", model: data });
@@ -1768,6 +1770,7 @@ function resetModelForm() {
 	el.modelIdInput.removeAttribute("data-editing");
 	el.modelIdInput.removeAttribute("data-original-id");
 	el.modelIdInput.removeAttribute("data-original-configId");
+	el.modelIdInput.removeAttribute("data-original-key");
 	dropdownContent.innerHTML = "";
 	dropdownHeader.textContent = "— select or type —";
 	hideDropdown();
@@ -1778,6 +1781,9 @@ function populateModelForm(model) {
 	el.modelIdInput.setAttribute("data-editing", "true");
 	el.modelIdInput.setAttribute("data-original-id", model.id || "");
 	el.modelIdInput.setAttribute("data-original-configId", model.configId || "");
+	// Store the full webview key (with #index suffix) so updateModel can
+	// target the exact duplicate when multiple models share the same id+configId.
+	el.modelIdInput.setAttribute("data-original-key", mid || "");
 
 	el.modelIdInput.value = model.id || "";
 	el.modelDisplayName.value = model.displayName || "";
@@ -2132,8 +2138,58 @@ window.addEventListener("message", ({ data: msg }) => {
 // ── Utility ────────────────────────────────────────────────────────────────────
 
 function parseFullModelId(mid) {
-	const sep = mid.indexOf("::");
-	return sep !== -1 ? { baseId: mid.slice(0, sep), configId: mid.slice(sep + 2) } : { baseId: mid, configId: null };
+	// Format: "baseId::configId#index" or "baseId::configId" or "baseId#index" or "baseId"
+	// The #index suffix disambiguates multiple models that share the same
+	// id+configId (e.g. 3 copies of glm-5.2 from different Ollama servers).
+	const hashIdx = mid.lastIndexOf("#");
+	let index = -1;
+	let idPart = mid;
+	if (hashIdx >= 0) {
+		const suffix = mid.slice(hashIdx + 1);
+		if (/^\d+$/.test(suffix)) {
+			index = parseInt(suffix, 10);
+			idPart = mid.slice(0, hashIdx);
+		}
+	}
+	const sep = idPart.indexOf("::");
+	return sep !== -1
+		? { baseId: idPart.slice(0, sep), configId: idPart.slice(sep + 2), index }
+		: { baseId: idPart, configId: null, index };
+}
+
+/**
+ * Build a unique key for a model in the state.models array.  When multiple
+ * models share the same id+configId, a "#index" suffix is appended (0-based
+ * position among duplicates) so each one can be individually edited/deleted.
+ * Matches the idx logic in provideModel.ts.
+ */
+function modelKey(m, models) {
+	const base = m.configId ? `${m.id}::${m.configId}` : m.id;
+	let dupIndex = 0;
+	for (const other of models) {
+		if (other === m) { break; }
+		const otherBase = other.configId ? `${other.id}::${other.configId}` : other.id;
+		if (otherBase === base) { dupIndex++; }
+	}
+	const sameCount = models.filter((o) => {
+		const oBase = o.configId ? `${o.id}::${o.configId}` : o.id;
+		return oBase === base;
+	}).length;
+	return sameCount > 1 ? `${base}#${dupIndex}` : base;
+}
+
+/**
+ * Find the exact model in state.models by a key produced by modelKey().
+ */
+function findModelByKey(key) {
+	const parsed = parseFullModelId(key);
+	const candidates = state.models.filter((m) =>
+		m.id === parsed.baseId && (parsed.configId ? m.configId === parsed.configId : !m.configId)
+	);
+	if (parsed.index >= 0 && parsed.index < candidates.length) {
+		return candidates[parsed.index];
+	}
+	return candidates[0];
 }
 
 function fmtNum(n) {

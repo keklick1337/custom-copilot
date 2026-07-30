@@ -74,9 +74,25 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	 * @returns A promise that resolves to the list of available language models
 	 */
 	async provideLanguageModelChatInformation(
-		options: { silent: boolean },
+		options: { silent: boolean; configuration?: Record<string, unknown> },
 		_token: CancellationToken
 	): Promise<LanguageModelChatInformation[]> {
+		// When the vendor declares a `configuration` schema (in package.json),
+		// VS Code calls this method twice: once without `configuration` (the
+		// initial groupless load that populates the model cache) and once per
+		// configured group with `configuration` set.  Our models are managed
+		// entirely through the extension's webview config UI, not through VS
+		// Code's group/config system, so group-specific calls must return an
+		// empty list to avoid duplicate model entries (which would get
+		// group-namespaced identifiers like vendor/groupName/modelId).
+		//
+		// The empty return is harmless: the group entry is still recorded in
+		// `chatLanguageModels.json`, which is what makes `hasByokModels` true
+		// — letting signed-out users chat with BYOK models without "Sign in to
+		// use Copilot".
+		if (options.configuration) {
+			return [];
+		}
 		return prepareLanguageModelChatInformation(
 			{ silent: options.silent ?? false, apiMode: this.vendorApiMode },
 			_token,
@@ -289,7 +305,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			};
 
 			// Update Token Usage
-			updateContextStatusBar(messages, options.tools, model, this.statusBarItem, modelConfig);
+			updateContextStatusBar(messages, options.tools, model, this.statusBarItem, modelConfig, this.vendorApiMode);
 
 			// Apply delay between consecutive requests
 			const modelDelay = um?.delay;

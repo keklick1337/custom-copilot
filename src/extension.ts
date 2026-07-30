@@ -49,6 +49,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// deduplicates them and only the first survives in the model picker.
 	void migrateDuplicateModelIds(context);
 
+	// Ensure VS Code has a provider group for each of our vendors so that
+	// `hasByokModels` becomes true — this lets signed-out users use Copilot
+	// Chat with our BYOK models without the "Sign in to use Copilot" gate.
+	// VS Code only sets `github.copilot.hasByokModels` = true when
+	// `chatLanguageModels.json` contains a non-Copilot vendor group.  We create
+	// one per vendor via the internal `lm.addLanguageModelsProviderGroup`
+	// command.  This is idempotent: adding a group that already exists is a
+	// no-op (VS Code deduplicates by vendor+name).
+	void ensureByokProviderGroups(context);
+
 	// Management command to configure provider-specific API keys
 	context.subscriptions.push(
 		vscode.commands.registerCommand("customcopilot.setProviderApikey", async () => {
@@ -277,4 +287,53 @@ async function migrateDuplicateModelIds(context: vscode.ExtensionContext): Promi
 	} catch (err) {
 		logger.warn("models.migration.failed", { error: String(err) });
 	}
+}
+
+/**
+ * Creates a provider group in VS Code's `chatLanguageModels.json` for each of
+ * our vendors.  This is what makes `github.copilot.hasByokModels` become true,
+ * allowing signed-out users to use Copilot Chat with BYOK models.
+ *
+ * VS Code only considers a user to "have BYOK models" when there's at least
+ * one non-Copilot vendor group in the language-models config file.  Just
+ * registering a `LanguageModelChatProvider` is not enough — the group must be
+ * persisted.  We use the internal `lm.addLanguageModelsProviderGroup` command
+ * to create a minimal group per vendor.  This is idempotent (VS Code
+ * deduplicates by vendor+name).
+ *
+ * The command requires the vendor to have a `configuration` schema declared in
+ * `package.json → contributes.languageModelChatProviders` (which we added).
+ */
+async function ensureByokProviderGroups(context: vscode.ExtensionContext): Promise<void> {
+	const STATE_KEY = "customcopilot.byokGroupsCreated";
+	const vendors: ReadonlyArray<{ vendor: string; displayName: string; defaultBaseUrl: string }> = [
+		{ vendor: "copilotcustommodelsendpoint", displayName: "Custom OpenAI", defaultBaseUrl: "https://api.openai.com/v1" },
+		{ vendor: "copilotcustommodelsendpoint-responses", displayName: "Custom OpenAI Responses", defaultBaseUrl: "https://api.openai.com/v1" },
+		{ vendor: "copilotcustommodelsendpoint-anthropic", displayName: "Custom Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
+		{ vendor: "copilotcustommodelsendpoint-gemini", displayName: "Custom Gemini", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+		{ vendor: "copilotcustommodelsendpoint-ollama", displayName: "Custom Ollama", defaultBaseUrl: "http://localhost:11434" },
+		{ vendor: "copilotcustommodelsendpoint-zai", displayName: "Z.AI Free", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
+	];
+
+	for (const v of vendors) {
+		try {
+			await vscode.commands.executeCommand("lm.addLanguageModelsProviderGroup", {
+				name: v.displayName,
+				vendor: v.vendor,
+				baseUrl: v.defaultBaseUrl,
+			});
+			logger.info("byok.groupCreated", { vendor: v.vendor });
+		} catch (err) {
+			// The command may fail if: the vendor's configuration schema isn't
+			// loaded yet, the user isn't entitled (no Copilot plan / BYOK not
+			// enabled), or the group already exists (some VS Code versions
+			// throw on duplicates).  These are non-fatal — the user can still
+			// configure manually via "Manage Models → Configure".
+			logger.debug("byok.groupCreate.skipped", { vendor: v.vendor, error: String(err) });
+		}
+	}
+
+	// Mark as done so we don't retry on every activation (the groups persist
+	// in chatLanguageModels.json).  We still try once per fresh install/update.
+	await context.globalState.update(STATE_KEY, true);
 }

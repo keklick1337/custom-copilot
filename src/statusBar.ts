@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { countMessageTokens, countToolTokens } from "./provideToken";
 import { normalizeUserModels, parseModelId, resolveProxyUrl } from "./utils";
+import type { HFModelItem } from "./types";
 
 // Persistent state for diagnostics
 interface DiagnosticsState {
@@ -141,7 +142,8 @@ export async function updateContextStatusBar(
 	tools: readonly LanguageModelChatTool[] | undefined,
 	model: LanguageModelChatInformation,
 	statusBarItem: vscode.StatusBarItem,
-	modelConfig: { includeReasoningInRequest: boolean }
+	modelConfig: { includeReasoningInRequest: boolean },
+	vendorApiMode?: string
 ): Promise<void> {
 	// ── Phase 1: immediate (synchronous) update ───────────────────────────
 	// Update the model name and a "calculating…" indicator right away so the
@@ -159,13 +161,26 @@ export async function updateContextStatusBar(
 	const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 	const parsedModelId = parseModelId(model.id);
 
-	// Match by idx (vendor:index prefix) when present; fall back to legacy
-	// baseId+configId match.  See provider.ts for the full rationale.
-	let um = userModels.find(
-		(u) =>
-			u.id === parsedModelId.baseId &&
-			((parsedModelId.configId && u.configId === parsedModelId.configId) || (!parsedModelId.configId && !u.configId))
-	);
+	// Match by idx (vendor:index prefix) when present, replicating the same
+	// filtering as provideModel.ts so the exact model config is resolved.
+	// Fall back to legacy baseId+configId match for ids without a prefix.
+	let um: HFModelItem | undefined;
+	if (parsedModelId.idx !== undefined) {
+		const vendorMode = vendorApiMode ?? "openai";
+		const vendorFilteredModels = userModels.filter(
+			(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === vendorMode
+		);
+		const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
+		if (parsedModelId.idx < sameIdModels.length) {
+			um = sameIdModels[parsedModelId.idx];
+		}
+	} else {
+		um = userModels.find(
+			(u) =>
+				u.id === parsedModelId.baseId &&
+				((parsedModelId.configId && u.configId === parsedModelId.configId) || (!parsedModelId.configId && !u.configId))
+		);
+	}
 	if (!um) {
 		um = userModels.find((u) => u.id === parsedModelId.baseId);
 	}
