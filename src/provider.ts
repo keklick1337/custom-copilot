@@ -231,8 +231,13 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			// sharing the same base id.
 			let um: HFModelItem | undefined;
 			if (parsedModelId.idx !== undefined) {
+				// Use this provider's vendor apiMode (same filter as provideModel.ts)
+				// rather than the per-model apiMode, which isn't known yet (it's
+				// derived from `um` below — using it here would be a temporal dead
+				// zone error).
+				const vendorMode = this.vendorApiMode ?? "openai";
 				const vendorFilteredModels = userModels.filter(
-					(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === apiMode
+					(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === vendorMode
 				);
 				const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
 				if (parsedModelId.idx < sameIdModels.length) {

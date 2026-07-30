@@ -1221,7 +1221,19 @@ export class ConfigViewController {
 
 	private async setAnonymousAccess(enabled: boolean) {
 		const config = vscode.workspace.getConfiguration();
-		await config.update("chat.allowAnonymousAccess", enabled, vscode.ConfigurationTarget.Global);
+		try {
+			await config.update("chat.allowAnonymousAccess", enabled, vscode.ConfigurationTarget.Global);
+		} catch {
+			// This setting is a proposed/internal VS Code setting that may not be
+			// registered in the current VS Code version's configuration schema.
+			// When it isn't, config.update() throws "not a registered configuration".
+			// Show a helpful message instead of crashing the webview handler.
+			vscode.window.showWarningMessage(
+				`Could not set "chat.allowAnonymousAccess" — this setting is not available in your VS Code version. It may have been removed or renamed.`
+			);
+			await this.sendInit();
+			return;
+		}
 		const choice = await vscode.window.showInformationMessage(
 			enabled
 				? "Anonymous Copilot Chat access enabled. Reload the window to use Chat without a GitHub account."
@@ -1241,7 +1253,15 @@ export class ConfigViewController {
 		// is cleared on a fresh start (see ChatViewPane). The session files themselves are
 		// always written to disk, so enabling this makes chats survive restarts even when
 		// signed out of GitHub (anonymous access).
-		await config.update("chat.restoreLastPanelSession", enabled, vscode.ConfigurationTarget.Global);
+		try {
+			await config.update("chat.restoreLastPanelSession", enabled, vscode.ConfigurationTarget.Global);
+		} catch {
+			vscode.window.showWarningMessage(
+				`Could not set "chat.restoreLastPanelSession" — this setting is not available in your VS Code version. It may have been removed or renamed.`
+			);
+			await this.sendInit();
+			return;
+		}
 		vscode.window.showInformationMessage(
 			enabled
 				? "Chat sessions will now be restored after restarting VS Code."
