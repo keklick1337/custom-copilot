@@ -221,15 +221,33 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			// Parse model ID to handle config ID
 			const parsedModelId = parseModelId(model.id);
 
-			// Find matching user model configuration
-			// Prioritize matching models with same base ID and config ID
-			// If no config ID, match models with same base ID
-			let um: HFModelItem | undefined = userModels.find(
-				(um) =>
-					um.id === parsedModelId.baseId &&
-					((parsedModelId.configId && um.configId === parsedModelId.configId) ||
-						(!parsedModelId.configId && !um.configId))
-			);
+			// Find matching user model configuration.
+			//
+			// provideModel.ts assigns each model a `providerKey:idx:` prefix
+			// where `idx` is a per-id counter *within the filtered scopedModels
+			// list* (same apiMode as this vendor, excluding __provider__
+			// placeholders).  To recover the exact original config entry we
+			// replicate the same filtering and pick entry `idx` among models
+			// sharing the same base id.
+			let um: HFModelItem | undefined;
+			if (parsedModelId.idx !== undefined) {
+				const vendorFilteredModels = userModels.filter(
+					(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === apiMode
+				);
+				const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
+				if (parsedModelId.idx < sameIdModels.length) {
+					um = sameIdModels[parsedModelId.idx];
+				}
+			} else {
+				// Legacy path (no idx prefix, e.g. ids from configView frontend):
+				// match by baseId + configId.
+				um = userModels.find(
+					(um) =>
+						um.id === parsedModelId.baseId &&
+						((parsedModelId.configId && um.configId === parsedModelId.configId) ||
+							(!parsedModelId.configId && !um.configId))
+				);
+			}
 
 			// If still no model found, try to find any model matching the base ID (most lenient match, for backward compatibility)
 			if (!um) {

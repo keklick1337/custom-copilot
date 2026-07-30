@@ -1030,6 +1030,27 @@ export class ConfigViewController {
 		const config = vscode.workspace.getConfiguration();
 		const models = config.get<HFModelItem[]>("customcopilot.models", []);
 
+		// Auto-generate a configId when adding a model whose id already exists,
+		// so VS Code doesn't deduplicate models with the same id within one
+		// vendor.  VS Code keys models by vendor/modelId; two models with the
+		// same id under the same vendor (apiMode) collide and only the first
+		// survives.  A unique configId makes the id "model::configId" so both
+		// coexist in the picker.  This is a safety net for direct config edits
+		// and API calls — the webview frontend does the same in validateModelData.
+		if (!model.configId) {
+			const sameIdModels = models.filter((m) => m.id === model.id);
+			if (sameIdModels.length > 0) {
+				const existing = new Set(
+					sameIdModels.map((m) => m.configId).filter((c): c is string => !!c)
+				);
+				let n = 1;
+				while (existing.has(String(n))) {
+					n++;
+				}
+				model.configId = String(n);
+			}
+		}
+
 		// Check if model with same id and configId already exists
 		const existingIndex = models.findIndex(
 			(m) =>

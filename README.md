@@ -24,8 +24,9 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
 
 ## ✨ Highlights
 
-- **Five API modes** — `openai` (Chat Completions), `openai-responses`, `ollama`,
-  `anthropic`, and `gemini`. One `apiMode` switch per model picks the adapter.
+- **Six API modes** — `openai` (Chat Completions), `openai-responses`, `ollama`,
+  `anthropic`, `gemini`, and `zai` (Z.AI / Anthropic‑compatible with Bearer auth).
+  One `apiMode` switch per model picks the adapter.
 - **Visual configuration panel** — a dedicated activity‑bar sidebar to add providers,
   fetch models, and tune parameters without hand‑editing JSON.
 - **Automatic capability detection** — when you fetch models from a `/v1/models` endpoint,
@@ -35,6 +36,9 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
   blocks are surfaced in Copilot Chat where the model supports them.
 - **Multi‑provider & multi‑config** — group models by provider with per‑provider API keys,
   and define the same model id multiple times with different settings via `configId`.
+  Duplicate ids are auto‑assigned a numeric `configId` (`::1`, `::2`, …) when added
+  through the configuration UI, and a one‑time migration assigns them to existing
+  duplicates on first launch.
 - **Git commit messages** — generate SCM commit messages from your own model.
 - **Persistent chat sessions** — keep and restore your chat history across full VS Code
   restarts (`chat.restoreLastPanelSession`), even when using Copilot without a GitHub account.
@@ -43,6 +47,22 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
   launch the sessions sequentially or in parallel.
 - **Per‑model control** — base URL, proxy, User‑Agent, headers, extra body params, temperature,
   top‑p/k, penalties, reasoning effort, thinking budget, request delay, and retry.
+- **Cross‑vendor model compatibility** — model ids are namespaced with a `provider:index:`
+  prefix internally so they never collide with or hide built‑in Copilot models of the same
+  name (e.g. your `claude-opus-5` and Copilot's `claude-opus-5` both appear in the picker).
+- **Fetch‑model search filter** — when fetching 500+ models from an API, a live search box
+  filters the results by substring (e.g. type `glm` to see only GLM models).
+- **Responsive status bar** — the status‑bar token‑usage indicator updates the active model
+  name instantly and shows a “calculating…” state while tokens are counted in the background;
+  out‑of‑order updates are suppressed so the bar never flickers with stale data.
+- **Proxy support** — route all requests through `socks5://`, `socks5h://`, `http://`, or
+  `https://` proxies, globally (`customcopilot.proxyUrl`) or per‑model (`proxyUrl` on a model
+  entry). SOCKS5h (remote DNS) is auto‑normalised to SOCKS5. Useful for Tor, corporate proxies,
+  or accessing region‑locked endpoints.
+- **Provider presets** — when adding a new provider, pick from 20+ built‑in presets (OpenAI,
+  Anthropic, Gemini, DeepSeek, OpenRouter, Groq, Mistral, xAI, Together, Fireworks, Perplexity,
+  Cerebras, Moonshot, ModelScope, SiliconFlow, Novita, Alibaba/Qwen, Zhipu/GLM, Ollama, LM
+  Studio, Z.AI) that auto‑fill the base URL and `apiMode`.
 - **Local token counting** — usage is estimated locally with the bundled `o200k_base` tokenizer.
 
 ## 📦 Requirements
@@ -68,7 +88,13 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
 The configuration panel is a webview hosted in its own activity‑bar container. From it you can:
 
 - **Providers** — add/edit providers, set base URL / proxy / User‑Agent, and **Fetch from API**
-  to import models (capabilities are auto‑detected).
+  to import models (capabilities are auto‑detected). When adding a new provider, pick from
+  20+ **built‑in presets** (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Groq, Mistral,
+  xAI, Together, Fireworks, Perplexity, Cerebras, Moonshot, ModelScope, SiliconFlow, Novita,
+  Alibaba/Qwen, Zhipu/GLM, Ollama, LM Studio, Z.AI) that auto‑fill the base URL and `apiMode`.
+- **Proxy** — configure a global proxy (`customcopilot.proxyUrl`) or per‑model proxy
+  (`proxyUrl` on a model entry). Supports `socks5://`, `socks5h://` (remote DNS, auto‑normalised
+  to SOCKS5), `http://`, and `https://` schemes.
 - **Global Settings** — toggle privacy‑ and persistence‑related options:
   - **Anonymous access** (`chat.allowAnonymousAccess`).
   - **Save & restore chat sessions across restarts** (`chat.restoreLastPanelSession`) — keep
@@ -96,6 +122,7 @@ Set `apiMode` per model to select the protocol adapter:
 | `ollama` | `POST {baseUrl}/api/chat` | Local Ollama; API key optional. |
 | `anthropic` | `POST {baseUrl}/v1/messages` | Native Anthropic Messages API. |
 | `gemini` | `POST {baseUrl}/v1beta/models/{model}:streamGenerateContent?alt=sse` | Native Google Gemini API. |
+| `zai` | `POST {baseUrl}/v1/messages` | Z.AI (Anthropic‑compatible, Bearer auth). |
 
 Each mode converts messages, tools, images, and thinking blocks to the provider's native format.
 
@@ -145,8 +172,30 @@ shown (the intersection), and a per‑key ✓/✗ summary reports which keys aut
 **Test keys** button next to a model to send a "hello world" request with each key and see a green
 check per key that responds.
 
-## 🧩 Multi‑Config (same model, different settings)Use `configId` to register the same model id with different settings. Each entry appears
+## 🧩 Multi‑Config (same model, different settings)
+
+Use `configId` to register the same model id with different settings. Each entry appears
 separately in the model picker as `<id>::<configId>`.
+
+When you add a model through the configuration UI whose `id` already exists, a `configId` is
+**auto‑generated** (`1`, `2`, …) so you don't have to set it manually. Existing duplicates in
+your config are migrated automatically on first launch after updating the extension.
+
+You can also add the same model multiple times **without** a `configId` in the UI — the
+auto‑generation handles it transparently. This is handy for running the same model with
+different context lengths:
+
+```jsonc
+"customcopilot.models": [
+  { "id": "glm-5.2", "owned_by": "zhipu", "context_length": 200000 },
+  { "id": "glm-5.2", "owned_by": "zhipu", "context_length": 500000 },
+  { "id": "glm-5.2", "owned_by": "zhipu", "context_length": 1000000 }
+]
+```
+
+After auto‑migration these become `glm-5.2`, `glm-5.2::1`, `glm-5.2::2` — all three appear in
+the picker with their respective context lengths, and each sends `glm-5.2` as the technical
+model name to the API.
 
 ```jsonc
 "customcopilot.models": [
@@ -168,6 +217,12 @@ separately in the model picker as `<id>::<configId>`.
 ```
 
 → `glm-4.6::thinking` and `glm-4.6::no-thinking` both appear in Copilot Chat.
+
+> **Cross‑vendor compatibility:** Model ids returned to VS Code carry a `provider:index:`
+> prefix internally (e.g. `zai:0:glm-4.6`) so they never collide with built‑in Copilot models
+> of the same name. The prefix is transparent — the picker shows the display name, and the
+> API receives the bare `id`. This fixes a bug on older VS Code versions where an extension
+> model named `claude-opus-5` would hide Copilot's own `claude-opus-5` in the model picker.
 
 ## 🧷 Custom Headers
 
@@ -283,8 +338,11 @@ Global settings (namespace `customcopilot.*`):
 - `enable_thinking`, `thinking_budget` — toggle/limit chain‑of‑thought output.
 - `include_reasoning_in_request` — echo `reasoning_content` back in assistant messages.
 - `headers` — custom HTTP headers. `extra` — extra request‑body params.
-- `apiMode` — `openai` | `openai-responses` | `ollama` | `anthropic` | `gemini`.
+- `apiMode` — `openai` | `openai-responses` | `ollama` | `anthropic` | `gemini` | `zai`.
 - `delay` — per‑model request delay (ms). `useForCommitGeneration` — use for commit messages.
+- Auto‑generated: `configId` is auto‑assigned (`1`, `2`, …) when a model with the same `id`
+  already exists and no explicit `configId` is set. Existing duplicates are migrated on first
+  launch.
 
 ## 🧑‍💻 Commands
 

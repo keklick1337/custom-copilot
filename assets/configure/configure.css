@@ -828,6 +828,20 @@ tr:hover td {
 	overflow-y: auto;
 }
 
+.fetch-search-bar {
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.fetch-search-bar input {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.fetch-item.hidden {
+	display: none;
+}
+
 .fetch-item {
 	display: flex;
 	align-items: flex-start;

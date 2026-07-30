@@ -44,6 +44,11 @@ export function activate(context: vscode.ExtensionContext) {
 	// Applied only once; the user can re-enable telemetry afterwards without it being reverted.
 	void applyTelemetryPrivacyDefault(context);
 
+	// One-time migration: assign configId to existing models that share the same
+	// id under the same apiMode (VS Code vendor).  Without this, VS Code silently
+	// deduplicates them and only the first survives in the model picker.
+	void migrateDuplicateModelIds(context);
+
 	// Management command to configure provider-specific API keys
 	context.subscriptions.push(
 		vscode.commands.registerCommand("customcopilot.setProviderApikey", async () => {
@@ -179,5 +184,97 @@ async function applyTelemetryPrivacyDefault(context: vscode.ExtensionContext): P
 		}
 	} catch (err) {
 		logger.warn("telemetry.privacyDefault.failed", { error: String(err) });
+	}
+}
+
+/**
+ * One-time migration: VS Code deduplicates language models by
+ * `vendor/${id::configId}` within each vendor.  Models that share the same
+ * `id` and the same effective `apiMode` (the VS Code vendor) collide — VS Code
+ * silently skips all but the first.  This migration scans existing
+ * `customcopilot.models` and assigns a numeric `configId` (`"1"`, `"2"`, …)
+ * to duplicates so every model appears in the picker.
+ *
+ * Runs once (guarded by globalState).  Models that already have a `configId`
+ * are preserved.  The first occurrence of each id keeps no configId (backward
+ * compatible).  This is a pure in-memory array operation — it completes in
+ * milliseconds even for hundreds of models.
+ *
+ * Models with the same `id` but **different** `apiMode` are under different VS
+ * Code vendors, so they do NOT collide and are left untouched.
+ */
+async function migrateDuplicateModelIds(context: vscode.ExtensionContext): Promise<void> {
+	const STATE_KEY = "customcopilot.modelIdMigrationV1";
+	if (context.globalState.get<boolean>(STATE_KEY)) {
+		return;
+	}
+	await context.globalState.update(STATE_KEY, true);
+
+	try {
+		const config = vscode.workspace.getConfiguration();
+		const rawModels = config.get<HFModelItem[]>("customcopilot.models", []);
+		const models = normalizeUserModels(rawModels);
+		if (!models.length) {
+			return;
+		}
+
+		// Group models by (id, effective apiMode).  VS Code vendors are per-apiMode,
+		// so only models sharing the same apiMode can collide.
+		const groups = new Map<string, HFModelItem[]>();
+		for (const m of models) {
+			if (m.id.startsWith("__provider__")) {
+				continue;
+			}
+			const effectiveMode = m.apiMode ?? "openai";
+			const key = `${m.id}\0${effectiveMode}`;
+			let group = groups.get(key);
+			if (!group) {
+				group = [];
+				groups.set(key, group);
+			}
+			group.push(m);
+		}
+
+		let changed = false;
+		for (const group of groups.values()) {
+			if (group.length <= 1) {
+				continue;
+			}
+			// Collect existing identifiers within this group (id or id::configId).
+			const usedIds = new Set<string>();
+			for (const m of group) {
+				const fullId = m.configId ? `${m.id}::${m.configId}` : m.id;
+				usedIds.add(fullId);
+			}
+
+			// For models without a configId whose plain id already collides,
+			// assign a numeric configId.  The first model with no configId keeps
+			// its bare id; subsequent duplicates get "1", "2", etc.
+			let counter = 1;
+			for (const m of group) {
+				if (m.configId) {
+					continue;
+				}
+				const fullId = m.id;
+				if (!usedIds.has(fullId)) {
+					usedIds.add(fullId);
+					continue;
+				}
+				// This id is already taken — find the next available numeric configId.
+				while (usedIds.has(`${m.id}::${counter}`)) {
+					counter++;
+				}
+				m.configId = String(counter);
+				usedIds.add(`${m.id}::${counter}`);
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			await config.update("customcopilot.models", models, vscode.ConfigurationTarget.Global);
+			logger.info("models.migrated", { count: models.length });
+		}
+	} catch (err) {
+		logger.warn("models.migration.failed", { error: String(err) });
 	}
 }

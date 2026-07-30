@@ -54,6 +54,11 @@ const networkErrorPatterns = [
 export interface ParsedModelId {
 	baseId: string;
 	configId?: string;
+	/** Index from the vendor:index prefix, used to disambiguate multiple
+	 * user models that share the same base id and configId (e.g. 3 copies of
+	 * glm-5.2 with different context lengths).  `undefined` for legacy ids
+	 * without a prefix. */
+	idx?: number;
 }
 
 export function getModelProviderId(model: unknown): string {
@@ -86,19 +91,47 @@ export function normalizeUserModels(models: unknown): HFModelItem[] {
 }
 
 /**
- * Parse a model ID that may contain a configuration ID separator.
- * Format: "baseId::configId" or just "baseId"
+ * Parse a model ID that may contain a vendor:index prefix and/or a configuration ID.
+ *
+ * Full format: "providerKey:idx:baseId" or "providerKey:idx:baseId::configId"
+ * Legacy format (config-only): "baseId" or "baseId::configId"
+ *
+ * The vendor:index prefix is added in provideModel.ts to make every model's
+ * `metadata.id` globally unique, preventing cross-vendor collisions on old
+ * VS Code versions that dedup the model picker by bare `metadata.id`.
+ * The prefix matches the pattern `/^[a-z0-9_-]+:\d+:/` and is stripped here
+ * so the rest of the extension always works with the original base id.
  */
+const VENDOR_INDEX_PREFIX_RE = /^([a-z0-9_-]+):(\d+):/;
+
 export function parseModelId(modelId: string): ParsedModelId {
-	const parts = modelId.split("::");
-	if (parts.length >= 2) {
+	// First split off the configId (after the first "::")
+	const sepIndex = modelId.indexOf("::");
+	let head: string;
+	let configId: string | undefined;
+	if (sepIndex >= 0) {
+		head = modelId.slice(0, sepIndex);
+		configId = modelId.slice(sepIndex + 2);
+	} else {
+		head = modelId;
+	}
+
+	// Strip the "providerKey:idx:" prefix from the head to recover the base id
+	// and the numeric index.  Backward compatible: if the head doesn't match the
+	// prefix pattern (e.g. legacy ids without prefix, or ids from the configView
+	// frontend), the entire head is treated as the base id with idx undefined.
+	const match = head.match(VENDOR_INDEX_PREFIX_RE);
+	if (match) {
 		return {
-			baseId: parts[0],
-			configId: parts.slice(1).join("::"), // In case configId itself contains '::'
+			baseId: head.slice(match[0].length),
+			configId,
+			idx: parseInt(match[2], 10),
 		};
 	}
+
 	return {
-		baseId: modelId,
+		baseId: head,
+		configId,
 	};
 }
 

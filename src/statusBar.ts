@@ -28,6 +28,15 @@ const lastStats: DiagnosticsState = {
 	isProxyUsed: false,
 };
 
+/**
+ * Monotonic counter incremented at the start of every status-bar update.
+ * After the (async) token counting finishes, we compare the saved snapshot
+ * against the current value to decide whether this update is still the
+ * latest — if a newer request has already started, we discard the stale
+ * results so they don't overwrite newer data.
+ */
+let statusUpdateSeq = 0;
+
 export function initStatusBar(context: vscode.ExtensionContext): vscode.StatusBarItem {
 	// Create status bar item for token count display
 	const tokenCountStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -134,37 +143,24 @@ export async function updateContextStatusBar(
 	statusBarItem: vscode.StatusBarItem,
 	modelConfig: { includeReasoningInRequest: boolean }
 ): Promise<void> {
-	// Calculate tokens for all messages in parallel
-	const tokenCountPromises = messages.map((message) => countMessageTokens(message, modelConfig));
+	// ── Phase 1: immediate (synchronous) update ───────────────────────────
+	// Update the model name and a "calculating…" indicator right away so the
+	// status bar never shows stale data while the (CPU-bound) tokenizer runs.
+	// Token counting can take hundreds of milliseconds for long conversations;
+	// without this, the bar freezes on the previous request's numbers until
+	// the new count finishes.
 
-	const tokenCounts = await Promise.all(tokenCountPromises);
-	const messagesTokens = tokenCounts.reduce((sum, count) => sum + count, 0);
-
-	// Calculate tool definition tokens
-	let toolTokens = 0;
-	if (tools && tools.length > 0) {
-		toolTokens = await countToolTokens(tools);
-	}
-
-	// Total tokens: messages + tool definitions + reserved output
-	const totalTokenCount = messagesTokens + toolTokens;
+	const mySeq = ++statusUpdateSeq;
 	const maxTokens = model.maxInputTokens + model.maxOutputTokens;
 
-	// Populate persistent stats for QuickPick diagnosis
-	lastStats.modelId = model.id;
-	lastStats.modelName = model.name;
-	lastStats.provider = model.family ?? "customcopilot";
-	lastStats.messagesTokens = messagesTokens;
-	lastStats.toolTokens = toolTokens;
-	lastStats.totalTokenCount = totalTokenCount;
-	lastStats.maxTokens = maxTokens;
-
-	// Query workspace configuration to resolve proxy URL
+	// Resolve proxy synchronously so it's available immediately too.
 	const config = vscode.workspace.getConfiguration();
 	const globalProxyUrl = config.get<string>("customcopilot.proxyUrl", "").trim();
 	const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 	const parsedModelId = parseModelId(model.id);
 
+	// Match by idx (vendor:index prefix) when present; fall back to legacy
+	// baseId+configId match.  See provider.ts for the full rationale.
 	let um = userModels.find(
 		(u) =>
 			u.id === parsedModelId.baseId &&
@@ -175,6 +171,12 @@ export async function updateContextStatusBar(
 	}
 
 	const activeProxy = resolveProxyUrl(um?.proxyUrl, globalProxyUrl);
+
+	// Show model + "calculating" indicator immediately
+	lastStats.modelId = model.id;
+	lastStats.modelName = model.name;
+	lastStats.provider = model.family ?? "customcopilot";
+	lastStats.maxTokens = maxTokens;
 	if (activeProxy) {
 		lastStats.proxyUrl = activeProxy;
 		lastStats.isProxyUsed = true;
@@ -183,10 +185,50 @@ export async function updateContextStatusBar(
 		lastStats.isProxyUsed = false;
 	}
 
+	statusBarItem.text = `$(sparkle) ${model.name} …`;
+	statusBarItem.backgroundColor = undefined;
+
+	const immediateTooltip = new vscode.MarkdownString();
+	immediateTooltip.isTrusted = true;
+	immediateTooltip.appendMarkdown(`### 💫 **Custom Copilot Diagnostics**\n\n`);
+	immediateTooltip.appendMarkdown(`- **Active Model**: \`${model.name}\`\n`);
+	immediateTooltip.appendMarkdown(`- **Context Limit**: ${formatTokenCount(maxTokens)} tokens\n`);
+	immediateTooltip.appendMarkdown(`- **Usage**: _calculating…_\n\n`);
+	immediateTooltip.appendMarkdown(`---\n\n`);
+	immediateTooltip.appendMarkdown(`[⚙️ Open Settings](command:customcopilot.openConfig)`);
+	statusBarItem.tooltip = immediateTooltip;
+	statusBarItem.show();
+
+	// ── Phase 2: deferred token counting ───────────────────────────────────
+	// Count tokens in the background, then update the progress bar / tooltip /
+	// background color. A staleness guard prevents out-of-order updates when
+	// multiple requests arrive in quick succession (the fire-and-forget caller
+	// in provider.ts means several `updateContextStatusBar` calls can overlap).
+
+	const tokenCountPromises = messages.map((message) => countMessageTokens(message, modelConfig));
+	const tokenCounts = await Promise.all(tokenCountPromises);
+	const messagesTokens = tokenCounts.reduce((sum, count) => sum + count, 0);
+
+	let toolTokens = 0;
+	if (tools && tools.length > 0) {
+		toolTokens = await countToolTokens(tools);
+	}
+
+	// Stale guard: a newer request has already started — discard these results.
+	if (mySeq !== statusUpdateSeq) {
+		return;
+	}
+
+	const totalTokenCount = messagesTokens + toolTokens;
+
+	// Populate persistent stats for QuickPick diagnosis
+	lastStats.messagesTokens = messagesTokens;
+	lastStats.toolTokens = toolTokens;
+	lastStats.totalTokenCount = totalTokenCount;
+
 	// Create visual progress bar with single progressive block
 	const progressBar = createProgressBar(totalTokenCount, maxTokens);
-	const displayText = `$(sparkle) ${progressBar}`;
-	statusBarItem.text = displayText;
+	statusBarItem.text = `$(sparkle) ${progressBar}`;
 
 	// Format a gorgeous Markdown tooltip with status list and interactive command action
 	const tooltipMarkdown = new vscode.MarkdownString();
@@ -206,7 +248,6 @@ export async function updateContextStatusBar(
 	);
 	tooltipMarkdown.appendMarkdown(`---\n\n`);
 	tooltipMarkdown.appendMarkdown(`[⚙️ Open Settings](command:customcopilot.openConfig)`);
-
 	statusBarItem.tooltip = tooltipMarkdown;
 
 	// Add color coding based on token usage

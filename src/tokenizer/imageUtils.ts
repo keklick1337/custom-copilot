@@ -41,7 +41,14 @@ export function getGifDimensions(base64: string) {
 }
 
 export function getJpegDimensions(base64: string) {
-	const binary = atob(base64);
+	// The SOF (Start of Frame) marker we need is always in the header area,
+	// well before the entropy-coded image data.  Decoding the entire base64
+	// string with atob() for a multi-MB photo blocks the extension-host event
+	// loop for hundreds of milliseconds, which makes the status bar feel
+	// sluggish.  Only decode enough of the base64 to find the SOF marker —
+	// 128 KB of base64 ≈ 96 KB of binary, far more than any JPEG header.
+	const maxB64Chars = 131072;
+	const binary = atob(base64.length > maxB64Chars ? base64.slice(0, maxB64Chars) : base64);
 	const uint8 = Uint8Array.from(binary, (c) => c.charCodeAt(0));
 	const length = uint8.length;
 	let offset = 2;
@@ -65,7 +72,11 @@ export function getJpegDimensions(base64: string) {
 }
 
 export function getWebPDimensions(base64String: string) {
-	const binaryString = atob(base64String);
+	// WebP dimensions are in the RIFF header (first ~30 bytes).  Only decode
+	// the header, not the entire file — the full atob() of a multi-MB image
+	// blocks the extension-host event loop.
+	const maxB64Chars = 200;
+	const binaryString = atob(base64String.length > maxB64Chars ? base64String.slice(0, maxB64Chars) : base64String);
 	const binaryData = new Uint8Array(binaryString.length);
 	for (let i = 0; i < binaryString.length; i++) {
 		binaryData[i] = binaryString.charCodeAt(i);

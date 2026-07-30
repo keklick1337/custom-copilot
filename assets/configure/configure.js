@@ -120,6 +120,7 @@ const el = {
 	fetchStatus: $("fetchStatus"),
 	keyTestStatus: $("keyTestStatus"),
 	fetchResults: $("fetchResults"),
+	fetchSearchInput: $("fetchSearchInput"),
 	selectAllFetched: $("selectAllFetched"),
 	deselectAllFetched: $("deselectAllFetched"),
 	importFetchedBtn: $("importFetchedBtn"),
@@ -1454,8 +1455,23 @@ el.fetchFromApiBtn.addEventListener("click", () => {
 
 el.cancelFetchBtn.addEventListener("click", hideFetchPanel);
 
+el.fetchSearchInput.addEventListener("input", () => {
+	const term = el.fetchSearchInput.value.trim().toLowerCase();
+	const items = el.fetchResults.querySelectorAll(".fetch-item");
+	let visible = 0;
+	items.forEach((item) => {
+		const idEl = item.querySelector(".fetch-item-id");
+		const text = (idEl ? idEl.textContent : "") + " " + (item.dataset.modelId || "");
+		const match = !term || text.toLowerCase().includes(term);
+		item.classList.toggle("hidden", !match);
+		if (match) visible++;
+	});
+	const base = el.fetchStatus.dataset.baseStatus || el.fetchStatus.textContent;
+	el.fetchStatus.textContent = term ? `${base} · ${visible} shown` : base;
+});
+
 el.selectAllFetched.addEventListener("click", () => {
-	el.fetchResults.querySelectorAll("input[type='checkbox']:not(:disabled)").forEach((cb) => {
+	el.fetchResults.querySelectorAll(".fetch-item:not(.hidden) input[type='checkbox']:not(:disabled)").forEach((cb) => {
 		cb.checked = true;
 	});
 	updateImportCount();
@@ -1489,6 +1505,7 @@ function hideFetchPanel() {
 	el.fetchPanel.style.display = "none";
 	state.fetchedModels = [];
 	state.isFetchingForPanel = false;
+	el.fetchSearchInput.value = "";
 	if (el.keyTestStatus) {
 		el.keyTestStatus.style.display = "none";
 		el.keyTestStatus.innerHTML = "";
@@ -1515,9 +1532,12 @@ function showFetchResults(models, keyResults) {
 	}
 
 	const multiKey = Array.isArray(keyResults) && keyResults.length > 1;
-	el.fetchStatus.textContent = multiKey
+	const baseStatus = multiKey
 		? `Found ${models.length} model(s) available on all keys — select to import`
 		: `Found ${models.length} model(s) — select to import`;
+	el.fetchStatus.textContent = baseStatus;
+	el.fetchStatus.dataset.baseStatus = baseStatus;
+	el.fetchSearchInput.value = "";
 
 	const existingIds = new Set(
 		getProviderModels(state.selectedProvider).map((m) => (m.configId ? `${m.id}::${m.configId}` : m.id))
@@ -1845,6 +1865,24 @@ function validateModelData(d) {
 	const editing = el.modelIdInput.hasAttribute("data-editing");
 	const origId = el.modelIdInput.getAttribute("data-original-id");
 	const origConfigId = el.modelIdInput.getAttribute("data-original-configId");
+
+	// Auto-generate a Config ID when adding a model whose id already exists,
+	// so VS Code doesn't deduplicate models with the same id within one vendor.
+	// VS Code keys models by vendor/modelId; two models with the same id under
+	// the same vendor (apiMode) collide and only the first survives.  A unique
+	// configId makes the id "model::configId" so both coexist in the picker.
+	if (!editing && !d.configId) {
+		const sameIdModels = state.models.filter((m) => m.id === d.id);
+		if (sameIdModels.length > 0) {
+			const existing = new Set(sameIdModels.map((m) => m.configId).filter(Boolean));
+			let n = 1;
+			while (existing.has(String(n))) {
+				n++;
+			}
+			d.configId = String(n);
+			el.modelConfigId.value = String(n);
+		}
+	}
 
 	const dup = state.models
 		.filter((m) => {

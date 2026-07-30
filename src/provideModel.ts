@@ -62,14 +62,31 @@ export async function prepareLanguageModelChatInformation(
 	let infos: LanguageModelChatInformation[];
 	const scopedModels = userModels?.filter((m) => !m.id.startsWith("__provider__") && matchesVendor(m)) ?? [];
 	if (scopedModels.length > 0) {
+		// Assign a vendor:index prefix to every model id so that the `metadata.id`
+		// VS Code receives is globally unique.  Old VS Code versions dedup the
+		// model picker by bare `metadata.id` across vendors, so a model named
+		// `claude-opus-5` from this extension would hide Copilot's built-in
+		// `claude-opus-5`.  The prefix `providerKey:idx:` makes our id
+		// `openai:0:claude-opus-5` which never collides with Copilot's bare
+		// `claude-opus-5`.  New VS Code (post-fix) ignores `metadata.id` for
+		// dedup but the prefix is harmless there.
+		const idCounters = new Map<string, number>();
 		// Return user-provided models directly
 		infos = scopedModels.map((m) => {
 			const contextLen = m?.context_length ?? DEFAULT_CONTEXT_LENGTH;
 			const maxOutput = m?.max_completion_tokens ?? m?.max_tokens ?? DEFAULT_MAX_TOKENS;
 			const maxInput = Math.max(1, contextLen - maxOutput);
 
-			// 使用配置ID（如果存在）来生成唯一的模型ID
-			const modelId = m.configId ? `${m.id}::${m.configId}` : m.id;
+			// Build a unique id with vendor:index prefix to avoid metadata.id
+			// collisions with built-in Copilot models on old VS Code versions.
+			const providerKey = (m.owned_by || "custom")
+				.toLowerCase()
+				.replace(/[^a-z0-9_-]/g, "-");
+			const idx = idCounters.get(m.id) ?? 0;
+			idCounters.set(m.id, idx + 1);
+			const prefix = `${providerKey}:${idx}:`;
+			const configPart = m.configId ? `::${m.configId}` : "";
+			const modelId = `${prefix}${m.id}${configPart}`;
 			const modelName = m.displayName || (m.configId ? `${m.id}::${m.configId}` : `${m.id}`);
 
 			const provider = getProviderLabel(m);

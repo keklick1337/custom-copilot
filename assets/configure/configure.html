@@ -541,6 +541,9 @@
 									<button id="cancelFetchBtn" class="secondary">Cancel</button>
 								</div>
 							</div>
+							<div class="fetch-search-bar">
+								<input id="fetchSearchInput" type="text" placeholder="Filter models (e.g. glm)…" autocomplete="off" />
+							</div>
 							<div id="keyTestStatus" class="key-test-status" style="display: none"></div>
 							<div id="fetchResults" class="fetch-results"></div>
 						</div>
@@ -580,7 +583,7 @@
 									</div>
 									<div class="field">
 										<label for="modelConfigId">Config ID</label>
-										<div class="field-description">Variant suffix (e.g. thinking)</div>
+										<div class="field-description">Variant suffix (e.g. thinking). Auto-generated for duplicate model IDs.</div>
 										<input id="modelConfigId" type="text" placeholder="thinking" />
 									</div>
 								</div>
