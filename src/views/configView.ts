@@ -60,6 +60,7 @@ interface ExportConfig {
 }
 
 type IncomingMessage =
+	| { type: "webviewReady" }
 	| { type: "requestInit" }
 	| {
 			type: "saveGlobalConfig";
@@ -187,6 +188,11 @@ export class ConfigViewController {
 	private readonly extensionUri: vscode.Uri;
 	private readonly secrets: vscode.SecretStorage;
 	private disposables: vscode.Disposable[] = [];
+	private webviewReady = false;
+	private retryTimer: ReturnType<typeof setTimeout> | undefined;
+	private retryCount = 0;
+	private static readonly MAX_RETRIES = 5;
+	private static readonly RETRY_DELAY_MS = 1500;
 
 	constructor(webview: vscode.Webview, extensionUri: vscode.Uri, secrets: vscode.SecretStorage) {
 		this.webview = webview;
@@ -197,6 +203,21 @@ export class ConfigViewController {
 
 		this.webview.onDidReceiveMessage(
 			async (message) => {
+				// The webview JS sends "webviewReady" as soon as it loads.  This
+				// signals that the service worker registration succeeded and
+				// our content is live.  If this message never arrives (because
+				// the service worker threw InvalidStateError — VS Code issue
+				// #326112), the retry timer re-sets the HTML to try again.
+				if (message?.type === "webviewReady") {
+					this.webviewReady = true;
+					if (this.retryTimer) {
+						clearTimeout(this.retryTimer);
+						this.retryTimer = undefined;
+					}
+					this.sendInit();
+					return;
+				}
+
 				this.handleMessage(message).catch((err) => {
 					console.error("[customcopilot] handleMessage failed", err);
 					vscode.window.showErrorMessage(
@@ -210,8 +231,32 @@ export class ConfigViewController {
 			this.disposables
 		);
 
-		// Send initialization data
-		this.sendInit();
+		// Start retry timer: if the webview doesn't signal "webviewReady"
+		// within RETRY_DELAY_MS, re-set the HTML (the service worker may
+		// have failed with InvalidStateError).  Retry up to MAX_RETRIES
+		// times.  On each retry, the service worker may already be
+		// registered from a previous attempt, so subsequent loads are
+		// more likely to succeed.
+		this.scheduleRetry();
+	}
+
+	private scheduleRetry(): void {
+		if (this.retryTimer) {
+			clearTimeout(this.retryTimer);
+		}
+		this.retryTimer = setTimeout(() => {
+			if (this.webviewReady) {
+				return;
+			}
+			if (this.retryCount >= ConfigViewController.MAX_RETRIES) {
+				console.error("[customcopilot] Webview failed to load after max retries");
+				return;
+			}
+			this.retryCount++;
+			console.warn(`[customcopilot] Webview not ready (retry ${this.retryCount}/${ConfigViewController.MAX_RETRIES}), re-setting HTML...`);
+			this.update();
+			this.scheduleRetry();
+		}, ConfigViewController.RETRY_DELAY_MS);
 	}
 
 	public async update() {
@@ -219,6 +264,10 @@ export class ConfigViewController {
 	}
 
 	public dispose() {
+		if (this.retryTimer) {
+			clearTimeout(this.retryTimer);
+			this.retryTimer = undefined;
+		}
 		while (this.disposables.length) {
 			const x = this.disposables.pop();
 			if (x) {
@@ -847,23 +896,57 @@ export class ConfigViewController {
 		const nonce = this.getNonce();
 		const assetsRoot = vscode.Uri.joinPath(this.extensionUri, "assets", "configure");
 		const templatePath = vscode.Uri.joinPath(assetsRoot, "configure.html");
-		const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, "configure.css"));
-		const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, "configure.js"));
+		const cssPath = vscode.Uri.joinPath(assetsRoot, "configure.css");
+		const jsPath = vscode.Uri.joinPath(assetsRoot, "configure.js");
+
+		// Inline CSS and JS directly into the HTML instead of loading them
+		// via <link href> / <script src>.  The service worker that VS Code uses
+		// to serve webview resources can fail with "InvalidStateError: The
+		// document is in an invalid state" (VS Code issue #326112) when the
+		// webview iframe is disposed while registration.update() is pending.
+		// Inlining removes the dependency on the service worker entirely —
+		// the CSS/JS are part of the HTML document, not fetched as separate
+		// resources through the SW.
+		const [rawTemplate, rawCss, rawJs] = await Promise.all([
+			vscode.workspace.fs.readFile(templatePath),
+			vscode.workspace.fs.readFile(cssPath),
+			vscode.workspace.fs.readFile(jsPath),
+		]);
+		const html = new TextDecoder("utf-8").decode(rawTemplate);
+		const cssContent = new TextDecoder("utf-8").decode(rawCss);
+		const jsContent = new TextDecoder("utf-8").decode(rawJs);
+
 		const csp = [
 			`default-src 'none'`,
 			`img-src ${webview.cspSource} https:`,
-			`style-src ${webview.cspSource} 'unsafe-inline'`,
-			`script-src ${webview.cspSource} 'nonce-${nonce}'`,
+			`style-src 'unsafe-inline'`,
+			`script-src 'nonce-${nonce}'`,
 		].join("; ");
 
-		const raw = await vscode.workspace.fs.readFile(templatePath);
-		let html = new TextDecoder("utf-8").decode(raw);
-		html = html
+		// Replace the external <link rel="stylesheet" href="%CSS_URI%" /> with
+		// an inline <style> block, and the external <script src="%SCRIPT_URI%"
+		// nonce="%NONCE%"> with an inline <script> block.  Both use the nonce
+		// for CSP compliance.  Do the tag replacements BEFORE the %NONCE%
+		// placeholder replacement so the regex patterns can match.
+		let result = html
 			.replaceAll("%CSP_SOURCE%", csp)
+			.replace(
+				/<link\s+rel="stylesheet"\s+href="%CSS_URI%"\s*\/>/,
+				`<style nonce="${nonce}">\n${cssContent}\n</style>`
+			)
+			.replace(
+				/<script\s+src="%SCRIPT_URI%"\s+nonce="%NONCE%"><\/script>/,
+				`<script nonce="${nonce}">\n${jsContent}\n</script>`
+			);
+
+		// Now replace any remaining placeholders (defensive — should be none
+		// left after the tag replacements above, but just in case).
+		result = result
 			.replaceAll("%NONCE%", nonce)
-			.replace("%CSS_URI%", cssUri.toString())
-			.replace("%SCRIPT_URI%", jsUri.toString());
-		return html;
+			.replace("%CSS_URI%", "")
+			.replace("%SCRIPT_URI%", "");
+
+		return result;
 	}
 
 	private getNonce() {
@@ -1845,7 +1928,14 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.onDidChangeVisibility(() => {
 			if (webviewView.visible) {
-				this.controller?.sendInit();
+				// If the controller was disposed (e.g. after a service-worker
+				// "InvalidStateError" fatal error — VS Code issue #326112),
+				// re-create it so the webview is functional again on next show.
+				if (!this.controller) {
+					this.controller = new ConfigViewController(webviewView.webview, this.extensionUri, this.secrets);
+				} else {
+					this.controller?.sendInit();
+				}
 			}
 		});
 	}

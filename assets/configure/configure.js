@@ -3,6 +3,12 @@
 
 const vscode = acquireVsCodeApi();
 
+// Signal to the extension host that the webview JS has loaded successfully.
+// The extension uses this to detect service-worker registration failures
+// (VS Code issue #326112): if this message doesn't arrive within a timeout,
+// the extension re-sets the webview HTML to retry loading.
+vscode.postMessage({ type: "webviewReady" });
+
 // ── State ──────────────────────────────────────────────────────────────────────
 
 const state = {
@@ -1776,7 +1782,7 @@ function resetModelForm() {
 	hideDropdown();
 }
 
-function populateModelForm(model) {
+function populateModelForm(model, mid) {
 	showModelError("");
 	el.modelIdInput.setAttribute("data-editing", "true");
 	el.modelIdInput.setAttribute("data-original-id", model.id || "");
