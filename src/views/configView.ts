@@ -928,16 +928,19 @@ export class ConfigViewController {
 		// nonce="%NONCE%"> with an inline <script> block.  Both use the nonce
 		// for CSP compliance.  Do the tag replacements BEFORE the %NONCE%
 		// placeholder replacement so the regex patterns can match.
+		//
+		// IMPORTANT: use replacer FUNCTIONS, not replacement strings.  The JS
+		// source contains "$&" (in the regex escape helper in configure.js),
+		// and in a replacement *string* that is a special pattern meaning
+		// "the matched substring" — it would splice the whole <script> tag
+		// into the middle of the JS and corrupt it with a SyntaxError.
+		// A replacer function inserts the content verbatim.
+		const styleTag = `<style nonce="${nonce}">\n${cssContent}\n</style>`;
+		const scriptTag = `<script nonce="${nonce}">\n${jsContent}\n</script>`;
 		let result = html
 			.replaceAll("%CSP_SOURCE%", csp)
-			.replace(
-				/<link\s+rel="stylesheet"\s+href="%CSS_URI%"\s*\/>/,
-				`<style nonce="${nonce}">\n${cssContent}\n</style>`
-			)
-			.replace(
-				/<script\s+src="%SCRIPT_URI%"\s+nonce="%NONCE%"><\/script>/,
-				`<script nonce="${nonce}">\n${jsContent}\n</script>`
-			);
+			.replace(/<link\s+rel="stylesheet"\s+href="%CSS_URI%"\s*\/>/, () => styleTag)
+			.replace(/<script\s+src="%SCRIPT_URI%"\s+nonce="%NONCE%"><\/script>/, () => scriptTag);
 
 		// Now replace any remaining placeholders (defensive — should be none
 		// left after the tag replacements above, but just in case).
