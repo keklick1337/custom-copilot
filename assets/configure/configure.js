@@ -54,6 +54,7 @@ const el = {
 	saveCommitBtn: $("saveCommitBtn"),
 	allowAnonymousAccess: $("allowAnonymousAccess"),
 	restoreChatSessions: $("restoreChatSessions"),
+	agentHostByokEnabled: $("agentHostByokEnabled"),
 	telemetryDisabled: $("telemetryDisabled"),
 	debugRequestLogging: $("debugRequestLogging"),
 	promptOverrideEnabled: $("promptOverrideEnabled"),
@@ -857,6 +858,14 @@ if (el.restoreChatSessions) {
 		vscode.postMessage({
 			type: "setRestoreChatSessions",
 			enabled: el.restoreChatSessions.checked,
+		});
+	});
+}
+if (el.agentHostByokEnabled) {
+	el.agentHostByokEnabled.addEventListener("change", () => {
+		vscode.postMessage({
+			type: "setAgentHostByok",
+			enabled: el.agentHostByokEnabled.checked,
 		});
 	});
 }
@@ -2019,6 +2028,9 @@ window.addEventListener("message", ({ data: msg }) => {
 			}
 			if (el.restoreChatSessions) {
 				el.restoreChatSessions.checked = p.restoreChatSessions === true;
+			}
+			if (el.agentHostByokEnabled) {
+				el.agentHostByokEnabled.checked = p.agentHostByokEnabled === true;
 			}
 			if (el.telemetryDisabled) {
 				el.telemetryDisabled.checked = p.telemetryDisabled === true;

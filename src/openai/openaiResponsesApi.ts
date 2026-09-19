@@ -243,6 +243,11 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 				...existing,
 				effort: um.reasoning_effort,
 			};
+		} else if (um?.enable_thinking === true && um?.reasoning === undefined && !isPlainObject(rb.reasoning)) {
+			// Generic thinking toggle without an explicit effort: default to
+			// "medium" so Responses-API models reason instead of failing or
+			// silently skipping reasoning.  Explicit settings always win.
+			rb.reasoning = { effort: "medium" };
 		}
 
 		// thinking (Volcengine provider)

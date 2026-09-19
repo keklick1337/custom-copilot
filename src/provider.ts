@@ -51,6 +51,24 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	private readonly _geminiToolCallMetaByCallId = new Map<string, GeminiToolCallMeta>();
 	private readonly _openaiResponsesPreviousResponseIdUnsupportedBaseUrls = new Set<string>();
 
+	/**
+	 * Fired whenever the user's model configuration (`customcopilot.models`)
+	 * changes.  VS Code listens to this event per-vendor and immediately
+	 * re-resolves `provideLanguageModelChatInformation` — the model picker
+	 * updates live, without a window reload or restart.
+	 *
+	 * All provider instances share one global emitter: a model added under
+	 * any apiMode re-triggers a resolve for every vendor (VS Code diffs the
+	 * metadata, so vendors whose lists didn't change fire no UI update).
+	 */
+	private static readonly _onDidChangeEmitter = new vscode.EventEmitter<void>();
+	readonly onDidChangeLanguageModelChatInformation = HuggingFaceChatModelProvider._onDidChangeEmitter.event;
+
+	/** Fire the change event for all registered vendors. */
+	public static notifyModelsChanged(): void {
+		HuggingFaceChatModelProvider._onDidChangeEmitter.fire();
+	}
+
 	static readonly OPENAI_RESPONSES_STATEFUL_MARKER_MIME = "application/vnd.customcopilot.stateful-marker";
 
 	/**

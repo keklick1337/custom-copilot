@@ -1,6 +1,23 @@
 {
     "search.exclude": {
-        "out": true
+        "out": true,
+        "tmp": true
+    },
+    // The VS Code reference clone in tmp/ has its own tsconfig that references
+    // type packages (@webgpu/types, sinon, ...) which only exist after a full
+    // `npm install` INSIDE tmp/vscode.  When the TS server loads that project
+    // (e.g. you open a file from the clone), the Problems panel floods with
+    // "Cannot find type definition file" errors that have nothing to do with
+    // this extension.  Options:
+    //   1. Close the tmp/vscode file tabs and run
+    //      "Developer: Reload Window" — the errors disappear.
+    //   2. Or install types inside the clone:
+    //          cd tmp/vscode && npm install --no-audit --no-save
+    //      (large download; not required to build this extension).
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "typescript.enablePromptUseWorkspaceTsdk": true,
+    "files.watcherExclude": {
+        "tmp/**": true
     },
     "git.branchProtection": [
         "main"

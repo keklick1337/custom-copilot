@@ -29,6 +29,7 @@ interface InitPayload {
 	providerKeySources: Record<string, string>;
 	allowAnonymousAccess: boolean;
 	restoreChatSessions: boolean;
+	agentHostByokEnabled: boolean;
 	telemetryDisabled: boolean;
 	debugRequestLogging: boolean;
 	promptOverrideEnabled: boolean;
@@ -136,6 +137,7 @@ type IncomingMessage =
 	| { type: "requestConfirm"; id: string; message: string; action: string }
 	| { type: "setAnonymousAccess"; enabled: boolean }
 	| { type: "setRestoreChatSessions"; enabled: boolean }
+	| { type: "setAgentHostByok"; enabled: boolean }
 	| { type: "setTelemetryDisabled"; disabled: boolean }
 	| { type: "setDebugRequestLogging"; enabled: boolean }
 	| { type: "setPromptOverrideEnabled"; enabled: boolean }
@@ -389,6 +391,9 @@ export class ConfigViewController {
 			case "setRestoreChatSessions":
 				await this.setRestoreChatSessions(message.enabled);
 				break;
+			case "setAgentHostByok":
+				await this.setAgentHostByok(message.enabled);
+				break;
 			case "setTelemetryDisabled":
 				await this.setTelemetryDisabled(message.disabled);
 				break;
@@ -577,6 +582,7 @@ export class ConfigViewController {
 		const readFileLines = config.get<number>("customcopilot.readFileLines", 0);
 		const allowAnonymousAccess = config.get<boolean>("chat.allowAnonymousAccess", false);
 		const restoreChatSessions = config.get<boolean>("chat.restoreLastPanelSession", false);
+		const agentHostByokEnabled = config.get<boolean>("chat.agentHost.byokModels.enabled", false);
 		const telemetryDisabled = config.get<string>("telemetry.telemetryLevel", "all") === "off";
 		const debugRequestLogging = config.get<boolean>("customcopilot.debugRequestLogging", false);
 		const promptOverrideEnabled = config.get<boolean>("customcopilot.promptOverride.enabled", false);
@@ -599,6 +605,7 @@ export class ConfigViewController {
 			providerKeySources,
 			allowAnonymousAccess,
 			restoreChatSessions,
+			agentHostByokEnabled,
 			telemetryDisabled,
 			debugRequestLogging,
 			promptOverrideEnabled,
@@ -1400,6 +1407,36 @@ export class ConfigViewController {
 				? "Chat sessions will now be restored after restarting VS Code."
 				: "Chat sessions will no longer be restored after restart."
 		);
+		await this.sendInit();
+	}
+
+	/**
+	 * Toggles `chat.agentHost.byokModels.enabled` — the experimental VS Code
+	 * setting that bridges extension-provided BYOK models into the new Agents
+	 * panel / Copilot-CLI agent sessions.  Without it, the Agents view's model
+	 * picker only shows models targeting its session type, so this extension's
+	 * models are invisible there even though they work in normal chat.
+	 */
+	private async setAgentHostByok(enabled: boolean) {
+		const config = vscode.workspace.getConfiguration();
+		try {
+			await config.update("chat.agentHost.byokModels.enabled", enabled, vscode.ConfigurationTarget.Global);
+		} catch {
+			vscode.window.showWarningMessage(
+				`Could not set "chat.agentHost.byokModels.enabled" — this setting is not available in your VS Code version (it was added around 1.134+). Update VS Code to use your models in the Agents panel.`
+			);
+			await this.sendInit();
+			return;
+		}
+		const choice = await vscode.window.showInformationMessage(
+			enabled
+				? "Your models will now appear in the Agents panel (Copilot CLI sessions). Reload the window to apply."
+				: "Your models will no longer appear in the Agents panel. Reload the window to apply.",
+			"Reload Window"
+		);
+		if (choice === "Reload Window") {
+			await vscode.commands.executeCommand("workbench.action.reloadWindow");
+		}
 		await this.sendInit();
 	}
 

@@ -118,7 +118,9 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 			um?.temperature !== undefined ||
 			um?.top_p !== undefined ||
 			um?.top_k !== undefined ||
-			um?.max_tokens !== undefined
+			um?.min_p !== undefined ||
+			um?.max_tokens !== undefined ||
+			um?.enable_thinking !== undefined
 		) {
 			rb.options = {};
 			if (um.temperature !== undefined && um.temperature !== null) {
@@ -130,9 +132,21 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 			if (um.top_k !== undefined) {
 				rb.options.top_k = um.top_k;
 			}
+			if (um.min_p !== undefined) {
+				rb.options.min_p = um.min_p;
+			}
 			if (um.max_tokens !== undefined) {
 				rb.options.num_predict = um.max_tokens;
 			}
+		}
+
+		// Map the generic enable_thinking toggle to Ollama's `think` flag.
+		// Only set it when the user made an explicit choice — absence lets the
+		// model's default behavior apply.
+		if (um?.enable_thinking === true) {
+			rb.think = true;
+		} else if (um?.enable_thinking === false) {
+			rb.think = false;
 		}
 
 		// Add tools if provided

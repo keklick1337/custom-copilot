@@ -25,7 +25,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.30",
+	"version": "1.0.31",
 	"engines": {
 		"vscode": "^1.104.0"
 	},
@@ -81,7 +81,9 @@
 							"default": "https://api.openai.com/v1"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			},
 			{
@@ -96,7 +98,9 @@
 							"default": "https://api.openai.com/v1"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			},
 			{
@@ -111,7 +115,9 @@
 							"default": "https://api.anthropic.com/v1"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			},
 			{
@@ -126,7 +132,9 @@
 							"default": "https://generativelanguage.googleapis.com/v1beta"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			},
 			{
@@ -141,7 +149,9 @@
 							"default": "http://localhost:11434"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			},
 			{
@@ -156,7 +166,9 @@
 							"default": "https://api.z.ai/api/anthropic"
 						}
 					},
-					"required": ["baseUrl"]
+					"required": [
+						"baseUrl"
+					]
 				}
 			}
 		],
@@ -182,6 +194,16 @@
 				"title": "Stop Commit Message Generation",
 				"category": "Copilot Custom Models Endpoint",
 				"icon": "$(debug-stop)"
+			},
+			{
+				"command": "customcopilot.toggleModelCapability",
+				"title": "Toggle Model Capability (tools / vision / thinking)",
+				"category": "Copilot Custom Models Endpoint"
+			},
+			{
+				"command": "customcopilot.setDefaultModel",
+				"title": "Quick Toggle Model On/Off",
+				"category": "Copilot Custom Models Endpoint"
 			}
 		],
 		"menus": {

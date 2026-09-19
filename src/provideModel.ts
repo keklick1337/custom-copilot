@@ -92,7 +92,8 @@ export async function prepareLanguageModelChatInformation(
 			const provider = getProviderLabel(m);
 			const contextText = formatContextSize(contextLen);
 			const caps: string[] = [];
-			if (m.tool_calling || m.extra?.tool_calling) {
+			const supportsTools = m.tool_calling === true || m.extra?.tool_calling === true;
+			if (supportsTools) {
 				caps.push("tools");
 			}
 			if (m.vision) {
@@ -114,9 +115,22 @@ export async function prepareLanguageModelChatInformation(
 				version: "1.0.0",
 				maxInputTokens: maxInput,
 				maxOutputTokens: maxOutput,
+				// Full context window (input + output).  VS Code uses this for the
+				// context-window display; if absent it falls back to
+				// maxInputTokens + maxOutputTokens.
+				maxContextWindowTokens: contextLen,
+				// BYOK flag: tells VS Code this model is user-supplied (own API
+				// key), which feeds the `github.copilot.hasByokModels` context
+				// key — letting signed-out users chat without a GitHub account.
+				isBYOK: true,
 				isUserSelectable: true,
 				capabilities: {
-					toolCalling: m?.tool_calling === true,
+					// toolCalling === true is the single requirement for AGENT
+					// mode eligibility: VS Code derives metadata.capabilities.
+					// agentMode directly from it (suitableForAgentMode).  Accept
+					// both `tool_calling` and `extra.tool_calling` (the tooltip
+					// and fetch flow treat them as equivalent).
+					toolCalling: supportsTools,
 					imageInput: m?.vision ?? false,
 				},
 			} satisfies LanguageModelChatInformation;

@@ -732,6 +732,27 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			generationConfig.frequencyPenalty = um.frequency_penalty;
 		}
 
+		// Map the generic thinking toggles to Gemini's thinkingConfig.
+		// includeThoughts controls whether thought summaries are returned;
+		// thinkingBudget caps the reasoning token budget (0 = disable).
+		const zaiThinkingEnabled = um?.thinking?.type === "enabled";
+		if (um?.enable_thinking === true || zaiThinkingEnabled) {
+			const tc: Record<string, unknown> = { includeThoughts: true };
+			if (um?.thinking_budget !== undefined) {
+				tc.thinkingBudget = um.thinking_budget;
+			}
+			// `extra.generationConfig.thinkingConfig` (applied later) wins.
+			const existingExtra = um?.extra?.generationConfig;
+			if (!(existingExtra && typeof existingExtra === "object" && "thinkingConfig" in existingExtra)) {
+				generationConfig.thinkingConfig = tc;
+			}
+		} else if (um?.enable_thinking === false) {
+			// Explicitly disabled (supported by 2.5-flash; Pro ignores budget 0).
+			if (!(um?.extra?.generationConfig && typeof um.extra.generationConfig === "object" && "thinkingConfig" in um.extra.generationConfig)) {
+				generationConfig.thinkingConfig = { thinkingBudget: 0 };
+			}
+		}
+
 		if (Object.keys(generationConfig).length > 0) {
 			rb.generationConfig = generationConfig;
 		}

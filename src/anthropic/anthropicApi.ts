@@ -185,6 +185,23 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			rb.top_k = um.top_k;
 		}
 
+		// Map extended-thinking options.  `enable_thinking`/`thinking_budget`
+		// are the generic UI fields; the Zai-style `thinking: {type}` object is
+		// also honored.  Note the Anthropic API requires budget_tokens >= 1024
+		// when thinking is enabled.
+		const zaiThinkingEnabled = um?.thinking?.type === "enabled";
+		if (um?.enable_thinking === true || zaiThinkingEnabled) {
+			const budget =
+				um?.thinking_budget ??
+				(um?.max_tokens !== undefined ? Math.max(1024, Math.floor(um.max_tokens * 0.8)) : 4096);
+			rb.thinking = { type: "enabled", budget_tokens: Math.max(1024, budget) };
+			// Anthropic constraint: temperature must be 1 when thinking is on.
+			rb.temperature = 1;
+		} else if (um?.enable_thinking === false && !um?.extra?.thinking) {
+			// Explicitly disabled — don't send the field at all (absence = off).
+			delete rb.thinking;
+		}
+
 		// Add tools configuration
 		const toolConfig = convertToolsToOpenAI(options);
 		if (toolConfig.tools) {
