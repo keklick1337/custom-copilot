@@ -7,7 +7,7 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem } from "../types";
+import type { CustomModelItem } from "../types";
 import type { OpenAIToolCall } from "./openaiTypes";
 
 import {
@@ -18,6 +18,12 @@ import {
 	convertToolsToOpenAIResponses,
 	mapRole,
 } from "../utils";
+import { clampEffort, OPENAI_COMPAT_WIRE_EFFORTS } from "../reasoningEffort";
+import { accumulateUsage } from "../commonApi";
+
+function numOrUndef(v: unknown): number | undefined {
+	return typeof v === "number" ? v : undefined;
+}
 
 import { CommonApi } from "../commonApi";
 import { logger } from "../logger";
@@ -83,6 +89,8 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 		messages: readonly LanguageModelChatRequestMessage[],
 		modelConfig: { includeReasoningInRequest: boolean }
 	): ResponsesInputItem[] {
+		// Fresh conversion state per request (adapters are reused across turns).
+		this.resetRequestState();
 		const out: ResponsesInputItem[] = [];
 
 		for (const m of messages) {
@@ -208,7 +216,7 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 
 	prepareRequestBody(
 		rb: Record<string, unknown>,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): Record<string, unknown> {
 		const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -236,12 +244,21 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 			rb.max_output_tokens = um.max_tokens;
 		}
 
-		// OpenAI reasoning configuration
+		// OpenAI reasoning configuration. The effort is clamped onto the
+		// OpenAI-compat wire vocabulary (ported from hermes-agent): arbitrary
+		// endpoints top out at "max", so "ultra" verbatim would 400.
 		if (um?.reasoning_effort !== undefined) {
 			const existing = isPlainObject(rb.reasoning) ? { ...(rb.reasoning as Record<string, unknown>) } : {};
+			const effortValue: unknown = um.reasoning_effort;
+			let effort: unknown = effortValue;
+			if (typeof effortValue === "string") {
+				const normalized = effortValue.trim().toLowerCase();
+				const clamped = clampEffort(normalized, OPENAI_COMPAT_WIRE_EFFORTS);
+				effort = typeof clamped === "string" ? clamped.trim().toLowerCase() : clamped;
+			}
 			rb.reasoning = {
 				...existing,
-				effort: um.reasoning_effort,
+				effort,
 			};
 		} else if (um?.enable_thinking === true && um?.reasoning === undefined && !isPlainObject(rb.reasoning)) {
 			// Generic thinking toggle without an explicit effort: default to
@@ -297,6 +314,7 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 		token: CancellationToken
 	): Promise<void> {
 		this._responseId = null;
+		this.resetRequestState();
 		const modelId = this._modelId;
 		logger.debug("responses.stream.start", { modelId });
 		const reader = responseBody.getReader();
@@ -525,15 +543,20 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 
 				if (eventType === "response.function_call_arguments.delta") {
 					if (chunk) buf.args += chunk;
-				} else {
-					// "done" events typically provide the full argument string.
+				} else if (chunk) {
+					// "done" events typically provide the full argument string,
+					// but only overwrite when non-empty — some gateways send
+					// `done` with an absent/empty `arguments`, which must not
+					// wipe args accumulated from deltas.
 					buf.args = chunk;
 				}
 				this._toolCallBuffers.set(idx, buf);
 
 				await this.tryEmitBufferedToolCall(idx, progress);
 				if (eventType === "response.function_call_arguments.done") {
-					await this.flushToolCallBuffers(progress, true);
+					// Finalize ONLY this index: flushing all buffers here would
+					// prematurely emit incomplete sibling tool calls.
+					await this.flushToolCallBufferAt(idx, progress, true);
 				}
 				return;
 			}
@@ -591,16 +614,57 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 
 				await this.tryEmitBufferedToolCall(idx, progress);
 				if (eventType == "response.output_item.done") {
-					await this.flushToolCallBuffers(progress, true);
+					// Finalize ONLY this index (see above).
+					await this.flushToolCallBufferAt(idx, progress, true);
 				}
 				return;
 			}
 
 			case "response.completed":
 			case "response.done": {
+				// The completed response object carries the token usage.
+				const usageObj =
+					event.response && typeof event.response === "object"
+						? (event.response as Record<string, unknown>).usage
+						: undefined;
+				if (usageObj && typeof usageObj === "object") {
+					const u = usageObj as Record<string, unknown>;
+					this._lastUsage = accumulateUsage(this._lastUsage, {
+						prompt_tokens: numOrUndef(u.input_tokens),
+						completion_tokens: numOrUndef(u.output_tokens),
+						total_tokens: numOrUndef(u.total_tokens),
+						prompt_tokens_details:
+							u.input_tokens_details && typeof u.input_tokens_details === "object"
+								? { cached_tokens: numOrUndef((u.input_tokens_details as Record<string, unknown>).cached_tokens) ?? 0 }
+								: undefined,
+					});
+				}
 				// End of message - ensure thinking is ended and flush all tool calls
 				await this.flushToolCallBuffers(progress, false);
 				this.reportEndThinking(progress);
+				return;
+			}
+
+			case "response.failed": {
+				// Server-side failure: surface as an error instead of silently
+				// returning a truncated answer.
+				const errObj =
+					event.response && typeof event.response === "object"
+						? (event.response as Record<string, unknown>).error
+						: event.error;
+				const message =
+					errObj && typeof errObj === "object" && typeof (errObj as Record<string, unknown>).message === "string"
+						? String((errObj as Record<string, unknown>).message)
+						: "Responses API response failed";
+				throw new Error(`Responses API failed: ${message}`);
+			}
+
+			case "response.incomplete": {
+				// Response hit a limit mid-stream. Emit what we have and log;
+				// do not throw — partial output is still useful to the user.
+				await this.flushToolCallBuffers(progress, false);
+				this.reportEndThinking(progress);
+				logger.warn("responses.stream.incomplete", { modelId: this._modelId });
 				return;
 			}
 		}
@@ -652,7 +716,7 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 	}
 
 	async *createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,

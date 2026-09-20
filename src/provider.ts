@@ -9,12 +9,13 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFApiMode, HFModelItem } from "./types";
+import type { CustomApiMode, CustomModelItem } from "./types";
 
 import type { OllamaRequestBody } from "./ollama/ollamaTypes";
 
 import {
 	parseModelId,
+	resolveUserModelById,
 	createRetryConfig,
 	executeWithRetry,
 	normalizeUserModels,
@@ -24,7 +25,46 @@ import {
 } from "./utils";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
-import { countMessageTokens } from "./provideToken";
+import { countMessageTokens, reportLearnedImageTokenCost } from "./provideToken";
+
+/** Previous request's real prompt_tokens (anchor for image-cost calibration). */
+let lastPromptTokensAnchor: number | undefined;
+
+/**
+ * Learn the per-image token price from provider-reported prompt_tokens.
+ * Only fires when the request actually introduced NEW images vs the anchor
+ * request — the residual is then attributable to those images alone.
+ */
+function calibrateImageTokenCost(
+	realPromptTokens: number,
+	messages: readonly vscode.LanguageModelChatRequestMessage[]
+): void {
+	try {
+		const countImages = (msgs: readonly vscode.LanguageModelChatRequestMessage[]): number =>
+			msgs.reduce(
+				(sum, m) =>
+					sum +
+					(m.content ?? []).filter(
+						(p) => p instanceof vscode.LanguageModelDataPart && p.mimeType.startsWith("image/")
+					).length,
+				0
+			);
+		const imagesNow = countImages(messages);
+		if (imagesNow <= 0 || lastPromptTokensAnchor === undefined) {
+			return;
+		}
+		// Text-only estimate of the DELTA between the anchored request and now
+		// is expensive; approximate with the residual directly attributed to
+		// the image count only when the message count also grew sanely.
+		const residual = realPromptTokens - lastPromptTokensAnchor;
+		if (residual <= 0) {
+			return;
+		}
+		reportLearnedImageTokenCost(residual / imagesNow);
+	} catch {
+		// calibration is best-effort
+	}
+}
 import { updateContextStatusBar } from "./statusBar";
 import { notifyChatRequestStart } from "./chatActivity";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
@@ -36,15 +76,15 @@ import { AnthropicApi } from "./anthropic/anthropicApi";
 import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
 import { GeminiApi, buildGeminiGenerateContentUrl, type GeminiToolCallMeta } from "./gemini/geminiApi";
 import type { GeminiGenerateContentRequest } from "./gemini/geminiTypes";
-import { CommonApi } from "./commonApi";
+import { CommonApi, type ApiUsage } from "./commonApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
 import { applyPromptOverride } from "./promptOverride";
 
 /**
- * VS Code Chat provider backed by Hugging Face Inference Providers.
+ * VS Code Chat provider backed by user-configured custom model endpoints.
  */
-export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
+export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 	/** Track last request completion time for delay calculation. */
 	private _lastRequestTime: number | null = null;
 
@@ -62,11 +102,11 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	 * metadata, so vendors whose lists didn't change fire no UI update).
 	 */
 	private static readonly _onDidChangeEmitter = new vscode.EventEmitter<void>();
-	readonly onDidChangeLanguageModelChatInformation = HuggingFaceChatModelProvider._onDidChangeEmitter.event;
+	readonly onDidChangeLanguageModelChatInformation = CustomEndpointChatProvider._onDidChangeEmitter.event;
 
 	/** Fire the change event for all registered vendors. */
 	public static notifyModelsChanged(): void {
-		HuggingFaceChatModelProvider._onDidChangeEmitter.fire();
+		CustomEndpointChatProvider._onDidChangeEmitter.fire();
 	}
 
 	static readonly OPENAI_RESPONSES_STATEFUL_MARKER_MIME = "application/vnd.customcopilot.stateful-marker";
@@ -82,7 +122,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	constructor(
 		private readonly secrets: vscode.SecretStorage,
 		private readonly statusBarItem: vscode.StatusBarItem,
-		private readonly vendorApiMode?: HFApiMode
+		private readonly vendorApiMode?: CustomApiMode
 	) {}
 
 	/**
@@ -126,11 +166,17 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 	 * @returns A promise that resolves to the number of tokens
 	 */
 	async provideTokenCount(
-		_model: LanguageModelChatInformation,
+		model: LanguageModelChatInformation,
 		text: string | LanguageModelChatRequestMessage,
 		_token: CancellationToken
 	): Promise<number> {
-		return countMessageTokens(text, { includeReasoningInRequest: true });
+		// Match the model's actual replay setting — reasoning tokens only
+		// count against the context when they are actually re-sent.
+		const userModels = normalizeUserModels(
+			vscode.workspace.getConfiguration().get<unknown>("customcopilot.models", [])
+		);
+		const um = resolveUserModelById(model.id, userModels, this.vendorApiMode);
+		return countMessageTokens(text, { includeReasoningInRequest: um?.include_reasoning_in_request ?? false });
 	}
 
 	/**
@@ -257,40 +303,17 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 			// Find matching user model configuration.
 			//
-			// provideModel.ts assigns each model a `providerKey:idx:` prefix
-			// where `idx` is a per-id counter *within the filtered scopedModels
-			// list* (same apiMode as this vendor, excluding __provider__
-			// placeholders).  To recover the exact original config entry we
-			// replicate the same filtering and pick entry `idx` among models
-			// sharing the same base id.
-			let um: HFModelItem | undefined;
-			if (parsedModelId.idx !== undefined) {
-				// Use this provider's vendor apiMode (same filter as provideModel.ts)
-				// rather than the per-model apiMode, which isn't known yet (it's
-				// derived from `um` below — using it here would be a temporal dead
-				// zone error).
-				const vendorMode = this.vendorApiMode ?? "openai";
-				const vendorFilteredModels = userModels.filter(
-					(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === vendorMode
-				);
-				const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
-				if (parsedModelId.idx < sameIdModels.length) {
-					um = sameIdModels[parsedModelId.idx];
-				}
-			} else {
-				// Legacy path (no idx prefix, e.g. ids from configView frontend):
-				// match by baseId + configId.
-				um = userModels.find(
-					(um) =>
-						um.id === parsedModelId.baseId &&
-						((parsedModelId.configId && um.configId === parsedModelId.configId) ||
-							(!parsedModelId.configId && !um.configId))
-				);
-			}
+			// Resolve the exact config entry behind this (possibly prefixed) id.
+			const um: CustomModelItem | undefined = resolveUserModelById(model.id, userModels, this.vendorApiMode);
 
-			// If still no model found, try to find any model matching the base ID (most lenient match, for backward compatibility)
+			// If still no model found, the configuration changed between the model
+			// listing and this request (model deleted/reordered). Fail fast with
+			// an actionable error instead of a lenient fallback that could silently
+			// send the request to a DIFFERENT endpoint/key pool sharing the base id.
 			if (!um) {
-				um = userModels.find((um) => um.id === parsedModelId.baseId);
+				throw new Error(
+					`Model configuration for "${parsedModelId.baseId}" was not found. It may have been removed or renamed — please re-select the model.`
+				);
 			}
 
 			// Check if using Ollama native API mode
@@ -363,8 +386,14 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 
 			// send chat request
 			const BASE_URL = baseUrl;
-			if (!BASE_URL || !BASE_URL.startsWith("http")) {
-				throw new Error(`Invalid base URL configuration.`);
+			let parsedBaseUrl: URL;
+			try {
+				parsedBaseUrl = new URL(BASE_URL);
+			} catch {
+				parsedBaseUrl = null as unknown as URL;
+			}
+			if (!parsedBaseUrl || (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:")) {
+				throw new Error(`Invalid base URL configuration: "${BASE_URL}"`);
 			}
 
 			// get retry config
@@ -444,106 +473,121 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 			logger.debug("request.headers", {
 				keyPoolSize: apiKeys.length,
 			});
-			logger.debug("request.messages.origin", {
-				messages: messages,
-			});
+			// Privacy gate: full conversation dumps go to the log file ONLY when
+			// the user explicitly opted in via `customcopilot.logMessageContent`.
+			// Plain `debug` level alone must not persist chat history (user code,
+			// file contents) to disk in plaintext.
+			if (config.get<boolean>("customcopilot.logMessageContent", false)) {
+				logger.debug("request.messages.origin", {
+					messages: messages,
+				});
+			}
+			// Shared dispatcher: one fetch/retry/error path for every apiMode.
+			// Each adapter contributes only its URL, request body and stream
+			// processor — the retry/key-rotation/error formatting logic exists once.
+			// The adapter whose stream is being processed (set by each apiMode
+			// branch) — read after streaming to report token usage.
+			let activeAdapter: CommonApi<unknown, unknown> | undefined;
+
+			const sendWithRetry = async (
+				url: string,
+				body: unknown,
+				errorLabel: string,
+				processStream: (responseBody: ReadableStream<Uint8Array>) => Promise<void>
+			): Promise<void> => {
+				const usageAdapter = activeAdapter as { _lastUsage?: ApiUsage } | undefined;
+				logger.debug("request.body", { url, requestBody: body });
+				const response = await executeWithRetry(async () => {
+					const res = await proxyFetch(url, {
+						...requestNetworkInit,
+						method: "POST",
+						headers: selectRequestHeaders(),
+						body: JSON.stringify(body),
+					});
+
+					if (!res.ok) {
+						const errorText = await res.text();
+						console.error(`[customcopilot] ${errorLabel} error response`, errorText);
+						throw handleKeyError(
+							res.status,
+							res.statusText,
+							errorText,
+							`${errorLabel}: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
+						);
+					}
+
+					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
+					return res;
+				}, retryConfig, token);
+
+				if (!response.body) {
+					throw new Error(`No response body from ${errorLabel}`);
+				}
+				await processStream(response.body);
+
+				// Report token usage as a LanguageModelDataPart with the
+				// "usage" mime type — the same internal contract Copilot's own
+				// BYOK providers use. Copilot Chat's context-usage circle
+				// (and token counting) keys off this part; without it the
+				// circle never populates for custom models. Emitted AFTER the
+				// stream completes so the numbers are final.
+				const usage = usageAdapter?._lastUsage;
+				if (usage && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
+					trackingProgress.report(
+						new vscode.LanguageModelDataPart(
+							new TextEncoder().encode(JSON.stringify(usage)),
+							"usage"
+						)
+					);
+					// Calibrate the per-image token cost from the provider's
+					// own accounting (hermes-agent pattern): with a fresh
+					// anchor, the residual between this real prompt_tokens and
+					// anchor + locally-estimated text delta is the price of
+					// the images this request introduced.
+					calibrateImageTokenCost(usage.prompt_tokens, messages);
+					lastPromptTokensAnchor = usage.prompt_tokens;
+				}
+				};
+
+			const normalizedBaseUrl = BASE_URL.replace(/\/+$/, "");
 			if (apiMode === "ollama") {
 				// Ollama native API mode
 				const ollamaApi = new OllamaApi(model.id);
-				const ollamaMessages = ollamaApi.convertMessages(messages, modelConfig);
-
+				activeAdapter = ollamaApi as unknown as CommonApi<unknown, unknown>;
 				let ollamaRequestBody: OllamaRequestBody = {
 					model: parsedModelId.baseId,
-					messages: ollamaMessages,
+					messages: ollamaApi.convertMessages(messages, modelConfig),
 					stream: true,
 				};
 				ollamaRequestBody = ollamaApi.prepareRequestBody(ollamaRequestBody, um, options);
-
-				// send Ollama chat request with retry
-				const url = `${BASE_URL.replace(/\/+$/, "")}/api/chat`;
-				logger.debug("request.body", {
-					url: url,
-					requestBody: ollamaRequestBody,
-				});
-				const response = await executeWithRetry(async () => {
-					const res = await proxyFetch(url, {
-						...requestNetworkInit,
-						method: "POST",
-						headers: selectRequestHeaders(),
-						body: JSON.stringify(ollamaRequestBody),
-					});
-
-					if (!res.ok) {
-						const errorText = await res.text();
-						console.error("[Ollama Provider] Ollama API error response", errorText);
-						throw handleKeyError(
-							res.status,
-							res.statusText,
-							errorText,
-							`Ollama API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-						);
-					}
-
-					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
-					return res;
-				}, retryConfig, token);
-
-				if (!response.body) {
-					throw new Error("No response body from Ollama API");
-				}
-				await ollamaApi.processStreamingResponse(response.body, trackingProgress, token);
+				await sendWithRetry(
+					`${normalizedBaseUrl}/api/chat`,
+				ollamaRequestBody,
+				"Ollama API",
+				(body) => ollamaApi.processStreamingResponse(body, trackingProgress, token)
+				);
 			} else if (apiMode === "anthropic" || apiMode === "zai") {
-				// Anthropic API mode (also used for Z.AI which is Anthropic-compatible with Bearer auth)
+				// Anthropic API mode (also used for Z.AI which is Anthropic-compatible with Bearer auth).
+				// Some providers configure the baseUrl with a version suffix (e.g. .../v1) —
+				// avoid double-appending (.../v1/v1/messages).
 				const anthropicApi = new AnthropicApi(model.id);
-				const anthropicMessages = anthropicApi.convertMessages(messages, modelConfig);
-
-				// requestBody
+				activeAdapter = anthropicApi as unknown as CommonApi<unknown, unknown>;
 				let requestBody: AnthropicRequestBody = {
 					model: parsedModelId.baseId,
-					messages: anthropicMessages,
+					messages: anthropicApi.convertMessages(messages, modelConfig),
 					stream: true,
 				};
 				requestBody = anthropicApi.prepareRequestBody(requestBody, um, options);
-
-				// send Anthropic chat request with retry
-				const normalizedBaseUrl = BASE_URL.replace(/\/+$/, "");
-				// Some providers require configuring the baseUrl with a version suffix (e.g. .../v1).
-				// Avoid double-appending (e.g. .../v1/v1/messages).
 				const url = normalizedBaseUrl.endsWith("/v1")
 					? `${normalizedBaseUrl}/messages`
 					: `${normalizedBaseUrl}/v1/messages`;
-				logger.debug("request.body", { url, requestBody });
-				const response = await executeWithRetry(async () => {
-					const res = await proxyFetch(url, {
-						...requestNetworkInit,
-						method: "POST",
-						headers: selectRequestHeaders(),
-						body: JSON.stringify(requestBody),
-					});
-
-					if (!res.ok) {
-						const errorText = await res.text();
-						console.error("[Anthropic Provider] Anthropic API error response", errorText);
-						throw handleKeyError(
-							res.status,
-							res.statusText,
-							errorText,
-							`Anthropic API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-						);
-					}
-
-					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
-					return res;
-				}, retryConfig, token);
-
-				if (!response.body) {
-					throw new Error("No response body from Anthropic API");
-				}
-				await anthropicApi.processStreamingResponse(response.body, trackingProgress, token);
+				await sendWithRetry(url, requestBody, "Anthropic API", (body) =>
+					anthropicApi.processStreamingResponse(body, trackingProgress, token)
+				);
 			} else if (apiMode === "openai-responses") {
-				// OpenAI Responses API mode
+				// OpenAI Responses API mode (stateful via previous_response_id markers)
 				const openaiResponsesApi = new OpenaiResponsesApi(model.id);
-				const normalizedBaseUrl = BASE_URL.replace(/\/+$/, "");
+				activeAdapter = openaiResponsesApi as unknown as CommonApi<unknown, unknown>;
 				const statefulModelId = parsedModelId.baseId;
 
 				// Convert full history once (also extracts system `instructions`).
@@ -552,8 +596,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				const marker = findLastOpenAIResponsesStatefulMarker(statefulModelId, messages);
 				let deltaInput: unknown[] | null = null;
 				if (marker && marker.index >= 0 && marker.index < messages.length - 1) {
-					const deltaMessages = messages.slice(marker.index + 1);
-					const converted = openaiResponsesApi.convertMessages(deltaMessages, modelConfig);
+					const converted = openaiResponsesApi.convertMessages(messages.slice(marker.index + 1), modelConfig);
 					if (converted.length > 0) {
 						deltaInput = converted;
 					}
@@ -565,15 +608,11 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					Array.isArray(deltaInput) &&
 					deltaInput.length > 0;
 
-				const input = canUsePreviousResponseId ? deltaInput! : fullInput;
-
-				// requestBody
 				let requestBody: Record<string, unknown> = {
 					model: parsedModelId.baseId,
-					input,
+					input: canUsePreviousResponseId ? deltaInput! : fullInput,
 					stream: true,
 				};
-
 				requestBody = openaiResponsesApi.prepareRequestBody(requestBody, um, options);
 
 				// Add prompt_cache_key to enable OpenAI prompt caching.
@@ -581,9 +620,6 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 				if (!requestBody.prompt_cache_key) {
 					requestBody.prompt_cache_key = `customcopilot-${parsedModelId.baseId}`;
 				}
-				// send Responses API request with retry
-				const url = `${normalizedBaseUrl}/responses`;
-				logger.debug("request.body", { url, requestBody });
 
 				// If the user explicitly set `previous_response_id` via `extra`, don't apply stateful slicing.
 				let addedPreviousResponseId = false;
@@ -594,32 +630,18 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					addedPreviousResponseId = true;
 				}
 
-				const sendRequest = async (body: Record<string, unknown>) =>
-					await executeWithRetry(async () => {
-						const res = await proxyFetch(url, {
-							...requestNetworkInit,
-							method: "POST",
-							headers: selectRequestHeaders(),
-							body: JSON.stringify(body),
-						});
+				const processResponsesStream = async (responseBody: ReadableStream<Uint8Array>): Promise<void> => {
+					await openaiResponsesApi.processStreamingResponse(responseBody, trackingProgress, token);
+					// Append a stateful marker so future requests can reuse `previous_response_id`.
+					const responseId = openaiResponsesApi.responseId;
+					if (responseId) {
+						trackingProgress.report(createOpenAIResponsesStatefulMarkerPart(statefulModelId, responseId));
+					}
+				};
 
-						if (!res.ok) {
-							const errorText = await res.text();
-							throw handleKeyError(
-								res.status,
-								res.statusText,
-								errorText,
-								`Responses API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-							);
-						}
-
-						keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
-						return res;
-					}, retryConfig, token);
-
-				let response: Response;
+				const url = `${normalizedBaseUrl}/responses`;
 				try {
-					response = await sendRequest(requestBody);
+					await sendWithRetry(url, requestBody, "Responses API", processResponsesStream);
 				} catch (err) {
 					// Some Responses-compatible gateways don't support `previous_response_id`.
 					// Fall back to sending full history when the previous-response attempt fails.
@@ -639,22 +661,12 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					};
 					fallbackBody = openaiResponsesApi.prepareRequestBody(fallbackBody, um, options);
 					delete fallbackBody.previous_response_id;
-					response = await sendRequest(fallbackBody);
-				}
-
-				if (!response.body) {
-					throw new Error("No response body from Responses API");
-				}
-				await openaiResponsesApi.processStreamingResponse(response.body, trackingProgress, token);
-
-				// Append a stateful marker so future requests can reuse `previous_response_id` (Copilot Chat style).
-				const responseId = openaiResponsesApi.responseId;
-				if (responseId) {
-					trackingProgress.report(createOpenAIResponsesStatefulMarkerPart(statefulModelId, responseId));
+					await sendWithRetry(url, fallbackBody, "Responses API", processResponsesStream);
 				}
 			} else if (apiMode === "gemini") {
 				// Gemini native API mode
 				const geminiApi = new GeminiApi(model.id, this._geminiToolCallMetaByCallId);
+				activeAdapter = geminiApi as unknown as CommonApi<unknown, unknown>;
 				const geminiMessages = geminiApi.convertMessages(messages, modelConfig);
 
 				const systemParts: string[] = [];
@@ -669,7 +681,7 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 							)
 							.join("")
 							.trim();
-						if (text) {
+					if (text) {
 							systemParts.push(text);
 						}
 						continue;
@@ -677,92 +689,37 @@ export class HuggingFaceChatModelProvider implements LanguageModelChatProvider {
 					contents.push({ role: msg.role, parts: msg.parts });
 				}
 
-				let requestBody: GeminiGenerateContentRequest = {
-					contents,
-				};
+				let requestBody: GeminiGenerateContentRequest = { contents };
 				if (systemParts.length > 0) {
 					requestBody.systemInstruction = { role: "user", parts: [{ text: systemParts.join("\n") }] };
 				}
 				requestBody = geminiApi.prepareRequestBody(requestBody, um, options);
 
 				const url = buildGeminiGenerateContentUrl(BASE_URL, parsedModelId.baseId, true);
-				logger.debug("request.body", { url, requestBody });
 				if (!url) {
 					throw new Error("Invalid Gemini base URL configuration.");
 				}
-
-				const response = await executeWithRetry(async () => {
-					const res = await proxyFetch(url, {
-						...requestNetworkInit,
-						method: "POST",
-						headers: selectRequestHeaders(),
-						body: JSON.stringify(requestBody),
-					});
-
-					if (!res.ok) {
-						const errorText = await res.text();
-						console.error("[Gemini Provider] Gemini API error response", errorText);
-						throw handleKeyError(
-							res.status,
-							res.statusText,
-							errorText,
-							`Gemini API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-						);
-					}
-
-					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
-					return res;
-				}, retryConfig, token);
-
-				if (!response.body) {
-					throw new Error("No response body from Gemini API");
-				}
-				await geminiApi.processStreamingResponse(response.body, trackingProgress, token);
+				await sendWithRetry(url, requestBody, "Gemini API", (body) =>
+					geminiApi.processStreamingResponse(body, trackingProgress, token)
+				);
 			} else {
 				// OpenAI compatible API mode (default)
 				const openaiApi = new OpenaiApi(model.id);
-				const openaiMessages = openaiApi.convertMessages(messages, modelConfig);
-
-				// requestBody
+				activeAdapter = openaiApi as unknown as CommonApi<unknown, unknown>;
 				let requestBody: Record<string, unknown> = {
 					model: parsedModelId.baseId,
-					messages: openaiMessages,
+					messages: openaiApi.convertMessages(messages, modelConfig),
 					stream: true,
 					stream_options: { include_usage: true },
 				};
 				requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
-
-				// send chat request with retry
-				const url = `${BASE_URL.replace(/\/+$/, "")}/chat/completions`;
-				logger.debug("request.body", { url, requestBody });
-				const response = await executeWithRetry(async () => {
-					const res = await proxyFetch(url, {
-						...requestNetworkInit,
-						method: "POST",
-						headers: selectRequestHeaders(),
-						body: JSON.stringify(requestBody),
-					});
-
-					if (!res.ok) {
-						const errorText = await res.text();
-						console.error("[customcopilot] API error response", errorText);
-						throw handleKeyError(
-							res.status,
-							res.statusText,
-							errorText,
-							`API error: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
-						);
-					}
-
-					keyBalancer.reportSuccess(normalizedProvider, lastSelectedKey);
-					return res;
-				}, retryConfig, token);
-
-				if (!response.body) {
-					throw new Error("No response body from API");
-				}
-				await openaiApi.processStreamingResponse(response.body, trackingProgress, token);
-			}
+				await sendWithRetry(
+					`${normalizedBaseUrl}/chat/completions`,
+				requestBody,
+				"API",
+				(body) => openaiApi.processStreamingResponse(body, trackingProgress, token)
+			);
+		}
 		} catch (err) {
 			console.error("[customcopilot] Chat request failed", {
 				modelId: model.id,
@@ -851,7 +808,7 @@ interface OpenAIResponsesStatefulMarkerLocation {
 function createOpenAIResponsesStatefulMarkerPart(modelId: string, marker: string): vscode.LanguageModelDataPart {
 	const payload = `${modelId}\\${marker}`;
 	const bytes = new TextEncoder().encode(payload);
-	return new vscode.LanguageModelDataPart(bytes, HuggingFaceChatModelProvider.OPENAI_RESPONSES_STATEFUL_MARKER_MIME);
+	return new vscode.LanguageModelDataPart(bytes, CustomEndpointChatProvider.OPENAI_RESPONSES_STATEFUL_MARKER_MIME);
 }
 
 function parseOpenAIResponsesStatefulMarkerPart(part: unknown): { modelId: string; marker: string } | null {
@@ -865,7 +822,7 @@ function parseOpenAIResponsesStatefulMarkerPart(part: unknown): { modelId: strin
 	if (!(maybe.data instanceof Uint8Array)) {
 		return null;
 	}
-	if (maybe.mimeType !== HuggingFaceChatModelProvider.OPENAI_RESPONSES_STATEFUL_MARKER_MIME) {
+	if (maybe.mimeType !== CustomEndpointChatProvider.OPENAI_RESPONSES_STATEFUL_MARKER_MIME) {
 		return null;
 	}
 

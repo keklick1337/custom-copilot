@@ -7,12 +7,13 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem } from "../types";
-import type { OpenAIFunctionToolDef } from "../openai/openaiTypes";
+import type { CustomModelItem } from "../types";
 
-import { CommonApi } from "../commonApi";
-import { logger } from "../logger";
+import { CommonApi, accumulateUsage } from "../commonApi";
+import { openaiToolsToGeminiFunctionDeclarations, openaiToolChoiceToGeminiToolConfig } from "./geminiTools";
+import { buildGeminiGenerateContentUrl } from "./geminiUrls";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
+import { logger } from "../logger";
 
 import {
 	isImageMimeType,
@@ -27,7 +28,6 @@ import type {
 	GeminiGenerateContentRequest,
 	GeminiGenerateContentResponse,
 	GeminiPart,
-	GeminiToolConfig,
 } from "./geminiTypes";
 
 export interface GeminiChatMessage {
@@ -42,451 +42,16 @@ export interface GeminiToolCallMeta {
 	createdAt: number;
 }
 
-const UNSUPPORTED_GEMINI_SCHEMA_KEYS = new Set(["exclusiveMinimum", "exclusiveMaximum", "enumDescriptions"]);
-
-function stripUnsupportedGeminiSchemaKeys(value: unknown): number {
-	if (!value) {
-		return 0;
-	}
-
-	if (Array.isArray(value)) {
-		let removed = 0;
-		for (const v of value) {
-			removed += stripUnsupportedGeminiSchemaKeys(v);
-		}
-		return removed;
-	}
-
-	if (typeof value !== "object") {
-		return 0;
-	}
-
-	const obj = value as Record<string, unknown>;
-	let removed = 0;
-
-	for (const key of Object.keys(obj)) {
-		if (UNSUPPORTED_GEMINI_SCHEMA_KEYS.has(key)) {
-			delete obj[key];
-			removed++;
-			continue;
-		}
-		removed += stripUnsupportedGeminiSchemaKeys(obj[key]);
-	}
-
-	return removed;
+function normalizeStringEffort(value: unknown): string {
+	return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-function normalizeBaseUrl(raw: string): string {
-	const v = (raw || "").trim();
-	if (!v) {
-		return "";
-	}
-	try {
-		return new URL(v).toString();
-	} catch {
-		// Try to recover from missing scheme
-		if (!/^https?:\/\//i.test(v)) {
-			try {
-				return new URL(`https://${v}`).toString();
-			} catch {
-				return v;
-			}
-		}
-		return v;
-	}
-}
+/** When thinking is on, raise maxOutputTokens to the API ceiling so thought
+ * tokens don't starve the visible answer (mirrors hermes-agent's
+ * GEMINI_DEFAULT_MAX_OUTPUT_TOKENS). */
+const GEMINI_THINKING_MAX_OUTPUT_TOKENS = 65535;
 
-function joinPathPrefix(basePath: string, nextPath: string): string {
-	const a = basePath || "";
-	const b = nextPath || "";
-	const aTrim = a.endsWith("/") ? a.slice(0, -1) : a;
-	const bTrim = b.startsWith("/") ? b : `/${b}`;
-	return `${aTrim || ""}${bTrim}`;
-}
-
-/**
- * Build the Gemini models list endpoint URL from a base URL.
- * Handles various baseUrl formats: bare domain, /v1beta, or /v1beta/models.
- * @param baseUrl The base URL to normalize.
- * @returns The full models list endpoint URL.
- */
-function buildGeminiModelsUrl(baseUrl: string): string {
-	const trimmed = baseUrl.replace(/\/+$/, "");
-	if (trimmed.endsWith("/v1beta/models")) {
-		return trimmed;
-	}
-	if (trimmed.endsWith("/v1beta")) {
-		return `${trimmed}/models`;
-	}
-	return `${trimmed}/v1beta/models`;
-}
-
-/**
- * Normalize a Gemini model identifier by stripping the "models/" prefix.
- * @param name The model name from the API response.
- * @param displayName The display name from the API response.
- * @returns A normalized model ID suitable for user configuration.
- */
-function normalizeGeminiModelIdForListing(name?: string, displayName?: string): string {
-	if (name && name.trim()) {
-		if (name.startsWith("models/")) {
-			return name.slice("models/".length);
-		}
-		return name;
-	}
-	return displayName?.trim() || "unknown";
-}
-
-function normalizeGeminiModelPath(modelId: string): string {
-	const raw = (modelId || "").trim();
-	if (!raw) {
-		return "models/gemini-3-pro-preview";
-	}
-
-	const last = raw.includes("/") ? raw.split("/").filter(Boolean).pop() || raw : raw;
-	if (last.startsWith("models/") || last.startsWith("tunedModels/")) {
-		return last;
-	}
-
-	if (last.includes("..") || last.includes("?") || last.includes("&")) {
-		return "";
-	}
-
-	return `models/${last}`;
-}
-
-export function buildGeminiGenerateContentUrl(rawBaseUrl: string, modelId: string, stream: boolean): string {
-	const value = (rawBaseUrl || "").trim();
-	if (!value) {
-		return "";
-	}
-
-	try {
-		const normalized = normalizeBaseUrl(value);
-		const u0 = new URL(normalized);
-		let basePath = (u0.pathname || "").replace(/\/+$/, "") || "/";
-
-		// If configured as a full endpoint, keep it (just switch method based on stream).
-		if (/:generateContent$/i.test(basePath) || /:streamGenerateContent$/i.test(basePath)) {
-			const method = stream ? "streamGenerateContent" : "generateContent";
-			u0.pathname = basePath.replace(/:(streamGenerateContent|generateContent)$/i, `:${method}`);
-			u0.search = "";
-			u0.hash = "";
-			if (stream) {
-				u0.searchParams.set("alt", "sse");
-			}
-			return u0.toString();
-		}
-
-		const modelPath = normalizeGeminiModelPath(modelId);
-		if (!modelPath) {
-			return "";
-		}
-
-		// If base already contains a version segment, don't append again.
-		if (!/\/v1beta$/i.test(basePath) && !/\/v1beta\//i.test(`${basePath}/`)) {
-			basePath = joinPathPrefix(basePath, "/v1beta");
-		}
-
-		const method = stream ? "streamGenerateContent" : "generateContent";
-		u0.pathname = joinPathPrefix(basePath, `/${modelPath}:${method}`);
-		u0.search = "";
-		u0.hash = "";
-		if (stream) {
-			u0.searchParams.set("alt", "sse");
-		}
-		return u0.toString();
-	} catch {
-		return "";
-	}
-}
-
-function jsonSchemaToGeminiSchema(
-	jsonSchema: unknown,
-	rootSchema: unknown = jsonSchema,
-	refStack: Set<string> | undefined = undefined
-): Record<string, unknown> {
-	if (!jsonSchema || typeof jsonSchema !== "object") {
-		return {};
-	}
-
-	const root =
-		rootSchema && typeof rootSchema === "object"
-			? (rootSchema as Record<string, unknown>)
-			: (jsonSchema as Record<string, unknown>);
-	const stack = refStack instanceof Set ? refStack : new Set<string>();
-
-	const ref =
-		typeof (jsonSchema as Record<string, unknown>).$ref === "string"
-			? String((jsonSchema as Record<string, unknown>).$ref).trim()
-			: "";
-	if (ref) {
-		if (stack.has(ref)) {
-			return {};
-		}
-		stack.add(ref);
-
-		const resolved = (() => {
-			if (ref === "#") {
-				return root;
-			}
-			if (!ref.startsWith("#/")) {
-				return null;
-			}
-			const decode = (token: string) => token.replace(/~1/g, "/").replace(/~0/g, "~");
-			const parts = ref
-				.slice(2)
-				.split("/")
-				.map((p) => decode(p));
-
-			let cur: unknown = root;
-			for (const p of parts) {
-				if (!cur || typeof cur !== "object") {
-					return null;
-				}
-				if (!(p in (cur as Record<string, unknown>))) {
-					return null;
-				}
-				cur = (cur as Record<string, unknown>)[p];
-			}
-			return cur && typeof cur === "object" ? (cur as Record<string, unknown>) : null;
-		})();
-
-		const merged: Record<string, unknown> = {
-			...(resolved && typeof resolved === "object" ? (resolved as Record<string, unknown>) : {}),
-			...(jsonSchema as Record<string, unknown>),
-		};
-		delete merged.$ref;
-		const out = jsonSchemaToGeminiSchema(merged, root, stack);
-		stack.delete(ref);
-		return out;
-	}
-
-	const allOf = Array.isArray((jsonSchema as Record<string, unknown>).allOf)
-		? ((jsonSchema as Record<string, unknown>).allOf as unknown[])
-		: null;
-	if (allOf && allOf.length > 0) {
-		const merged: Record<string, unknown> = { ...(jsonSchema as Record<string, unknown>) };
-		delete merged.allOf;
-		for (const it of allOf) {
-			if (!it || typeof it !== "object") {
-				continue;
-			}
-			const itObj = it as Record<string, unknown>;
-			for (const [k, v] of Object.entries(itObj)) {
-				if (k === "properties" && v && typeof v === "object" && !Array.isArray(v)) {
-					const baseProps =
-						merged.properties && typeof merged.properties === "object" && !Array.isArray(merged.properties)
-							? (merged.properties as Record<string, unknown>)
-							: {};
-					merged.properties = { ...baseProps, ...(v as Record<string, unknown>) };
-					continue;
-				}
-				if (k === "required" && Array.isArray(v)) {
-					const baseReq = Array.isArray(merged.required) ? (merged.required as unknown[]) : [];
-					merged.required = Array.from(new Set([...baseReq, ...v]));
-					continue;
-				}
-				if (!(k in merged)) {
-					merged[k] = v;
-				}
-			}
-		}
-		return jsonSchemaToGeminiSchema(merged, root, stack);
-	}
-
-	const out: Record<string, unknown> = {};
-	const input = { ...(jsonSchema as Record<string, unknown>) };
-
-	// Handle nullable unions like { anyOf: [{type:'null'}, {...}] }
-	const anyOf = Array.isArray(input.anyOf)
-		? (input.anyOf as unknown[])
-		: Array.isArray(input.oneOf)
-			? (input.oneOf as unknown[])
-			: null;
-	if (anyOf && anyOf.length === 2) {
-		const a0 = anyOf[0] && typeof anyOf[0] === "object" ? (anyOf[0] as Record<string, unknown>) : null;
-		const a1 = anyOf[1] && typeof anyOf[1] === "object" ? (anyOf[1] as Record<string, unknown>) : null;
-		if (a0?.type === "null") {
-			out.nullable = true;
-			return { ...out, ...jsonSchemaToGeminiSchema(a1, root, stack) };
-		}
-		if (a1?.type === "null") {
-			out.nullable = true;
-			return { ...out, ...jsonSchemaToGeminiSchema(a0, root, stack) };
-		}
-	}
-
-	if (Array.isArray(input.type)) {
-		const list = (input.type as unknown[]).filter((t) => typeof t === "string");
-		if (list.length) {
-			out.anyOf = list
-				.filter((t) => t !== "null")
-				.map((t) => jsonSchemaToGeminiSchema({ ...input, type: t, anyOf: undefined, oneOf: undefined }, root, stack));
-			if (list.includes("null")) {
-				out.nullable = true;
-			}
-			return out;
-		}
-	}
-
-	for (const [k, v] of Object.entries(input)) {
-		if (v == null) {
-			continue;
-		}
-		if (k.startsWith("$")) {
-			continue;
-		}
-		if (
-			k === "additionalProperties" ||
-			k === "definitions" ||
-			k === "$defs" ||
-			k === "title" ||
-			k === "examples" ||
-			k === "default"
-		) {
-			continue;
-		}
-
-		// Gemini Schema doesn't support Draft-07 exclusive bounds fields.
-		// Best-effort: map numeric exclusive bounds to inclusive ones.
-		if (k === "exclusiveMinimum") {
-			if (typeof v === "number" && !("minimum" in out)) {
-				out.minimum = v;
-			}
-			continue;
-		}
-		if (k === "exclusiveMaximum") {
-			if (typeof v === "number" && !("maximum" in out)) {
-				out.maximum = v;
-			}
-			continue;
-		}
-		if (k === "allOf") {
-			continue;
-		}
-
-		if (k === "type") {
-			if (typeof v !== "string") {
-				continue;
-			}
-			if (v === "null") {
-				continue;
-			}
-			out.type = String(v).toUpperCase();
-			continue;
-		}
-
-		if (k === "const") {
-			if (!("enum" in out)) {
-				out.enum = [v];
-			}
-			continue;
-		}
-
-		if (k === "items") {
-			if (v && typeof v === "object") {
-				out.items = jsonSchemaToGeminiSchema(v, root, stack);
-			}
-			continue;
-		}
-
-		if (k === "properties") {
-			if (v && typeof v === "object" && !Array.isArray(v)) {
-				const m: Record<string, unknown> = {};
-				for (const [pk, pv] of Object.entries(v as Record<string, unknown>)) {
-					if (pv && typeof pv === "object") {
-						m[pk] = jsonSchemaToGeminiSchema(pv, root, stack);
-					}
-				}
-				out.properties = m;
-			}
-			continue;
-		}
-
-		if (k === "anyOf" || k === "oneOf") {
-			if (Array.isArray(v)) {
-				const arr: unknown[] = [];
-				for (const it of v) {
-					if (it && typeof it === "object") {
-						arr.push(jsonSchemaToGeminiSchema(it, root, stack));
-					}
-				}
-				out.anyOf = arr;
-			}
-			continue;
-		}
-
-		(out as Record<string, unknown>)[k] = v;
-	}
-
-	// Gemini Schema types are enum-like uppercase strings; if absent but properties exist, treat as OBJECT.
-	if (!out.type && out.properties && typeof out.properties === "object") {
-		out.type = "OBJECT";
-	}
-
-	return out;
-}
-
-function openaiToolsToGeminiFunctionDeclarations(
-	tools: OpenAIFunctionToolDef[]
-): Array<{ name: string; description?: string; parameters?: Record<string, unknown> }> {
-	const out: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }> = [];
-	for (const t of Array.isArray(tools) ? tools : []) {
-		if (!t || typeof t !== "object") {
-			continue;
-		}
-		if (t.type !== "function") {
-			continue;
-		}
-		const fn = t.function;
-		const name = typeof fn?.name === "string" ? fn.name.trim() : "";
-		if (!name) {
-			continue;
-		}
-		const decl: { name: string; description?: string; parameters?: Record<string, unknown> } = { name };
-		if (typeof fn.description === "string" && fn.description.trim()) {
-			decl.description = fn.description;
-		}
-		if (fn.parameters && typeof fn.parameters === "object") {
-			decl.parameters = jsonSchemaToGeminiSchema(fn.parameters);
-			stripUnsupportedGeminiSchemaKeys(decl.parameters);
-		}
-		out.push(decl);
-	}
-	return out;
-}
-
-function openaiToolChoiceToGeminiToolConfig(toolChoice: unknown): GeminiToolConfig | null {
-	if (toolChoice == null) {
-		return null;
-	}
-
-	if (typeof toolChoice === "string") {
-		const v = toolChoice.trim().toLowerCase();
-		if (v === "none") {
-			return { functionCallingConfig: { mode: "NONE" } };
-		}
-		if (v === "required" || v === "any") {
-			return { functionCallingConfig: { mode: "ANY" } };
-		}
-		return { functionCallingConfig: { mode: "AUTO" } };
-	}
-
-	if (typeof toolChoice === "object") {
-		const obj = toolChoice as Record<string, unknown>;
-		if (obj.type === "function") {
-			const fn = obj.function && typeof obj.function === "object" ? (obj.function as Record<string, unknown>) : null;
-			const name = fn && typeof fn.name === "string" ? fn.name.trim() : "";
-			if (name) {
-				return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [name] } };
-			}
-		}
-	}
-
-	return null;
-}
-
+export { buildGeminiGenerateContentUrl } from "./geminiUrls";
 export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateContentRequest> {
 	constructor(
 		modelId: string,
@@ -499,6 +64,8 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		messages: readonly LanguageModelChatRequestMessage[],
 		_modelConfig: { includeReasoningInRequest: boolean }
 	): GeminiChatMessage[] {
+		// Fresh conversion state per request (adapters are reused across turns).
+		this.resetRequestState();
 		const out: GeminiChatMessage[] = [];
 		const toolNameByCallId = new Map<string, string>();
 
@@ -681,9 +248,12 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 
 	prepareRequestBody(
 		rb: GeminiGenerateContentRequest,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): GeminiGenerateContentRequest {
+		// Base model id used for model-family heuristics (thinkingConfig etc.);
+		// provider.ts strips any vendor/index prefix, here we strip a config id.
+		const parsedModelIdForThinking = (um?.id ?? this._modelId ?? "").split("::")[0];
 		const generationConfig: Record<string, unknown> = {
 			...(rb.generationConfig && typeof rb.generationConfig === "object"
 				? (rb.generationConfig as Record<string, unknown>)
@@ -703,15 +273,26 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			generationConfig.topK = um.top_k;
 		}
 
-		// maxOutputTokens
+		// maxOutputTokens. When thinking is enabled, thought tokens bill
+		// against maxOutputTokens too — a small cap can be consumed entirely
+		// by reasoning (finishReason=MAX_TOKENS, empty answer). Raise the
+		// ceiling to the API maximum in that case (ported from hermes-agent
+		// `_effective_gemini_max_output_tokens`).
 		const maxOutput =
 			um?.max_completion_tokens !== undefined
 				? um.max_completion_tokens
 				: um?.max_tokens !== undefined
 					? um.max_tokens
 					: undefined;
+		const geminiThinkingActive =
+			um?.enable_thinking === true ||
+			um?.thinking?.type === "enabled" ||
+			(typeof um?.reasoning_effort === "string" && um.reasoning_effort.trim() !== "" && um.reasoning_effort !== "none");
 		if (maxOutput !== undefined) {
-			generationConfig.maxOutputTokens = maxOutput;
+			generationConfig.maxOutputTokens =
+				geminiThinkingActive && parsedModelIdForThinking.toLowerCase().startsWith("gemini")
+					? Math.max(maxOutput, GEMINI_THINKING_MAX_OUTPUT_TOKENS)
+					: maxOutput;
 		}
 
 		// stop sequences
@@ -732,24 +313,54 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			generationConfig.frequencyPenalty = um.frequency_penalty;
 		}
 
-		// Map the generic thinking toggles to Gemini's thinkingConfig.
-		// includeThoughts controls whether thought summaries are returned;
-		// thinkingBudget caps the reasoning token budget (0 = disable).
+		// Map the generic thinking toggles to Gemini's thinkingConfig
+		// (ported from hermes-agent `_build_gemini_thinking_config`):
+		// - thinkingConfig is a GEMINI-ONLY field — Gemma/PaLM models on the
+		//   same provider 400 on it even as {"includeThoughts": false}, so it
+		//   is omitted entirely for non-gemini model ids (hermes #17426);
+		// - disabling sets thinkingBudget: 0 on families that document it
+		//   (includeThoughts:false alone still bills thought tokens);
+		// - Gemini 3 takes thinkingLevel ("low"/"medium"/"high"), clamped to
+		//   what each family accepts.
+		const normalizedModelId = parsedModelIdForThinking.toLowerCase();
+		const isGeminiModel = normalizedModelId.startsWith("gemini");
 		const zaiThinkingEnabled = um?.thinking?.type === "enabled";
-		if (um?.enable_thinking === true || zaiThinkingEnabled) {
-			const tc: Record<string, unknown> = { includeThoughts: true };
-			if (um?.thinking_budget !== undefined) {
-				tc.thinkingBudget = um.thinking_budget;
-			}
-			// `extra.generationConfig.thinkingConfig` (applied later) wins.
-			const existingExtra = um?.extra?.generationConfig;
-			if (!(existingExtra && typeof existingExtra === "object" && "thinkingConfig" in existingExtra)) {
+		const thinkingExtraSet =
+			um?.extra?.generationConfig &&
+			typeof um.extra.generationConfig === "object" &&
+			"thinkingConfig" in um.extra.generationConfig;
+		if (isGeminiModel && !thinkingExtraSet) {
+			if (um?.enable_thinking === false || um?.thinking?.type === "disabled") {
+				// Actually disable thinking, not just hide the thoughts.
+				const tc: Record<string, unknown> = { includeThoughts: false };
+				if (
+					normalizedModelId === "gemini-flash-latest" ||
+					normalizedModelId.startsWith("gemini-2.5-") ||
+					normalizedModelId.startsWith("gemini-3")
+				) {
+					tc.thinkingBudget = 0;
+				}
 				generationConfig.thinkingConfig = tc;
-			}
-		} else if (um?.enable_thinking === false) {
-			// Explicitly disabled (supported by 2.5-flash; Pro ignores budget 0).
-			if (!(um?.extra?.generationConfig && typeof um.extra.generationConfig === "object" && "thinkingConfig" in um.extra.generationConfig)) {
-				generationConfig.thinkingConfig = { thinkingBudget: 0 };
+			} else if (
+				um?.enable_thinking === true ||
+				zaiThinkingEnabled ||
+				(typeof um?.reasoning_effort === "string" && normalizeStringEffort(um.reasoning_effort) !== "" && um.reasoning_effort !== "none")
+			) {
+				const tc: Record<string, unknown> = { includeThoughts: true };
+				if (um?.thinking_budget !== undefined) {
+					tc.thinkingBudget = um.thinking_budget;
+				}
+				// Gemini 3 documents thinkingLevel; 2.5 takes only thinkingBudget.
+				if (normalizedModelId.startsWith("gemini-3")) {
+					const effort = normalizeStringEffort(um?.reasoning_effort);
+					if (normalizedModelId.includes("flash")) {
+						tc.thinkingLevel = effort === "low" || effort === "minimal" ? "low" : effort === "medium" ? "medium" : "high";
+					} else if (normalizedModelId.includes("pro")) {
+						// Pro is stricter: low/high only.
+						tc.thinkingLevel = effort === "low" || effort === "minimal" ? "low" : "high";
+					}
+				}
+				generationConfig.thinkingConfig = tc;
 			}
 		}
 
@@ -787,6 +398,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		progress: Progress<LanguageModelResponsePart2>,
 		token: CancellationToken
 	): Promise<void> {
+		this.resetRequestState();
 		const modelId = this._modelId;
 		logger.debug("gemini.stream.start", { modelId });
 		const reader = responseBody.getReader();
@@ -843,6 +455,22 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 					const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
 					const cand = candidates.length > 0 ? candidates[0] : null;
 					const parts = Array.isArray(cand?.content?.parts) ? cand?.content?.parts : [];
+
+					// usageMetadata rides on every chunk; the final one is
+					// authoritative (promptTokenCount + candidatesTokenCount +
+					// thoughtsTokenCount).
+					const um = (payload as { usageMetadata?: Record<string, unknown> }).usageMetadata;
+					if (um) {
+						this._lastUsage = accumulateUsage(this._lastUsage, {
+							prompt_tokens: typeof um.promptTokenCount === "number" ? um.promptTokenCount : undefined,
+							completion_tokens:
+								(typeof um.candidatesTokenCount === "number" ? um.candidatesTokenCount : 0) +
+								(typeof um.thoughtsTokenCount === "number" ? um.thoughtsTokenCount : 0),
+							total_tokens: typeof um.totalTokenCount === "number" ? um.totalTokenCount : undefined,
+							prompt_tokens_details:
+								typeof um.cachedContentTokenCount === "number" ? { cached_tokens: um.cachedContentTokenCount } : undefined,
+						});
+					}
 
 					for (const p of parts) {
 						const fc = p?.functionCall;
@@ -1030,83 +658,48 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 	}
 
 	async *createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
 		apiKey: string
 	): AsyncGenerator<{ type: "text"; text: string }> {
-		throw new Error("Method not implemented.");
-	}
-}
-
-/**
- * Fetch available models from a Gemini API endpoint.
- * Supports both native Google Gemini and Langdock Google proxy endpoints.
- * @param baseUrl The Gemini API base URL.
- * @param apiKey The API key for authentication.
- * @param customHeaders Optional custom headers to merge with defaults.
- * @returns A promise that resolves to an array of model items.
- */
-export async function fetchGeminiModels(
-	baseUrl: string,
-	apiKey: string,
-	customHeaders?: Record<string, string>,
-	networkOptions?: { proxyUrl?: string; userAgent?: string }
-): Promise<HFModelItem[]> {
-	const listUrl = buildGeminiModelsUrl(baseUrl);
-	const ownedBy = baseUrl.includes("langdock.com") ? "langdock" : "google";
-	const headers = CommonApi.prepareHeaders(apiKey, "gemini", customHeaders, networkOptions?.userAgent);
-	headers["Accept"] = "application/json";
-	const networkInit = buildFetchNetworkInit(networkOptions?.proxyUrl);
-
-	const models: HFModelItem[] = [];
-	let nextPageToken: string | undefined;
-	let page = 0;
-
-	while (page < 10) {
-		const url = new URL(listUrl);
-		if (nextPageToken) {
-			url.searchParams.set("pageToken", nextPageToken);
+		// Used by the git-commit generator (non-chat consumer). Simple text
+		// generation over the Gemini native wire with proxy support.
+		const contents = messages.map((m) => ({
+			role: m.role === "assistant" ? "model" : "user",
+			parts: [{ text: m.content }],
+		}));
+		const requestBody: Record<string, unknown> = { contents };
+		if (systemPrompt) {
+			requestBody.systemInstruction = { role: "user", parts: [{ text: systemPrompt }] };
 		}
 
-		const resp = await proxyFetch(url.toString(), {
+		const url = buildGeminiGenerateContentUrl(baseUrl, model.id, false);
+		if (!url) {
+			throw new Error("Invalid Gemini base URL configuration.");
+		}
+		const headers = CommonApi.prepareHeaders(apiKey, "gemini", model.headers, model.userAgent);
+		const networkInit = buildFetchNetworkInit(model.proxyUrl);
+
+		const response = await proxyFetch(url, {
 			...networkInit,
-			method: "GET",
+			method: "POST",
 			headers,
+			body: JSON.stringify(requestBody),
 		});
-		if (!resp.ok) {
-			let errorText = "";
-			try {
-				errorText = await resp.text();
-			} catch (error) {
-				console.error("[customcopilot] Failed to read response text", error);
-			}
-			throw new Error(
-				`Gemini API error: [${resp.status}] ${resp.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url.toString()}`
-			);
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(`Gemini API request failed: [${response.status}] ${response.statusText}\n${errorText}`);
 		}
-
-		const parsed = (await resp.json()) as import("./geminiTypes").GeminiModelListResponse;
-		const entries = parsed.models ?? [];
-		for (const entry of entries) {
-			const id = normalizeGeminiModelIdForListing(entry.name, entry.displayName);
-			models.push({
-				id,
-				displayName: entry.displayName || id,
-				owned_by: ownedBy,
-				context_length: entry.inputTokenLimit,
-				max_completion_tokens: entry.outputTokenLimit,
-				apiMode: "gemini",
-			} as HFModelItem);
+		const parsed = (await response.json()) as {
+			candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+		};
+		const text = (parsed.candidates?.[0]?.content?.parts ?? [])
+			.map((p) => (typeof p.text === "string" ? p.text : ""))
+			.join("");
+		if (text) {
+			yield { type: "text", text };
 		}
-
-		nextPageToken = parsed.nextPageToken;
-		if (!nextPageToken) {
-			break;
-		}
-		page += 1;
 	}
-
-	return models;
 }

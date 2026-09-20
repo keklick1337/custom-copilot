@@ -5,9 +5,10 @@ import { OpenaiApi } from "../openai/openaiApi";
 import { OpenaiResponsesApi } from "../openai/openaiResponsesApi";
 import { AnthropicApi } from "../anthropic/anthropicApi";
 import { OllamaApi } from "../ollama/ollamaApi";
+import { GeminiApi } from "../gemini/geminiApi";
 import { normalizeUserModels } from "../utils";
 import { logger } from "../logger";
-import type { HFModelItem } from "../types";
+import type { CustomModelItem } from "../types";
 
 /**
  * Git commit message generator module
@@ -174,7 +175,7 @@ async function performCommitMsgGeneration(secrets: vscode.SecretStorage, gitDiff
 		const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 		// Filter models that are marked for commit generation
-		const commitModels = userModels.filter((model: HFModelItem) => model.useForCommitGeneration === true);
+		const commitModels = userModels.filter((model: CustomModelItem) => model.useForCommitGeneration === true);
 
 		if (commitModels.length === 0) {
 			throw new Error(
@@ -212,23 +213,29 @@ async function performCommitMsgGeneration(secrets: vscode.SecretStorage, gitDiff
 		let apiInstance;
 		const apiMode = selectedModel.apiMode ?? "openai";
 
-		if (apiMode === "anthropic") {
+		if (apiMode === "anthropic" || apiMode === "zai") {
 			apiInstance = new AnthropicApi(modelId);
 		} else if (apiMode === "ollama") {
 			apiInstance = new OllamaApi(modelId);
 		} else if (apiMode === "openai-responses") {
 			apiInstance = new OpenaiResponsesApi(modelId);
+		} else if (apiMode === "gemini") {
+			apiInstance = new GeminiApi(modelId, new Map());
 		} else {
 			// Default to OpenAI-compatible API
 			apiInstance = new OpenaiApi(modelId);
 		}
 
+		// Per-generation controller: a module-level singleton meant two
+		// concurrent generations (or a leftover from a finished run) aborted
+		// each other.
 		commitGenerationAbortController = new AbortController();
+		const generationController = commitGenerationAbortController;
 		const stream = apiInstance.createMessage(selectedModel, systemPrompt, messages, baseUrl, apiKey);
 
 		let response = "";
 		for await (const chunk of stream) {
-			commitGenerationAbortController.signal.throwIfAborted();
+			generationController.signal.throwIfAborted();
 			if (chunk.type === "text") {
 				response += chunk.text;
 				inputBox.value = extractCommitMessage(response);

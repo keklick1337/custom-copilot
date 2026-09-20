@@ -91,6 +91,13 @@ export class TokenizerManager {
 					64000
 				);
 			})();
+			// A single failed init must NOT poison the singleton forever:
+			// clear the rejected promise so the next call retries (otherwise
+			// token counting returns 0 for the rest of the session with no
+			// recovery path).
+			this.tokenizerReady.catch(() => {
+				this.tokenizerReady = null;
+			});
 		}
 
 		this.tokenizer = await this.tokenizerReady;

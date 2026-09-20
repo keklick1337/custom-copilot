@@ -66,6 +66,9 @@ export interface OllamaStreamChunk {
 	};
 	done: boolean;
 	done_reason?: string;
+	/** Present on the final chunk of a stream: token accounting. */
+	prompt_eval_count?: number;
+	eval_count?: number;
 }
 
 /**

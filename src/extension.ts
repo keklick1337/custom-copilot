@@ -1,15 +1,38 @@
 import * as vscode from "vscode";
-import { HuggingFaceChatModelProvider } from "./provider";
-import type { HFApiMode, HFModelItem } from "./types";
+import { CustomEndpointChatProvider } from "./provider";
+import type { CustomApiMode, CustomModelItem } from "./types";
 import { initStatusBar } from "./statusBar";
 import { SettingsViewProvider } from "./views/configView";
+import { setSkillsContext } from "./views/skillsController";
 import { logger } from "./logger";
 import { normalizeUserModels } from "./utils";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
 import { keyBalancer } from "./keyBalancer";
 
+/**
+ * Single source of truth for the vendor list: vendor id (must match
+ * package.json → contributes.languageModelChatProviders), its apiMode, the
+ * picker display name and the default base URL advertised to VS Code's BYOK
+ * group UI. Previously maintained as two hand-copied arrays that could drift.
+ */
+const VENDOR_MODES: ReadonlyArray<{
+	vendor: string;
+	mode: CustomApiMode;
+	displayName: string;
+	defaultBaseUrl: string;
+}> = [
+	{ vendor: "copilotcustommodelsendpoint", mode: "openai", displayName: "Custom OpenAI", defaultBaseUrl: "https://api.openai.com/v1" },
+	{ vendor: "copilotcustommodelsendpoint-responses", mode: "openai-responses", displayName: "Custom OpenAI Responses", defaultBaseUrl: "https://api.openai.com/v1" },
+	{ vendor: "copilotcustommodelsendpoint-anthropic", mode: "anthropic", displayName: "Custom Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
+	{ vendor: "copilotcustommodelsendpoint-gemini", mode: "gemini", displayName: "Custom Gemini", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+	{ vendor: "copilotcustommodelsendpoint-ollama", mode: "ollama", displayName: "Custom Ollama", defaultBaseUrl: "http://localhost:11434" },
+	{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai", displayName: "Z.AI Free", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
+];
+
 export function activate(context: vscode.ExtensionContext) {
+	// Share the extension context with the skills screen (catalog cache storage).
+	setSkillsContext(context);
 	// Initialize logger
 	logger.init();
 
@@ -25,16 +48,9 @@ export function activate(context: vscode.ExtensionContext) {
 	// group in the model picker (mirrors how Copilot BYOK lists OpenAI/Anthropic/…
 	// as distinct groups). Vendor ids must match the static declarations in
 	// package.json → contributes.languageModelChatProviders.
-	const vendorModes: ReadonlyArray<{ vendor: string; mode: HFApiMode }> = [
-		{ vendor: "copilotcustommodelsendpoint", mode: "openai" },
-		{ vendor: "copilotcustommodelsendpoint-responses", mode: "openai-responses" },
-		{ vendor: "copilotcustommodelsendpoint-anthropic", mode: "anthropic" },
-		{ vendor: "copilotcustommodelsendpoint-gemini", mode: "gemini" },
-		{ vendor: "copilotcustommodelsendpoint-ollama", mode: "ollama" },
-		{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai" },
-	];
+	const vendorModes = VENDOR_MODES;
 	for (const { vendor, mode } of vendorModes) {
-		const provider = new HuggingFaceChatModelProvider(context.secrets, tokenCountStatusBarItem, mode);
+		const provider = new CustomEndpointChatProvider(context.secrets, tokenCountStatusBarItem, mode);
 		context.subscriptions.push(vscode.lm.registerLanguageModelChatProvider(vendor, provider));
 	}
 
@@ -71,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand("customcopilot.setProviderApikey", async () => {
 			// Get provider list from configuration
 			const config = vscode.workspace.getConfiguration();
-			const userModels = normalizeUserModels(config.get<HFModelItem[]>("customcopilot.models", []));
+			const userModels = normalizeUserModels(config.get<CustomModelItem[]>("customcopilot.models", []));
 
 			// Extract unique providers (case-insensitive)
 			const providers = Array.from(
@@ -86,14 +102,17 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			// Let user select provider
-			const selectedProvider = await vscode.window.showQuickPick(providers, {
+			const selectedProviderRaw = await vscode.window.showQuickPick(providers, {
 				title: "Select Provider",
 				placeHolder: "Select a provider to configure API key",
 			});
 
-			if (!selectedProvider) {
+			if (!selectedProviderRaw) {
 				return; // user canceled
 			}
+			// Normalize exactly like the read path (provider.ts lowercases/trims
+			// on lookup) so the stored secret key always matches.
+			const selectedProvider = selectedProviderRaw.trim().toLowerCase();
 
 			// Get existing API key for selected provider
 			const providerKey = `customcopilot.apiKey.${selectedProvider}`;
@@ -152,7 +171,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("customcopilot.toggleModelCapability", async () => {
 			const config = vscode.workspace.getConfiguration();
-			const models = normalizeUserModels(config.get<HFModelItem[]>("customcopilot.models", []));
+			const models = normalizeUserModels(config.get<CustomModelItem[]>("customcopilot.models", []));
 			const usable = models.filter((m) => !m.id.startsWith("__provider__"));
 			if (usable.length === 0) {
 				vscode.window.showInformationMessage("No models configured. Add models in the Custom Copilot panel first.");
@@ -206,7 +225,7 @@ export function activate(context: vscode.ExtensionContext) {
 				return next;
 			});
 			await config.update("customcopilot.models", updated, vscode.ConfigurationTarget.Global);
-			HuggingFaceChatModelProvider.notifyModelsChanged();
+			CustomEndpointChatProvider.notifyModelsChanged();
 			vscode.window.showInformationMessage(`Updated ${cap.id} for ${picked.label}.`);
 		})
 	);
@@ -216,7 +235,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("customcopilot.setDefaultModel", async () => {
 			const config = vscode.workspace.getConfiguration();
-			const models = normalizeUserModels(config.get<HFModelItem[]>("customcopilot.models", []));
+			const models = normalizeUserModels(config.get<CustomModelItem[]>("customcopilot.models", []));
 			const usable = models.filter((m) => !m.id.startsWith("__provider__"));
 			if (usable.length === 0) {
 				vscode.window.showInformationMessage("No models configured. Add models in the Custom Copilot panel first.");
@@ -251,7 +270,7 @@ export function activate(context: vscode.ExtensionContext) {
 				return next;
 			});
 			await config.update("customcopilot.models", updated, vscode.ConfigurationTarget.Global);
-			HuggingFaceChatModelProvider.notifyModelsChanged();
+			CustomEndpointChatProvider.notifyModelsChanged();
 			const chosen = typeof picked.id === "object" ? picked.id : undefined;
 			vscode.window.showInformationMessage(
 				chosen ? `Commit messages will use ${chosen.displayName || chosen.id}.` : "Commit generation disabled."
@@ -270,7 +289,7 @@ export function activate(context: vscode.ExtensionContext) {
 			// language-model provider re-resolves and the model picker updates
 			// IMMEDIATELY — no window reload / restart required.
 			if (e.affectsConfiguration("customcopilot.models")) {
-				HuggingFaceChatModelProvider.notifyModelsChanged();
+				CustomEndpointChatProvider.notifyModelsChanged();
 			}
 		})
 	);
@@ -349,7 +368,7 @@ async function migrateDuplicateModelIds(context: vscode.ExtensionContext): Promi
 
 	try {
 		const config = vscode.workspace.getConfiguration();
-		const rawModels = config.get<HFModelItem[]>("customcopilot.models", []);
+		const rawModels = config.get<CustomModelItem[]>("customcopilot.models", []);
 		const models = normalizeUserModels(rawModels);
 		if (!models.length) {
 			return;
@@ -357,7 +376,7 @@ async function migrateDuplicateModelIds(context: vscode.ExtensionContext): Promi
 
 		// Group models by (id, effective apiMode).  VS Code vendors are per-apiMode,
 		// so only models sharing the same apiMode can collide.
-		const groups = new Map<string, HFModelItem[]>();
+		const groups = new Map<string, CustomModelItem[]>();
 		for (const m of models) {
 			if (m.id.startsWith("__provider__")) {
 				continue;
@@ -435,14 +454,7 @@ async function migrateDuplicateModelIds(context: vscode.ExtensionContext): Promi
  * delay lets the workbench finish registering its actions first.
  */
 async function ensureByokProviderGroups(_context: vscode.ExtensionContext): Promise<void> {
-	const vendors: ReadonlyArray<{ vendor: string; displayName: string; defaultBaseUrl: string }> = [
-		{ vendor: "copilotcustommodelsendpoint", displayName: "Custom OpenAI", defaultBaseUrl: "https://api.openai.com/v1" },
-		{ vendor: "copilotcustommodelsendpoint-responses", displayName: "Custom OpenAI Responses", defaultBaseUrl: "https://api.openai.com/v1" },
-		{ vendor: "copilotcustommodelsendpoint-anthropic", displayName: "Custom Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
-		{ vendor: "copilotcustommodelsendpoint-gemini", displayName: "Custom Gemini", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta" },
-		{ vendor: "copilotcustommodelsendpoint-ollama", displayName: "Custom Ollama", defaultBaseUrl: "http://localhost:11434" },
-		{ vendor: "copilotcustommodelsendpoint-zai", displayName: "Z.AI Free", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
-	];
+	const vendors = VENDOR_MODES;
 
 	// Wait a moment so the workbench's command registrations are in place.
 	await new Promise((resolve) => setTimeout(resolve, 2000));

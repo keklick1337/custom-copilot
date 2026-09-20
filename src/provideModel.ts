@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import { CancellationToken, LanguageModelChatInformation } from "vscode";
 
-import type { HFApiMode, HFModelItem, HFModelsResponse } from "./types";
+import type { CustomApiMode, CustomModelItem, OpenAIModelsResponse } from "./types";
 import { normalizeUserModels } from "./utils";
 import { VersionManager } from "./versionManager";
-import { fetchGeminiModels } from "./gemini/geminiApi";
+import { fetchGeminiModels } from "./gemini/geminiModels";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
 import { fetchAnthropicModels } from "./anthropic/anthropicApi";
 import { logger } from "./logger";
@@ -28,7 +28,7 @@ function formatContextSize(tokens?: number): string {
 	return `${tokens} context`;
 }
 
-function getProviderLabel(m: HFModelItem): string {
+function getProviderLabel(m: CustomModelItem): string {
 	if (m.owned_by) {
 		return m.owned_by.charAt(0).toUpperCase() + m.owned_by.slice(1);
 	}
@@ -45,7 +45,7 @@ function getProviderLabel(m: HFModelItem): string {
  * @returns A promise that resolves to the list of available language models
  */
 export async function prepareLanguageModelChatInformation(
-	options: { silent: boolean; apiMode?: HFApiMode },
+	options: { silent: boolean; apiMode?: CustomApiMode },
 	_token: CancellationToken,
 	_secrets: vscode.SecretStorage
 ): Promise<LanguageModelChatInformation[]> {
@@ -57,7 +57,7 @@ export async function prepareLanguageModelChatInformation(
 	// surface models for that protocol so each vendor renders as its own group in
 	// the model picker. Models default to the "openai" protocol when unspecified.
 	const vendorMode = options.apiMode;
-	const matchesVendor = (m: HFModelItem): boolean => !vendorMode || (m.apiMode ?? "openai") === vendorMode;
+	const matchesVendor = (m: CustomModelItem): boolean => !vendorMode || (m.apiMode ?? "openai") === vendorMode;
 
 	let infos: LanguageModelChatInformation[];
 	const scopedModels = userModels?.filter((m) => !m.id.startsWith("__provider__") && matchesVendor(m)) ?? [];
@@ -154,10 +154,10 @@ export async function prepareLanguageModelChatInformation(
 export async function fetchModels(
 	baseUrl: string,
 	apiKey: string,
-	apiMode?: HFApiMode | string,
+	apiMode?: CustomApiMode | string,
 	customHeaders?: Record<string, string>,
 	networkOptions?: { proxyUrl?: string; userAgent?: string }
-): Promise<{ models: HFModelItem[] }> {
+): Promise<{ models: CustomModelItem[] }> {
 	const normalizedApiMode = apiMode ?? "openai";
 	const userAgent = (networkOptions?.userAgent || "").trim() || VersionManager.getUserAgent();
 	const networkInit = buildFetchNetworkInit(networkOptions?.proxyUrl);
@@ -194,15 +194,15 @@ export async function fetchModels(
 			console.error("[customcopilot] Failed to fetch models", err);
 			throw err;
 		}
-		const parsed = (await resp.json()) as HFModelsResponse;
+		const parsed = (await resp.json()) as OpenAIModelsResponse;
 		return parsed.data ?? [];
 	})();
 
 	try {
 		const apiModels = await modelsList;
 
-		// Convert APIModelItem to HFModelItem
-		const models: HFModelItem[] = apiModels.map((apiModel) => {
+		// Convert APIModelItem to CustomModelItem
+		const models: CustomModelItem[] = apiModels.map((apiModel) => {
 			// Infer capabilities (vision, tools, context, reasoning) from any rich
 			// fields the endpoint exposes, falling back to model-id inference and
 			// safe defaults. Mirrors VS Code's BYOK capability resolution but is
@@ -217,8 +217,8 @@ export async function fetchModels(
 			// Use the inferred max output tokens (covers max_output_tokens/max_tokens/etc.)
 			const maxTokens = inferred.maxOutputTokens;
 
-			// Create the HFModelItem
-			const hfModel: HFModelItem = {
+			// Create the CustomModelItem
+			const hfModel: CustomModelItem = {
 				id: apiModel.id,
 				object: apiModel.object,
 				created: apiModel.created,
@@ -281,10 +281,10 @@ export async function fetchModels(
 export async function fetchModelsIntersection(
 	baseUrl: string,
 	apiKeys: string[],
-	apiMode?: HFApiMode | string,
+	apiMode?: CustomApiMode | string,
 	customHeaders?: Record<string, string>,
 	networkOptions?: { proxyUrl?: string; userAgent?: string }
-): Promise<{ models: HFModelItem[]; keyResults: { ok: boolean; error?: string }[] }> {
+): Promise<{ models: CustomModelItem[]; keyResults: { ok: boolean; error?: string }[] }> {
 	const keys = apiKeys.filter((key) => key && key.trim()).map((key) => key.trim());
 	if (keys.length <= 1) {
 		const { models } = await fetchModels(baseUrl, keys[0] ?? "", apiMode, customHeaders, networkOptions);
@@ -302,7 +302,7 @@ export async function fetchModelsIntersection(
 	);
 
 	const successful = settled
-		.filter((result): result is PromiseFulfilledResult<{ models: HFModelItem[] }> => result.status === "fulfilled")
+		.filter((result): result is PromiseFulfilledResult<{ models: CustomModelItem[] }> => result.status === "fulfilled")
 		.map((result) => result.value.models);
 
 	if (successful.length === 0) {

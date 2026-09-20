@@ -7,7 +7,7 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem, ReasoningConfig } from "../types";
+import type { CustomModelItem, ReasoningConfig } from "../types";
 
 import type {
 	OpenAIChatMessage,
@@ -25,9 +25,12 @@ import {
 	collectToolResultText,
 	convertToolsToOpenAI,
 	mapRole,
+	safeUrlHost,
 } from "../utils";
+import { clampEffort, OPENAI_COMPAT_WIRE_EFFORTS } from "../reasoningEffort";
 
 import { CommonApi } from "../commonApi";
+import { accumulateUsage, type ApiUsage } from "../commonApi";
 import { logger } from "../logger";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
 
@@ -46,6 +49,8 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		messages: readonly LanguageModelChatRequestMessage[],
 		modelConfig: { includeReasoningInRequest: boolean }
 	): OpenAIChatMessage[] {
+		// Fresh conversion state per request (adapters are reused across turns).
+		this.resetRequestState();
 		const out: OpenAIChatMessage[] = [];
 		for (const m of messages) {
 			const role = mapRole(m);
@@ -92,8 +97,11 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 					assistantMessage.content = joinedText;
 				}
 
-				if (modelConfig.includeReasoningInRequest) {
-					assistantMessage.reasoning_content = joinedThinking || "Next step.";
+				if (modelConfig.includeReasoningInRequest && joinedThinking) {
+					// Replay actual thinking only — fabricating placeholder
+					// reasoning ("Next step.") pollutes context on providers
+					// that condition on reasoning_content.
+					assistantMessage.reasoning_content = joinedThinking;
 				}
 
 				if (toolCalls.length > 0) {
@@ -151,9 +159,13 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
 	prepareRequestBody(
 		rb: Record<string, unknown>,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): Record<string, unknown> {
+		// Groq's OpenAI-compatible wire accepts graded reasoning_effort levels
+		// only as "none"/"default" — detect the host once (hermes #75089).
+		const groqEndpoint = /(^|\.)api\.groq\.com$/i.test(safeUrlHost(um?.baseUrl));
+
 		// temperature
 		if (um?.temperature !== undefined && um.temperature !== null) {
 			rb.temperature = um.temperature;
@@ -172,9 +184,28 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			rb.max_tokens = um.max_tokens;
 		}
 
-		// OpenAI reasoning configuration
+		// OpenAI reasoning configuration. The effort is clamped onto the
+		// OpenAI-compat wire vocabulary (ported from hermes-agent): arbitrary
+		// endpoints top out at "max", so "ultra" verbatim would 400.
 		if (um?.reasoning_effort !== undefined) {
-			rb.reasoning_effort = um.reasoning_effort;
+			const effortValue: unknown = um.reasoning_effort;
+			if (typeof effortValue === "string") {
+				const normalized = effortValue.trim().toLowerCase();
+				if (normalized === "none") {
+					// Explicitly disabled: top-level "none" (Ollama /v1 and most
+					// OpenAI-compat servers understand it; never a thinking=True).
+					rb.reasoning_effort = "none";
+				} else if (groqEndpoint) {
+					// Groq's OpenAI-compatible wire accepts reasoning_effort only
+					// as "none"/"default"; graded levels 400 (hermes-agent #75089).
+					rb.reasoning_effort = "default";
+				} else {
+					const clamped = clampEffort(normalized, OPENAI_COMPAT_WIRE_EFFORTS);
+					rb.reasoning_effort = typeof clamped === "string" ? clamped.trim().toLowerCase() : clamped;
+				}
+			} else {
+				rb.reasoning_effort = effortValue;
+			}
 		}
 
 		// enable_thinking (non-OpenRouter only)
@@ -272,6 +303,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		progress: Progress<LanguageModelResponsePart2>,
 		token: CancellationToken
 	): Promise<void> {
+		this.resetRequestState();
 		const modelId = this._modelId;
 		logger.debug("openai.stream.start", { modelId });
 
@@ -341,6 +373,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		progress: Progress<LanguageModelResponsePart2>
 	): Promise<boolean> {
 		let emitted = false;
+
+		// Usage chunk (arrives with stream_options.include_usage as the last
+		// chunk with an empty choices array). Feeds the Copilot context
+		// circle via the "usage" data part.
+		if (delta.usage && typeof delta.usage === "object") {
+			this._lastUsage = accumulateUsage(this._lastUsage, delta.usage as Partial<ApiUsage>);
+		}
+
 		const choice = (delta.choices as Record<string, unknown>[] | undefined)?.[0];
 		if (!choice) {
 			return false;
@@ -472,7 +512,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 	}
 
 	async *createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,

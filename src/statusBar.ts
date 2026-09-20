@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import { LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { countMessageTokens, countToolTokens } from "./provideToken";
-import { normalizeUserModels, parseModelId, resolveProxyUrl } from "./utils";
-import type { HFModelItem } from "./types";
+import { normalizeUserModels, resolveUserModelById, resolveProxyUrl } from "./utils";
+import type { CustomApiMode, CustomModelItem } from "./types";
 
 // Persistent state for diagnostics
 interface DiagnosticsState {
@@ -143,7 +143,7 @@ export async function updateContextStatusBar(
 	model: LanguageModelChatInformation,
 	statusBarItem: vscode.StatusBarItem,
 	modelConfig: { includeReasoningInRequest: boolean },
-	vendorApiMode?: string
+	vendorApiMode?: CustomApiMode
 ): Promise<void> {
 	// ── Phase 1: immediate (synchronous) update ───────────────────────────
 	// Update the model name and a "calculating…" indicator right away so the
@@ -159,31 +159,9 @@ export async function updateContextStatusBar(
 	const config = vscode.workspace.getConfiguration();
 	const globalProxyUrl = config.get<string>("customcopilot.proxyUrl", "").trim();
 	const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
-	const parsedModelId = parseModelId(model.id);
-
-	// Match by idx (vendor:index prefix) when present, replicating the same
-	// filtering as provideModel.ts so the exact model config is resolved.
-	// Fall back to legacy baseId+configId match for ids without a prefix.
-	let um: HFModelItem | undefined;
-	if (parsedModelId.idx !== undefined) {
-		const vendorMode = vendorApiMode ?? "openai";
-		const vendorFilteredModels = userModels.filter(
-			(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === vendorMode
-		);
-		const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
-		if (parsedModelId.idx < sameIdModels.length) {
-			um = sameIdModels[parsedModelId.idx];
-		}
-	} else {
-		um = userModels.find(
-			(u) =>
-				u.id === parsedModelId.baseId &&
-				((parsedModelId.configId && u.configId === parsedModelId.configId) || (!parsedModelId.configId && !u.configId))
-		);
-	}
-	if (!um) {
-		um = userModels.find((u) => u.id === parsedModelId.baseId);
-	}
+	// Resolve the exact config entry behind this (possibly prefixed) id via
+	// the shared resolver (single source of truth with provider.ts).
+	const um: CustomModelItem | undefined = resolveUserModelById(model.id, userModels, vendorApiMode);
 
 	const activeProxy = resolveProxyUrl(um?.proxyUrl, globalProxyUrl);
 
@@ -200,7 +178,7 @@ export async function updateContextStatusBar(
 		lastStats.isProxyUsed = false;
 	}
 
-	statusBarItem.text = `$(sparkle) ${model.name} …`;
+	statusBarItem.text = `$(sparkle) ${model.name} · …`;
 	statusBarItem.backgroundColor = undefined;
 
 	const immediateTooltip = new vscode.MarkdownString();
@@ -243,7 +221,9 @@ export async function updateContextStatusBar(
 
 	// Create visual progress bar with single progressive block
 	const progressBar = createProgressBar(totalTokenCount, maxTokens);
-	statusBarItem.text = `$(sparkle) ${progressBar}`;
+	// Keep the model name visible alongside the context meter — "which model
+	// am I on" is the most common question the bar answers.
+	statusBarItem.text = `$(sparkle) ${model.name} · ${progressBar}`;
 
 	// Format a gorgeous Markdown tooltip with status list and interactive command action
 	const tooltipMarkdown = new vscode.MarkdownString();
@@ -251,12 +231,22 @@ export async function updateContextStatusBar(
 	tooltipMarkdown.appendMarkdown(`### 💫 **Custom Copilot Diagnostics**\n\n`);
 	tooltipMarkdown.appendMarkdown(`- **Active Model**: \`${model.name}\`\n`);
 	tooltipMarkdown.appendMarkdown(`- **Context Limit**: ${formatTokenCount(maxTokens)} tokens\n`);
-	tooltipMarkdown.appendMarkdown(`- **Usage Intensity**: ${progressBar} (${formatTokenCount(totalTokenCount)} used)\n`);
+	tooltipMarkdown.appendMarkdown(`- **Usage Intensity**: ${progressBar} (${formatTokenCount(totalTokenCount)} / ${formatTokenCount(maxTokens)} used)\n`);
 	tooltipMarkdown.appendMarkdown(
 		`- **Messages Contribution**: ${formatTokenCount(messagesTokens)} (${Math.min((messagesTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`
 	);
 	tooltipMarkdown.appendMarkdown(
 		`- **Tool Definitions**: ${formatTokenCount(toolTokens)} (${Math.min((toolTokens / maxTokens) * 100, 100).toFixed(1)}%)\n`
+	);
+	const headroom = Math.max(0, maxTokens - totalTokenCount);
+	tooltipMarkdown.appendMarkdown(
+		`- **Headroom Left**: ${formatTokenCount(headroom)} tokens (${Math.min((headroom / maxTokens) * 100, 100).toFixed(1)}%)\n`
+	);
+	tooltipMarkdown.appendMarkdown(
+		`- **Output Reserve**: ${formatTokenCount(model.maxOutputTokens)} tokens (${((model.maxOutputTokens / maxTokens) * 100).toFixed(1)}% of window)\n`
+	);
+	tooltipMarkdown.appendMarkdown(
+		`- **Input Window**: ${formatTokenCount(model.maxInputTokens)} tokens\n`
 	);
 	tooltipMarkdown.appendMarkdown(
 		`- **Network Routing**: ${lastStats.isProxyUsed ? `🌐 Proxy (\`${lastStats.proxyUrl}\`)` : "🔌 Direct Connection"}\n\n`

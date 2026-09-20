@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { HFModelItem, RetryConfig } from "./types";
+import type { CustomApiMode, CustomModelItem, RetryConfig } from "./types";
 import { OpenAIFunctionToolDef } from "./openai/openaiTypes";
 
 import { logger } from "./logger";
@@ -77,15 +77,15 @@ export function getModelProviderId(model: unknown): string {
 	);
 }
 
-export function normalizeUserModels(models: unknown): HFModelItem[] {
+export function normalizeUserModels(models: unknown): CustomModelItem[] {
 	const list = Array.isArray(models) ? models : [];
-	const out: HFModelItem[] = [];
+	const out: CustomModelItem[] = [];
 	for (const item of list) {
 		if (!item || typeof item !== "object") {
 			continue;
 		}
 		const provider = getModelProviderId(item);
-		out.push({ ...(item as HFModelItem), owned_by: provider });
+		out.push({ ...(item as CustomModelItem), owned_by: provider });
 	}
 	return out;
 }
@@ -133,6 +133,46 @@ export function parseModelId(modelId: string): ParsedModelId {
 		baseId: head,
 		configId,
 	};
+}
+
+/**
+ * Resolve the user model config entry behind a (possibly prefixed) model id.
+ *
+ * `provideModel.ts` assigns each listed model a `providerKey:idx:` prefix
+ * where `idx` counts entries sharing the same base id *within the
+ * vendor-filtered list* (same apiMode as the vendor, excluding
+ * `__provider__` placeholders). This replicates that filtering to recover
+ * the exact config entry; ids without a prefix (legacy / configView) match
+ * by baseId + configId, with a last-resort lenient baseId match.
+ *
+ * Single source of truth for provider.ts, statusBar.ts and any future
+ * consumer — previously three hand-copied variants that had drifted.
+ */
+export function resolveUserModelById(
+	modelId: string,
+	userModels: CustomModelItem[],
+	vendorApiMode?: CustomApiMode
+): CustomModelItem | undefined {
+	const parsedModelId = parseModelId(modelId);
+	if (parsedModelId.idx !== undefined) {
+		const vendorMode = vendorApiMode ?? "openai";
+		const vendorFilteredModels = userModels.filter(
+			(m) => !m.id.startsWith("__provider__") && (m.apiMode ?? "openai") === vendorMode
+		);
+		const sameIdModels = vendorFilteredModels.filter((m) => m.id === parsedModelId.baseId);
+		if (parsedModelId.idx < sameIdModels.length) {
+			return sameIdModels[parsedModelId.idx];
+		}
+		return undefined;
+	}
+	return (
+		userModels.find(
+			(u) =>
+				u.id === parsedModelId.baseId &&
+				((parsedModelId.configId && u.configId === parsedModelId.configId) ||
+					(!parsedModelId.configId && !u.configId))
+		) ?? userModels.find((u) => u.id === parsedModelId.baseId)
+	);
 }
 
 /**
@@ -244,6 +284,23 @@ export function convertToolsToOpenAIResponses(options?: vscode.ProvideLanguageMo
  */
 export function isImageMimeType(mimeType: string): boolean {
 	return mimeType.startsWith("image/") && ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimeType);
+}
+
+/**
+ * Extract the lowercase hostname from a URL-ish string; "" when unparseable.
+ * Never throws (used in request-body builders where a bad user baseUrl must
+ * not break preparation — the request path validates the URL separately).
+ */
+export function safeUrlHost(url: string | null | undefined): string {
+	const raw = (url ?? "").trim();
+	if (!raw) {
+		return "";
+	}
+	try {
+		return new URL(raw).hostname.toLowerCase();
+	} catch {
+		return "";
+	}
 }
 
 /**

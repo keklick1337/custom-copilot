@@ -12,7 +12,7 @@ vscode.postMessage({ type: "webviewReady" });
 // ── State ──────────────────────────────────────────────────────────────────────
 
 const state = {
-	/** All HFModelItem[] from backend */
+	/** All model items (CustomModelItem[]) from backend */
 	models: [],
 	/** provider name → API key */
 	providerKeys: {},
@@ -182,43 +182,73 @@ const dropdownHeader = el.modelIdDropdown.querySelector(".dropdown-header");
 
 // ── Provider presets (default API endpoints) ────────────────────────────────────
 
+// Catalog mirrors hermes-agent's model-provider registry
+// (plugins/model-providers/*). Each entry: what gets auto-filled when picked.
+// Key auth providers only — OAuth-only surfaces (GitHub Copilot ACP,
+// OpenAI Codex, Bedrock/Vertex/Azure, Qwen OAuth, MiniMax OAuth) need
+// credential flows this extension doesn't have; their endpoints can still
+// be entered manually when a compatible key exists.
+//
+// provider id uniqueness: one provider id per DISTINCT base URL. Multiple
+// base URLs under one id would break the sibling baseUrl fallback (a model
+// without its own baseUrl could inherit an unrelated endpoint) and the
+// "refresh from all providers" scan. Same-account endpoints that must stay
+// separate (z.ai OpenAI-wire vs Anthropic-wire, DashScope intl vs China)
+// therefore get distinct ids — set the same API key for both; everything
+// else (key pool, rotation, balancing) works per id.
 const PROVIDER_PRESETS = [
-	{ label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai" },
-	{ label: "Anthropic (Claude)", provider: "anthropic", baseUrl: "https://api.anthropic.com/v1", apiMode: "anthropic" },
-	{
-		label: "Google Gemini",
-		provider: "google",
-		baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-		apiMode: "gemini",
-	},
-	{ label: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", apiMode: "openai" },
-	{ label: "OpenRouter", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiMode: "openai" },
-	{ label: "Groq", provider: "groq", baseUrl: "https://api.groq.com/openai/v1", apiMode: "openai" },
-	{ label: "Mistral AI", provider: "mistral", baseUrl: "https://api.mistral.ai/v1", apiMode: "openai" },
-	{ label: "xAI (Grok)", provider: "xai", baseUrl: "https://api.x.ai/v1", apiMode: "openai" },
-	{ label: "Together AI", provider: "together", baseUrl: "https://api.together.xyz/v1", apiMode: "openai" },
-	{ label: "Fireworks AI", provider: "fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", apiMode: "openai" },
-	{ label: "Perplexity", provider: "perplexity", baseUrl: "https://api.perplexity.ai", apiMode: "openai" },
-	{ label: "Cerebras", provider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", apiMode: "openai" },
-	{ label: "Moonshot (Kimi)", provider: "moonshot", baseUrl: "https://api.moonshot.cn/v1", apiMode: "openai" },
-	{ label: "ModelScope", provider: "modelscope", baseUrl: "https://api-inference.modelscope.cn/v1", apiMode: "openai" },
-	{ label: "SiliconFlow", provider: "siliconflow", baseUrl: "https://api.siliconflow.cn/v1", apiMode: "openai" },
-	{ label: "Novita AI", provider: "novita", baseUrl: "https://api.novita.ai/v3/openai", apiMode: "openai" },
-	{
-		label: "Alibaba (Qwen/DashScope)",
-		provider: "qwen",
-		baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		apiMode: "openai",
-	},
-	{ label: "Zhipu (GLM)", provider: "zhipu", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiMode: "openai" },
-	{ label: "Ollama (local)", provider: "ollama", baseUrl: "http://localhost:11434", apiMode: "ollama" },
-	{ label: "LM Studio (local)", provider: "lmstudio", baseUrl: "http://localhost:1234/v1", apiMode: "openai" },
-	{
-		label: "Z.AI Free (Claude-compatible)",
-		provider: "zai",
-		baseUrl: "https://api.z.ai/api/anthropic",
-		apiMode: "zai",
-	},
+	// ── First-party ──
+	{ group: "First-party", label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai" },
+	{ group: "First-party", label: "OpenAI (Responses API)", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai-responses" },
+	{ group: "First-party", label: "Anthropic (Claude)", provider: "anthropic", baseUrl: "https://api.anthropic.com/v1", apiMode: "anthropic" },
+	{ group: "First-party", label: "Google Gemini (AI Studio)", provider: "google", baseUrl: "https://generativelanguage.googleapis.com/v1beta", apiMode: "gemini" },
+	{ group: "First-party", label: "xAI (Grok)", provider: "xai", baseUrl: "https://api.x.ai/v1", apiMode: "openai" },
+
+	// ── GLM / Z.AI ──
+	{ group: "GLM / Z.AI", label: "Z.AI (GLM, OpenAI-compat)", provider: "zai-openai", baseUrl: "https://api.z.ai/api/paas/v4", apiMode: "openai" },
+	{ group: "GLM / Z.AI", label: "Z.AI (Anthropic-compat)", provider: "zai", baseUrl: "https://api.z.ai/api/anthropic", apiMode: "zai" },
+	{ group: "GLM / Z.AI", label: "Zhipu bigmodel.cn (GLM)", provider: "zhipu", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiMode: "openai" },
+
+	// ── Aggregators ──
+	{ group: "Aggregators", label: "OpenRouter", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Nous Research Portal", provider: "nous", baseUrl: "https://inference-api.nousresearch.com/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "HuggingFace Router", provider: "huggingface", baseUrl: "https://router.huggingface.co/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Vercel AI Gateway", provider: "ai-gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Kilo Code Gateway", provider: "kilocode", baseUrl: "https://api.kilo.ai/api/gateway", apiMode: "openai" },
+	{ group: "Aggregators", label: "OpenCode Zen", provider: "opencode", baseUrl: "https://opencode.ai/zen/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Ramp Router", provider: "ramp", baseUrl: "https://router.ramp.com/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Groq", provider: "groq", baseUrl: "https://api.groq.com/openai/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Together AI", provider: "together", baseUrl: "https://api.together.xyz/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Fireworks AI", provider: "fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "DeepInfra", provider: "deepinfra", baseUrl: "https://api.deepinfra.com/v1/openai", apiMode: "openai" },
+	{ group: "Aggregators", label: "Novita AI", provider: "novita", baseUrl: "https://api.novita.ai/openai/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Nebius Token Factory", provider: "nebius", baseUrl: "https://api.tokenfactory.nebius.com/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "NVIDIA NIM", provider: "nvidia", baseUrl: "https://integrate.api.nvidia.com/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "GMI Cloud", provider: "gmi", baseUrl: "https://api.gmi-serving.com/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Arcee AI", provider: "arcee", baseUrl: "https://api.arcee.ai/api/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Upstage Solar", provider: "upstage", baseUrl: "https://api.upstage.ai/v1", apiMode: "openai" },
+	{ group: "Aggregators", label: "Ollama Cloud", provider: "ollama-cloud", baseUrl: "https://ollama.com/v1", apiMode: "openai" },
+
+	// ── Chinese / regional clouds ──
+	{ group: "Regional clouds", label: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Alibaba DashScope (Qwen, intl.)", provider: "alibaba", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Alibaba DashScope (Qwen, China)", provider: "alibaba-cn", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Moonshot (Kimi)", provider: "moonshot", baseUrl: "https://api.moonshot.cn/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Mistral AI", provider: "mistral", baseUrl: "https://api.mistral.ai/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Perplexity", provider: "perplexity", baseUrl: "https://api.perplexity.ai", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Cerebras", provider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "StepFun (Coding Plan)", provider: "stepfun", baseUrl: "https://api.stepfun.ai/step_plan/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "Xiaomi MiMo", provider: "xiaomi", baseUrl: "https://api.xiaomimimo.com/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "ModelScope", provider: "modelscope", baseUrl: "https://api-inference.modelscope.cn/v1", apiMode: "openai" },
+	{ group: "Regional clouds", label: "SiliconFlow", provider: "siliconflow", baseUrl: "https://api.siliconflow.cn/v1", apiMode: "openai" },
+
+	// ── Local / self-hosted ──
+	{ group: "Local / self-hosted", label: "Ollama (native API)", provider: "ollama", baseUrl: "http://localhost:11434", apiMode: "ollama" },
+	{ group: "Local / self-hosted", label: "Ollama (OpenAI-compat)", provider: "ollama", baseUrl: "http://localhost:11434/v1", apiMode: "openai" },
+	{ group: "Local / self-hosted", label: "LM Studio", provider: "lmstudio", baseUrl: "http://localhost:1234/v1", apiMode: "openai" },
+	{ group: "Local / self-hosted", label: "vLLM", provider: "vllm", baseUrl: "http://localhost:8000/v1", apiMode: "openai" },
+	{ group: "Local / self-hosted", label: "llama.cpp server", provider: "llamacpp", baseUrl: "http://localhost:8080/v1", apiMode: "openai" },
+	{ group: "Local / self-hosted", label: "SGLang", provider: "sglang", baseUrl: "http://localhost:30000/v1", apiMode: "openai" },
 ];
 
 function populateProviderPresets() {
@@ -229,11 +259,20 @@ function populateProviderPresets() {
 	while (el.pPreset.children.length > 1) {
 		el.pPreset.removeChild(el.pPreset.lastChild);
 	}
+	let currentGroup = null;
+	let target = el.pPreset;
 	PROVIDER_PRESETS.forEach((preset, idx) => {
+		if (preset.group && preset.group !== currentGroup) {
+			currentGroup = preset.group;
+			const og = document.createElement("optgroup");
+			og.label = currentGroup;
+			el.pPreset.appendChild(og);
+			target = og;
+		}
 		const opt = document.createElement("option");
 		opt.value = String(idx);
 		opt.textContent = preset.label;
-		el.pPreset.appendChild(opt);
+		target.appendChild(opt);
 	});
 }
 
@@ -303,6 +342,19 @@ const USER_AGENT_PRESETS = [
 		value:
 			"Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
 	},
+	// ── Non-browser clients (API-native UAs some endpoints treat differently) ──
+	{ label: "curl", value: "curl/8.14.1" },
+	{ label: "wget", value: "Wget/1.25.0 (linux-gnu)" },
+	{ label: "Python · requests", value: "python-requests/2.32.4" },
+	{ label: "Python · httpx", value: "python-httpx/0.28.1" },
+	{ label: "Node · undici", value: "undici/7.16.0" },
+	{ label: "Go · http", value: "Go-http-client/2.0" },
+	{ label: "axios", value: "axios/1.11.0" },
+	// ── Random per request ──
+	{
+		label: "🎲 Random browser · per request",
+		value: "random-browser",
+	},
 ];
 
 function populateUserAgentPresets() {
@@ -333,8 +385,9 @@ el.pUserAgentPreset?.addEventListener("change", () => {
 });
 
 el.pUserAgentRandom?.addEventListener("click", () => {
-	const idx = Math.floor(Math.random() * USER_AGENT_PRESETS.length);
-	el.pUserAgent.value = USER_AGENT_PRESETS[idx].value;
+	const browserUAs = USER_AGENT_PRESETS.filter((p) => p.value.startsWith("Mozilla/"));
+	const idx = Math.floor(Math.random() * browserUAs.length);
+	el.pUserAgent.value = browserUAs[idx].value;
 });
 
 // ── Provider data helpers ──────────────────────────────────────────────────────
@@ -454,10 +507,9 @@ function renderKeyStats(provider, stats) {
 		clearKeyStats();
 		return;
 	}
-	// The backend returns masked keys in the same order as the stored keys, so
-	// we can recover each full key (kept in memory in state.providerKeys) by
-	// index to surface it as a hover tooltip.
-	const fullKeys = parseRawKeys(state.providerKeys[provider]);
+	// Security: full keys are no longer surfaced in the DOM (previously a
+	// title-tooltip carried the complete plaintext key, visible in devtools
+	// and DOM dumps). The masked key from the backend is enough here.
 	el.keyStatsBody.innerHTML = stats
 		.map((s, i) => {
 			const hasErrors = s.errors > 0;
@@ -467,10 +519,8 @@ function renderKeyStats(provider, stats) {
 					? '<span class="ks-badge ks-warn">OK</span>'
 					: '<span class="ks-badge ks-ok">OK</span>';
 			const lastError = s.lastError ? ` title="Last error: ${escAttr(s.lastError)}"` : "";
-			const fullKey = fullKeys[i];
-			const keyTitle = fullKey ? ` title="${escAttr(fullKey)}"` : "";
 			return `<tr class="${hasErrors ? "ks-has-errors" : ""}"${lastError}>
-			<td class="ks-key"><span class="ks-key-text"${keyTitle}>${escHtml(s.keyMasked)}</span></td>
+			<td class="ks-key"><span class="ks-key-text">${escHtml(s.keyMasked)}</span></td>
 			<td class="ks-num">${s.requests}</td>
 			<td class="ks-num${hasErrors ? " ks-num-error" : ""}">${s.errors}</td>
 			<td class="ks-status">${statusLabel}</td>
@@ -523,6 +573,11 @@ function renderSidebar() {
 		<span class="provider-item-name">⚡ Chat Generator</span>
 	</div>`;
 
+	const skillsActive = !state.isNewProvider && state.selectedProvider === "skills";
+	html += `<div class="provider-item special-item${skillsActive ? " active" : ""}" data-special="skills">
+		<span class="provider-item-name">🧩 Skills</span>
+	</div>`;
+
 	el.providerList.innerHTML = html;
 
 	el.providerList.querySelectorAll(".provider-item[data-provider]").forEach((item) => {
@@ -539,6 +594,10 @@ function renderSidebar() {
 
 	el.providerList.querySelectorAll(".provider-item[data-special='chatgen']").forEach((item) => {
 		item.addEventListener("click", selectChatGenSettings);
+	});
+
+	el.providerList.querySelectorAll(".provider-item[data-special='skills']").forEach((item) => {
+		item.addEventListener("click", selectSkillsScreen);
 	});
 }
 
@@ -749,6 +808,191 @@ function selectChatGenSettings() {
 	updateActiveScreen();
 }
 
+function setSpecialSectionVisibility(show) {
+	// Helper: shows exactly one of the special sections (or none).
+	for (const id of ["commitSection", "integrationSection", "chatGenSection", "skillsSection"]) {
+		const node = $(id);
+		if (node) {
+			node.style.display = show === id ? "" : "none";
+		}
+	}
+}
+
+function selectSkillsScreen() {
+	state.selectedProvider = "skills";
+	state.isNewProvider = false;
+	clearModelSelection();
+	renderSidebar();
+
+	el.emptyState.style.display = "";
+	el.providerDetail.style.display = "none";
+
+	const hint = $("emptyHintText");
+	if (hint) {
+		hint.style.display = "none";
+	}
+	const backBar = $("gitCommitBackBar");
+	if (backBar) {
+		backBar.style.display = "flex";
+	}
+	setSpecialSectionVisibility("skillsSection");
+
+	refreshLocalSkills();
+	updateActiveScreen();
+}
+
+// ── Skills screen logic ────────────────────────────────────────────────────────
+
+function skillPost(msg) {
+	vscode.postMessage(msg);
+}
+
+function refreshLocalSkills(filter) {
+	skillPost({ type: "skills.filterLocal", query: filter || "" });
+}
+
+function renderSkillCatalogList(skills, fromCache) {
+	const box = $("skillCatalogList");
+	if (!box) {
+		return;
+	}
+	if (!skills.length) {
+		box.innerHTML = `<div class="field-description">${fromCache ? "No results (cached)." : "No results. Try another query."}</div>`;
+		return;
+	}
+	box.innerHTML = skills
+		.map(
+			(s) => `<div class="provider-item" data-skill-id="${escAttr(s.id)}">
+			<span class="provider-item-name">${escHtml(s.name)}</span>
+			<span class="provider-item-meta">
+				<span class="badge">${escHtml(s.source)}</span>
+				<button class="icon-btn skill-install-btn" title="Install to ~/.copilot/skills">⬇</button>
+			</span>
+			<div class="field-description">${escHtml((s.description || "").slice(0, 160))}</div>
+		</div>`
+		)
+		.join("");
+	box.querySelectorAll(".skill-install-btn").forEach((btn) => {
+		btn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			const id = btn.closest(".provider-item").getAttribute("data-skill-id");
+			const skill = skills.find((x) => x.id === id);
+			if (skill) {
+				btn.disabled = true;
+				window.__pendingSkillOp = { type: "skills.install", skill };
+				skillPost({ type: "skills.install", skill });
+			}
+		});
+	});
+	box.querySelectorAll(".provider-item[data-skill-id]").forEach((item) => {
+		item.addEventListener("click", () => {
+			const id = item.getAttribute("data-skill-id");
+			const skill = skills.find((x) => x.id === id);
+			if (skill) {
+				skillPost({ type: "skills.preview", skill });
+			}
+		});
+	});
+}
+
+function renderSkillLocalList(skills) {
+	const box = $("skillLocalList");
+	if (!box) {
+		return;
+	}
+	if (!skills.length) {
+		box.innerHTML = `<div class="field-description">No skills installed yet. Install from the catalog above or create a new one.</div>`;
+		return;
+	}
+	box.innerHTML = skills
+		.map(
+			(s) => `<div class="provider-item" data-skill-dir="${escAttr(s.dirPath)}">
+			<span class="provider-item-name">${escHtml(s.name)}</span>
+			<span class="provider-item-meta">
+				<span class="badge">${escHtml(s.origin)}</span>
+			</span>
+			<div class="field-description">${escHtml((s.description || "").slice(0, 160))}</div>
+		</div>`
+		)
+		.join("");
+	box.querySelectorAll(".provider-item[data-skill-dir]").forEach((item) => {
+		item.addEventListener("click", () => {
+			skillPost({ type: "skills.read", dirPath: item.getAttribute("data-skill-dir") });
+		});
+	});
+}
+
+function initSkillsScreen() {
+	const searchBtn = $("skillSearchBtn");
+	const searchInput = $("skillSearchInput");
+	if (searchBtn && searchInput) {
+		searchBtn.addEventListener("click", () => skillPost({ type: "skills.search", query: searchInput.value }));
+		searchInput.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				skillPost({ type: "skills.search", query: searchInput.value });
+			}
+		});
+	}
+	const refreshBtn = $("skillRefreshBtn");
+	if (refreshBtn && searchInput) {
+		refreshBtn.addEventListener("click", () => skillPost({ type: "skills.search", query: searchInput.value, refresh: true }));
+	}
+	const importUrlBtn = $("skillImportUrlBtn");
+	const importUrlInput = $("skillImportUrl");
+	if (importUrlBtn && importUrlInput) {
+		importUrlBtn.addEventListener("click", () => {
+			const url = importUrlInput.value.trim();
+			if (!url) {
+				showProviderError("Enter a URL first.");
+				return;
+			}
+			window.__pendingSkillOp = { type: "skills.importUrl", url };
+			skillPost({ type: "skills.importUrl", url });
+		});
+	}
+	const importFileBtn = $("skillImportFileBtn");
+	if (importFileBtn) {
+		importFileBtn.addEventListener("click", () => skillPost({ type: "skills.importFile" }));
+	}
+	const localFilter = $("skillLocalFilter");
+	if (localFilter) {
+		localFilter.addEventListener("input", () => refreshLocalSkills(localFilter.value));
+	}
+	const saveBtn = $("skillSaveBtn");
+	if (saveBtn) {
+		saveBtn.addEventListener("click", () => {
+			skillPost({
+				type: "skills.save",
+				dirPath: window.__skillEditorDir || "",
+				name: $("skillNameInput") ? $("skillNameInput").value : "",
+				description: $("skillDescInput") ? $("skillDescInput").value : "",
+				body: $("skillBodyInput") ? $("skillBodyInput").value : "",
+			});
+		});
+	}
+	const newBtn = $("skillNewBtn");
+	if (newBtn) {
+		newBtn.addEventListener("click", () => {
+			window.__skillEditorDir = "";
+			if ($("skillNameInput")) { $("skillNameInput").value = ""; }
+			if ($("skillDescInput")) { $("skillDescInput").value = ""; }
+			if ($("skillBodyInput")) { $("skillBodyInput").value = ""; }
+			if ($("skillEditor")) { $("skillEditor").style.display = ""; }
+		});
+	}
+	const deleteBtn = $("skillDeleteBtn");
+	if (deleteBtn) {
+		deleteBtn.addEventListener("click", () => {
+			const dir = window.__skillEditorDir;
+			if (dir && confirm("Delete this skill?")) {
+				skillPost({ type: "skills.delete", dirPath: dir });
+			}
+		});
+	}
+}
+
+initSkillsScreen();
+
 function updateActiveScreen() {
 	const layout = document.querySelector(".layout");
 	if (!layout) {
@@ -763,6 +1007,8 @@ function updateActiveScreen() {
 	} else if (state.selectedProvider === "integration") {
 		layout.classList.add("screen-git-commit");
 	} else if (state.selectedProvider === "chatgen") {
+		layout.classList.add("screen-git-commit");
+	} else if (state.selectedProvider === "skills") {
 		layout.classList.add("screen-git-commit");
 	} else if (state.selectedProvider !== null || state.isNewProvider) {
 		layout.classList.add("screen-provider-detail");
@@ -2009,6 +2255,63 @@ document.addEventListener("click", (e) => {
 // ── Message receiver ───────────────────────────────────────────────────────────
 
 window.addEventListener("message", ({ data: msg }) => {
+	// Skills screen messages have their own family.
+	if (msg && typeof msg.type === "string" && msg.type.startsWith("skills.")) {
+		switch (msg.type) {
+			case "skills.localList":
+				renderSkillLocalList(msg.skills || []);
+				break;
+			case "skills.searchResults":
+				renderSkillCatalogList(msg.skills || [], msg.fromCache);
+				break;
+			case "skills.content": {
+				window.__skillEditorDir = msg.dirPath || "";
+				$("skillNameInput").value = (msg.frontmatter && msg.frontmatter.name) || "";
+				$("skillDescInput").value = (msg.frontmatter && msg.frontmatter.description) || "";
+				$("skillBodyInput").value = msg.body || "";
+				$("skillEditor").style.display = "";
+				break;
+			}
+			case "skills.previewContent": {
+				window.__skillEditorDir = "";
+				if ($("skillNameInput")) { $("skillNameInput").value = msg.name || ""; }
+				if ($("skillDescInput")) { $("skillDescInput").value = msg.description || ""; }
+				if ($("skillBodyInput")) { $("skillBodyInput").value = msg.body || ""; }
+				if ($("skillEditor")) { $("skillEditor").style.display = ""; }
+				const flags = [];
+				if (msg.alreadyInstalled) { flags.push("already installed — saving will overwrite"); }
+				if (msg.validation) {
+					(msg.validation.issues || []).forEach((i) => flags.push("⚠ " + i));
+					(msg.validation.warnings || []).forEach((w) => flags.push("· " + w));
+				}
+				if ($("skillStatusLine")) { $("skillStatusLine").textContent = flags.join("  |  "); }
+				break;
+			}
+			case "skills.alreadyInstalled": {
+				const installAnyway = confirm(`Skill "${msg.name}" is already installed. Overwrite it?`);
+				if (installAnyway) {
+					// Re-issue the pending operation with overwrite: true.
+					if (window.__pendingSkillOp) {
+						skillPost({ ...window.__pendingSkillOp, overwrite: true });
+					}
+				} else {
+					refreshLocalSkills("");
+				}
+				break;
+			}
+			case "skills.installed":
+			case "skills.saved":
+			case "skills.deleted":
+				refreshLocalSkills($("skillLocalFilter") ? $("skillLocalFilter").value : "");
+				if ($("skillStatusLine")) { $("skillStatusLine").textContent = msg.type === "skills.installed" ? `Installed ${msg.name || ""}` : "Saved."; }
+				break;
+			case "skills.installError":
+			case "skills.error":
+				showProviderError(msg.error || "Skills operation failed");
+				break;
+		}
+		return;
+	}
 	switch (msg.type) {
 		case "init": {
 			const p = msg.payload;

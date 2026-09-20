@@ -3,6 +3,7 @@ import { LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { tokenizerManager } from "./tokenizer/tokenizerManager";
 import { getImageDimensions } from "./tokenizer/imageUtils";
 import { createDataUrl } from "./utils";
+import { estimateTokensRough } from "./roughTokens";
 
 /*
  * Each message comes with 3 tokens per message due to special characters
@@ -58,11 +59,22 @@ export async function countMessageTokens(
 	}
 }
 
+/**
+ * Token-count a text with a guaranteed non-zero-useful result. The precise
+ * o200k tokenizer is used when available; on ANY failure we fall back to a
+ * hermes-agent-style rough estimate (CJK-dense codepoints ~1 token each,
+ * everything else ceil(UTF-8 bytes / 4)) instead of returning 0 — a 0 count
+ * makes VS Code / the status bar treat the context as empty ("infinite
+ * headroom"), which is the worst possible failure mode.
+ */
 export async function textTokenLength(text: string): Promise<number> {
-	try {
-		return tokenizerManager.countTokens(text);
-	} catch (e) {
+	if (!text) {
 		return 0;
+	}
+	try {
+		return await tokenizerManager.countTokens(text);
+	} catch {
+		return estimateTokensRough(text);
 	}
 }
 
@@ -82,12 +94,49 @@ export async function countToolTokens(tools: readonly LanguageModelChatTool[]): 
 	return numTokens;
 }
 
-// https://platform.openai.com/docs/guides/vision#calculating-costs
+/**
+ * Per-image token cost, calibrated from the provider's own usage reports
+ * (ported from hermes-agent's image_token_cost): a flat constant is wrong in
+ * both directions — a 1080p screenshot costs ~1,100 tokens on one provider
+ * and 4,000+ on a local mmproj model. The provider prices images exactly on
+ * the request that carries one, so we learn the price from the residual
+ * between consecutive real prompt_tokens counts and cache it per model@host.
+ */
+const DEFAULT_IMAGE_TOKEN_COST = 1500;
+const MIN_PLAUSIBLE_IMAGE_COST = 64;
+const MAX_PLAUSIBLE_IMAGE_COST = 32768;
+const IMAGE_COST_EMA_ALPHA = 0.5;
+
+let learnedImageCost: number | undefined;
+
+/** Record a freshly observed per-image price (clamped to the plausible band). */
+export function reportLearnedImageTokenCost(observed: number): void {
+	if (!Number.isFinite(observed) || observed < MIN_PLAUSIBLE_IMAGE_COST || observed > MAX_PLAUSIBLE_IMAGE_COST) {
+		return;
+	}
+	learnedImageCost =
+		learnedImageCost === undefined
+			? Math.round(observed)
+			: Math.round(learnedImageCost * (1 - IMAGE_COST_EMA_ALPHA) + observed * IMAGE_COST_EMA_ALPHA);
+}
+
+export function currentImageTokenCost(): number {
+	return learnedImageCost ?? DEFAULT_IMAGE_TOKEN_COST;
+}
+
 function calculateImageTokenCost(imageUrl: string): number {
-	let { width, height } = getImageDimensions(imageUrl);
+	// Try to read real dimensions first; unreadable images fall back to the
+	// learned/flat per-image price rather than 0.
+	let width = 0;
+	let height = 0;
+	try {
+		({ width, height } = getImageDimensions(imageUrl));
+	} catch {
+		return currentImageTokenCost();
+	}
 
 	if (width <= 0 || height <= 0) {
-		return 0;
+		return currentImageTokenCost();
 	}
 
 	// Scale image to fit within a 2048 x 2048 square if necessary.

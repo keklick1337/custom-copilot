@@ -8,9 +8,58 @@ import {
 	Progress,
 	CancellationToken,
 } from "vscode";
-import { HFModelItem } from "./types";
+import { CustomModelItem } from "./types";
 import { tryParseJSONObject } from "./utils";
-import { VersionManager } from "./versionManager";
+import { VersionManager, resolveUserAgent } from "./versionManager";
+
+/**
+ * Token usage in the shape Copilot's BYOK providers report it (see the
+ * `usage` LanguageModelDataPart contract in Copilot's endpointTypes:
+ * `CustomDataPartMimeTypes.Usage`). Only prompt/completion/total are
+ * required for the chat context circle to render.
+ */
+export interface ApiUsage {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	prompt_tokens_details?: {
+		cached_tokens: number;
+		[key: string]: unknown;
+	};
+	completion_tokens_details?: {
+		reasoning_tokens?: number;
+		[key: string]: unknown;
+	};
+	[key: string]: unknown;
+}
+
+/** Merge/replace the usage accumulator with numbers from a stream chunk. */
+export function accumulateUsage(target: ApiUsage | undefined, patch: Partial<ApiUsage>): ApiUsage {
+	const next: ApiUsage = target
+		? { ...target }
+		: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+	if (typeof patch.prompt_tokens === "number") {
+		next.prompt_tokens = patch.prompt_tokens;
+	}
+	if (typeof patch.completion_tokens === "number") {
+		next.completion_tokens = patch.completion_tokens;
+	}
+	if (typeof patch.total_tokens === "number") {
+		next.total_tokens = patch.total_tokens;
+	} else {
+		// Always recompute when not explicitly provided: an earlier partial
+		// patch may have derived a premature total that must be updated once
+		// the second half (prompt/completion) arrives.
+		next.total_tokens = next.prompt_tokens + next.completion_tokens;
+	}
+	if (patch.prompt_tokens_details && typeof patch.prompt_tokens_details === "object") {
+		next.prompt_tokens_details = { ...(next.prompt_tokens_details ?? { cached_tokens: 0 }), ...patch.prompt_tokens_details };
+	}
+	if (patch.completion_tokens_details && typeof patch.completion_tokens_details === "object") {
+		next.completion_tokens_details = { ...(next.completion_tokens_details ?? {}), ...patch.completion_tokens_details };
+	}
+	return next;
+}
 
 export abstract class CommonApi<TMessage, TRequestBody> {
 	/** Buffer for assembling streamed tool calls by index. */
@@ -34,9 +83,12 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	/** Track if we emitted the begin-tool-calls whitespace flush. */
 	protected _emittedBeginToolCallsHint = false;
 
-	// XML think block parsing state
+	// XML think block parsing state. `_xmlThinkCarryOver` holds a possible
+	// partial "<think>"/"</think>" tag split across chunk boundaries so the
+	// one-shot detection flag can't permanently miss a split tag.
 	protected _xmlThinkActive = false;
 	protected _xmlThinkDetectionAttempted = false;
+	protected _xmlThinkCarryOver = "";
 
 	// Thinking content state management
 	protected _currentThinkingId: string | null = null;
@@ -50,11 +102,49 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	/** System prompts to include in requests. */
 	protected _systemContent: string | undefined;
 
+	/**
+	 * Token usage reported by the provider for the current response, in the
+	 * Copilot BYOK `APIUsage` shape (prompt_tokens / completion_tokens /
+	 * total_tokens). Adapters populate it from their stream's usage event;
+	 * the provider emits it as a `LanguageModelDataPart` with mimeType
+	 * "usage" after streaming completes — that is the internal contract the
+	 * Copilot Chat context-usage circle listens for.
+	 */
+	protected _lastUsage: ApiUsage | undefined;
+
 	/** Set the model ID for logging purposes. */
 	protected _modelId = "";
 
 	constructor(modelId: string) {
 		this._modelId = modelId;
+	}
+
+	/**
+	 * Reset ALL per-request streaming/conversion state. MUST be called at the
+	 * start of `convertMessages` and `processStreamingResponse` — adapter
+	 * instances must be safely reusable across turns and chat-level retries
+	 * (stale `_completedToolCallIndices` would silently swallow tool calls at
+	 * already-seen indices, stale `_systemContent` would leak the previous
+	 * conversation's system prompt).
+	 */
+	protected resetRequestState(): void {
+		this._toolCallBuffers.clear();
+		this._completedToolCallIndices.clear();
+		this._hasEmittedAssistantText = false;
+		this._hasEmittedText = false;
+		this._hasEmittedThinking = false;
+		this._emittedBeginToolCallsHint = false;
+		this._xmlThinkActive = false;
+		this._xmlThinkDetectionAttempted = false;
+		this._xmlThinkCarryOver = "";
+		this._currentThinkingId = null;
+		this._thinkingBuffer = "";
+		if (this._thinkingFlushTimer) {
+			clearTimeout(this._thinkingFlushTimer);
+			this._thinkingFlushTimer = null;
+		}
+		this._systemContent = undefined;
+		this._lastUsage = undefined;
 	}
 
 	/**
@@ -76,7 +166,7 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	 */
 	abstract prepareRequestBody(
 		rb: TRequestBody,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): TRequestBody;
 
@@ -102,7 +192,7 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	 * @returns An async iterable of text chunks.
 	 */
 	abstract createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
@@ -133,6 +223,45 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		let parameters = canParse.value;
 		parameters = this.adjustReadFileParameters(buf.name, parameters);
 		progress.report(new LanguageModelToolCallPart(id, buf.name, parameters));
+		this._toolCallBuffers.delete(index);
+		this._completedToolCallIndices.add(index);
+	}
+
+	/**
+	 * Flush a single buffered tool call by index, optionally throwing on invalid
+	 * JSON args. Use this for per-index completion events (e.g. Anthropic
+	 * `content_block_stop`, OpenAI Responses `*_done`) so incomplete sibling
+	 * buffers are NOT prematurely emitted.
+	 * @param index The tool call index to flush.
+	 * @param progress Progress reporter for parts.
+	 * @param throwOnInvalid If true, throw when the args are not valid JSON.
+	 */
+	protected async flushToolCallBufferAt(
+		index: number,
+		progress: Progress<LanguageModelResponsePart2>,
+		throwOnInvalid: boolean
+	): Promise<void> {
+		const buf = this._toolCallBuffers.get(index);
+		if (!buf) {
+			return;
+		}
+		const argsText = buf.args.trim() || "{}";
+		const parsed = tryParseJSONObject(argsText);
+		if (!parsed.ok) {
+			if (throwOnInvalid) {
+				console.error("[customcopilot] Invalid JSON for tool call", {
+					index,
+					snippet: (buf.args || "").slice(0, 200),
+				});
+				throw new Error("Invalid JSON for tool call");
+			}
+			return;
+		}
+		const id = buf.id ?? `call_${Math.random().toString(36).slice(2, 10)}`;
+		const name = buf.name ?? "unknown_tool";
+		let parameters = parsed.value;
+		parameters = this.adjustReadFileParameters(name, parameters);
+		progress.report(new LanguageModelToolCallPart(id, name, parameters));
 		this._toolCallBuffers.delete(index);
 		this._completedToolCallIndices.add(index);
 	}
@@ -285,7 +414,13 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		customHeaders?: Record<string, string>,
 		userAgent?: string
 	): Record<string, string> {
-		const resolvedUserAgent = (userAgent || "").trim() || VersionManager.getUserAgent();
+		// "random-browser" resolves to a FRESH browser UA on every request;
+		// any other value (including empty) falls back to the configured
+		// default UA, itself passed through the same resolver.
+		const explicit = (userAgent || "").trim();
+		const resolvedUserAgent = explicit
+			? resolveUserAgent(explicit) || VersionManager.getUserAgent()
+			: resolveUserAgent(VersionManager.getUserAgent());
 		const headers: Record<string, string> = {
 			"Content-Type": "application/json",
 			"User-Agent": resolvedUserAgent,
@@ -341,26 +476,51 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		input: string,
 		progress: Progress<LanguageModelResponsePart2>
 	): { emittedAny: boolean } {
-		// If we've already attempted detection and found no THINK_START, skip processing
-		if (this._xmlThinkDetectionAttempted && !this._xmlThinkActive) {
-			return { emittedAny: false };
-		}
-
 		const THINK_START = "<think>";
 		const THINK_END = "</think>";
 
-		let data = input;
+		// Combine any carried-over partial tag from the previous chunk.
+		let data = this._xmlThinkCarryOver + input;
+		this._xmlThinkCarryOver = "";
 		let emittedAny = false;
+
+		// While not inside a think block and detection hasn't concluded, hold
+		// back a trailing partial "<think>" prefix so a tag split across chunk
+		// boundaries isn't missed (which would disable detection forever).
+		if (!this._xmlThinkActive && !this._xmlThinkDetectionAttempted) {
+			for (let keep = Math.min(THINK_START.length - 1, data.length); keep > 0; keep--) {
+				if (THINK_START.startsWith(data.slice(-keep))) {
+					this._xmlThinkCarryOver = data.slice(-keep);
+					data = data.slice(0, -keep);
+					break;
+				}
+			}
+		}
 
 		while (data.length > 0) {
 			if (!this._xmlThinkActive) {
 				// Look for think start tag
 				const startIdx = data.indexOf(THINK_START);
 				if (startIdx === -1) {
-					// No think start found, mark detection as attempted and skip future processing
+					// No think start found: emit as visible text (if not a held-back
+					// carry-over remnant) and mark detection as attempted.
 					this._xmlThinkDetectionAttempted = true;
+					if (data) {
+						this.reportEndThinking(progress);
+						progress.report(new vscode.LanguageModelTextPart(data));
+						this._hasEmittedText = true;
+						emittedAny = true;
+					}
 					data = "";
 					break;
+				}
+
+				// Emit any visible text before the think block
+				if (startIdx > 0) {
+					this.reportEndThinking(progress);
+					progress.report(new vscode.LanguageModelTextPart(data.slice(0, startIdx)));
+					this._hasEmittedText = true;
+					emittedAny = true;
 				}
 
 				// Found think start tag - mark that we processed XML tags
@@ -375,17 +535,31 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 			// We are inside a think block, look for end tag
 			const endIdx = data.indexOf(THINK_END);
 			if (endIdx === -1) {
-				this.bufferThinkingContent(data, progress);
-				emittedAny = true;
+				// Hold back a possible partial "</think>" suffix inside thinking.
+				let emit = data;
+				for (let keep = Math.min(THINK_END.length - 1, data.length); keep > 0; keep--) {
+					if (THINK_END.startsWith(data.slice(-keep))) {
+						this._xmlThinkCarryOver = data.slice(-keep);
+						emit = data.slice(0, -keep);
+						break;
+					}
+				}
+				if (emit) {
+					this.bufferThinkingContent(emit, progress);
+					emittedAny = true;
+				}
 				data = "";
 				break;
 			}
 
 			// Found end tag, buffer final thinking content before the end tag
 			const thinkContent = data.slice(0, endIdx);
-			this.bufferThinkingContent(thinkContent, progress);
+			if (thinkContent) {
+				this.bufferThinkingContent(thinkContent, progress);
+			}
 
-			// Mark end tag as processed and reset state
+			// Mark end tag as processed and reset state — a SECOND <think>
+			// block in the same response is now handled correctly.
 			emittedAny = true;
 			this._xmlThinkActive = false;
 			data = data.slice(endIdx + THINK_END.length);

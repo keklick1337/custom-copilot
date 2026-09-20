@@ -1,12 +1,15 @@
 import * as vscode from "vscode";
-import type { HFApiMode, HFModelItem } from "../types";
+import * as crypto from "crypto";
+import { parseWebviewModelKey, filterModelsByIdentifier } from "./modelKeys";
+import { exportConfig, importConfig } from "./configTransfer";
+import { handleSkillsMessage } from "./skillsController";
+import type { CustomApiMode, CustomModelItem } from "../types";
 import { normalizeUserModels, resolveProxyUrl } from "../utils";
 import { fetchModels, fetchModelsIntersection } from "../provideModel";
 import { parseApiKeys, keyBalancer } from "../keyBalancer";
 import { resolveApiKeysFromSource } from "../apiKeySource";
 import { CommonApi } from "../commonApi";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
-import { VersionManager } from "../versionManager";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 import { getCapturedSystemPrompt } from "../promptCapture";
 import { testPromptOverride, type PromptOverrideMode, type PromptReplacement } from "../promptOverride";
@@ -24,7 +27,7 @@ interface InitPayload {
 	};
 	commitModel: string;
 	commitLanguage: string;
-	models: HFModelItem[];
+	models: CustomModelItem[];
 	providerKeys: Record<string, string>;
 	providerKeySources: Record<string, string>;
 	allowAnonymousAccess: boolean;
@@ -39,25 +42,6 @@ interface InitPayload {
 	chatRetries: number;
 	chatRetryInterval: number;
 	chatRetryJitter: number;
-}
-
-interface ExportConfig {
-	version: string;
-	exportDate: string;
-	proxyUrl: string;
-	delay: number;
-	retry: {
-		enabled?: boolean;
-		max_attempts?: number;
-		interval_ms?: number;
-		status_codes?: number[];
-	};
-	commitLanguage: string;
-	commitModel: string;
-	models: HFModelItem[];
-	providerKeys: Record<string, string>;
-	providerKeySources?: Record<string, string>;
-	readFileLines: number;
 }
 
 type IncomingMessage =
@@ -79,7 +63,7 @@ type IncomingMessage =
 			baseUrl: string;
 			apiKey: string;
 			apiKeySource?: string;
-			apiMode?: HFApiMode | string;
+			apiMode?: CustomApiMode | string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
 			userAgent?: string;
@@ -89,7 +73,7 @@ type IncomingMessage =
 			baseUrl: string;
 			apiKey: string;
 			apiKeySource?: string;
-			apiMode?: HFApiMode | string;
+			apiMode?: CustomApiMode | string;
 			modelId: string;
 			headers?: Record<string, string>;
 			proxyUrl?: string;
@@ -128,11 +112,11 @@ type IncomingMessage =
 			delay?: number;
 	  }
 	| { type: "deleteProvider"; provider: string }
-	| { type: "addModel"; model: HFModelItem }
-	| { type: "updateModel"; model: HFModelItem; originalModelId?: string; originalConfigId?: string; originalKey?: string }
+	| { type: "addModel"; model: CustomModelItem }
+	| { type: "updateModel"; model: CustomModelItem; originalModelId?: string; originalConfigId?: string; originalKey?: string }
 	| { type: "deleteModel"; modelId: string }
 	| { type: "deleteModels"; modelIds: string[] }
-	| { type: "importModels"; models: HFModelItem[]; provider: string }
+	| { type: "importModels"; models: CustomModelItem[]; provider: string }
 	| { type: "saveCommitSettings"; commitModel: string; commitLanguage: string }
 	| { type: "requestConfirm"; id: string; message: string; action: string }
 	| { type: "setAnonymousAccess"; enabled: boolean }
@@ -162,7 +146,7 @@ type IncomingMessage =
 
 type OutgoingMessage =
 	| { type: "init"; payload: InitPayload }
-	| { type: "modelsFetched"; models: HFModelItem[] }
+	| { type: "modelsFetched"; models: CustomModelItem[] }
 	| {
 			type: "keyStats";
 			provider: string;
@@ -279,6 +263,10 @@ export class ConfigViewController {
 	}
 
 	async handleMessage(message: IncomingMessage) {
+		// Skills screen has its own message family (skills.*).
+		if (await handleSkillsMessage(this.webview, message as unknown as Record<string, unknown>)) {
+			return;
+		}
 		switch (message.type) {
 			case "requestInit":
 				await this.sendInit();
@@ -628,7 +616,7 @@ export class ConfigViewController {
 		baseUrl: string,
 		apiKey: string,
 		modelId: string,
-		apiMode?: HFApiMode | string,
+		apiMode?: CustomApiMode | string,
 		headers?: Record<string, string>,
 		proxyUrl?: string,
 		userAgent?: string
@@ -778,7 +766,7 @@ export class ConfigViewController {
 			return;
 		}
 
-		const allFetched: HFModelItem[] = [];
+		const allFetched: CustomModelItem[] = [];
 		let anySuccess = false;
 
 		for (const provider of providers) {
@@ -863,7 +851,7 @@ export class ConfigViewController {
 		// The commitModel key may include a #index suffix to disambiguate duplicates.
 		if (commitModel) {
 			const parsed = parseWebviewModelKey(commitModel);
-			const models = config.get<HFModelItem[]>("customcopilot.models", []);
+			const models = config.get<CustomModelItem[]>("customcopilot.models", []);
 			// Find the matching model entry, using the #index if present
 			let matchIndex = -1;
 			let dupCounter = 0;
@@ -960,7 +948,9 @@ export class ConfigViewController {
 	}
 
 	private getNonce() {
-		return Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join("");
+		// Cryptographic nonce: Math.random() is predictable within a renderer
+		// process and would weaken the script CSP.
+		return crypto.randomBytes(16).toString("hex");
 	}
 
 	private async addProvider(
@@ -997,13 +987,13 @@ export class ConfigViewController {
 		// If the provider doesn't have models yet, add a default model
 		const hasProviderModels = models.some((model) => model.owned_by === trimmedProvider);
 		if (!hasProviderModels) {
-			const defaultModel: HFModelItem = {
+			const defaultModel: CustomModelItem = {
 				id: `__provider__${trimmedProvider}`,
 				owned_by: trimmedProvider,
 				baseUrl: baseUrl,
 				proxyUrl: proxyUrl,
 				userAgent: userAgent,
-				apiMode: (apiMode as HFApiMode) || "openai",
+				apiMode: (apiMode as CustomApiMode) || "openai",
 				headers: headers,
 				delay: delay,
 			};
@@ -1062,7 +1052,7 @@ export class ConfigViewController {
 				// never be deleted and kept being refilled onto models on save).
 				const updatedModel = { ...model };
 				updatedModel.baseUrl = (baseUrl ?? "").trim() || undefined;
-				updatedModel.apiMode = (apiMode as HFApiMode | undefined) || undefined;
+				updatedModel.apiMode = (apiMode as CustomApiMode | undefined) || undefined;
 				updatedModel.proxyUrl = (proxyUrl ?? "").trim() || undefined;
 				updatedModel.userAgent = (userAgent ?? "").trim() || undefined;
 				updatedModel.headers = headers;
@@ -1121,7 +1111,7 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private getProviderDefaultSource(models: HFModelItem[], provider?: string): HFModelItem | undefined {
+	private getProviderDefaultSource(models: CustomModelItem[], provider?: string): CustomModelItem | undefined {
 		if (!provider) {
 			return undefined;
 		}
@@ -1129,11 +1119,11 @@ export class ConfigViewController {
 		return providerModels.find((m) => m.id.startsWith("__provider__")) || providerModels[0];
 	}
 
-	private fillModelDefaults(model: HFModelItem, source: HFModelItem | undefined): HFModelItem {
+	private fillModelDefaults(model: CustomModelItem, source: CustomModelItem | undefined): CustomModelItem {
 		if (!source) {
 			return model;
 		}
-		const merged: HFModelItem = { ...model };
+		const merged: CustomModelItem = { ...model };
 		if (!merged.baseUrl) {
 			merged.baseUrl = source.baseUrl;
 		}
@@ -1152,9 +1142,9 @@ export class ConfigViewController {
 		return merged;
 	}
 
-	private async addModel(model: HFModelItem) {
+	private async addModel(model: CustomModelItem) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<HFModelItem[]>("customcopilot.models", []);
+		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
 
 		// Auto-generate a configId when adding a model whose id already exists,
 		// so VS Code doesn't deduplicate models with the same id within one
@@ -1201,9 +1191,9 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private async updateModel(model: HFModelItem, originalModelId?: string, originalConfigId?: string, originalKey?: string) {
+	private async updateModel(model: CustomModelItem, originalModelId?: string, originalConfigId?: string, originalKey?: string) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<HFModelItem[]>("customcopilot.models", []);
+		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
 
 		// When originalKey is provided (includes a #index suffix), use it to
 		// find the exact model among duplicates that share the same id+configId.
@@ -1255,7 +1245,7 @@ export class ConfigViewController {
 
 	private async deleteModel(modelId: string) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<HFModelItem[]>("customcopilot.models", []);
+		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
 
 		// modelId comes from the webview in the format "baseId::configId#index"
 		// or "baseId::configId" or "baseId#index" or "baseId". The #index suffix
@@ -1270,7 +1260,7 @@ export class ConfigViewController {
 
 	private async deleteModels(modelIds: string[]) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<HFModelItem[]>("customcopilot.models", []);
+		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
 
 		// Apply all deletions in a single pass. Each modelId may include a
 		// #index suffix to target one specific duplicate.
@@ -1285,7 +1275,7 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private async importModels(models: HFModelItem[], provider: string) {
+	private async importModels(models: CustomModelItem[], provider: string) {
 		const trimmedProvider = provider.trim();
 		if (!trimmedProvider || !Array.isArray(models) || models.length === 0) {
 			return;
@@ -1562,7 +1552,7 @@ export class ConfigViewController {
 		const config = vscode.workspace.getConfiguration();
 		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 		const match = models.find((m) => (m.configId ? `${m.id}::${m.configId}` : m.id) === modelFullId);
-		const apiMode = (match?.apiMode ?? "openai") as HFApiMode;
+		const apiMode = (match?.apiMode ?? "openai") as CustomApiMode;
 		const vendorByMode: Record<string, string> = {
 			openai: "copilotcustommodelsendpoint",
 			"openai-responses": "copilotcustommodelsendpoint-responses",
@@ -1711,132 +1701,9 @@ export class ConfigViewController {
 	}
 
 	private async exportConfig() {
-		try {
-			const config = vscode.workspace.getConfiguration();
-			const proxyUrl = config.get<string>("customcopilot.proxyUrl", "");
-			const delay = config.get<number>("customcopilot.delay", 0);
-			const retry = config.get<{
-				enabled?: boolean;
-				max_attempts?: number;
-				interval_ms?: number;
-				status_codes?: number[];
-			}>("customcopilot.retry", {
-				enabled: true,
-				max_attempts: 3,
-				interval_ms: 1000,
-			});
-			const commitLanguage = config.get<string>("customcopilot.commitLanguage", "English");
-			const readFileLines = config.get<number>("customcopilot.readFileLines", 0);
-			const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
-
-			const foundModel = models.find((model) => model.useForCommitGeneration === true);
-			const commitModel = foundModel ? `${foundModel.id}${foundModel.configId ? "::" + foundModel.configId : ""}` : "";
-
-			const providerKeys: Record<string, string> = {};
-			const providerKeySources: Record<string, string> = {};
-			const providers = Array.from(new Set(models.map((m) => m.owned_by).filter(Boolean)));
-			for (const provider of providers) {
-				const normalized = provider.toLowerCase();
-				const key = await this.secrets.get(`customcopilot.apiKey.${normalized}`);
-				if (key) {
-					providerKeys[provider] = key;
-				}
-				const source = await this.secrets.get(`customcopilot.apiKeySource.${normalized}`);
-				if (source) {
-					providerKeySources[provider] = source;
-				}
-			}
-
-			const exportData: ExportConfig = {
-				version: VersionManager.getVersion(),
-				exportDate: new Date().toISOString(),
-				proxyUrl,
-				delay,
-				retry,
-				commitLanguage,
-				commitModel,
-				models,
-				readFileLines,
-				providerKeys,
-				providerKeySources,
-			};
-
-			const uri = await vscode.window.showSaveDialog({
-				defaultUri: vscode.Uri.file(`customcopilot-config-${new Date().toISOString().split("T")[0]}.json`),
-				filters: { "JSON Files": ["json"] },
-				title: "Export customcopilot Configuration",
-			});
-
-			if (!uri) {
-				vscode.window.showInformationMessage("Export configuration cancelled.");
-				return;
-			}
-
-			const encoder = new TextEncoder();
-			await vscode.workspace.fs.writeFile(uri, encoder.encode(JSON.stringify(exportData, null, 2)));
-
-			vscode.window.showInformationMessage(`Configuration exported to ${uri.fsPath}`);
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error";
-			vscode.window.showErrorMessage(`Failed to export configuration: ${errorMessage}`);
-		}
-	}
-
-	private async importConfig() {
-		try {
-			const uri = await vscode.window.showOpenDialog({
-				canSelectFiles: true,
-				canSelectFolders: false,
-				canSelectMany: false,
-				filters: { "JSON Files": ["json"] },
-				title: "Import customcopilot Configuration",
-			});
-
-			if (!uri || uri.length === 0) {
-				vscode.window.showInformationMessage("Import configuration cancelled.");
-				return;
-			}
-
-			const content = await vscode.workspace.fs.readFile(uri[0]);
-			const decoder = new TextDecoder();
-			const jsonContent = decoder.decode(content);
-			const importData = JSON.parse(jsonContent) as ExportConfig;
-
-			if (!Array.isArray(importData.models)) {
-				throw new Error("Invalid configuration file: models must be an array");
-			}
-
-			const config = vscode.workspace.getConfiguration();
-
-			await config.update("customcopilot.proxyUrl", importData.proxyUrl || "", vscode.ConfigurationTarget.Global);
-			await config.update("customcopilot.delay", importData.delay, vscode.ConfigurationTarget.Global);
-			await config.update("customcopilot.retry", importData.retry, vscode.ConfigurationTarget.Global);
-			await config.update("customcopilot.readFileLines", importData.readFileLines, vscode.ConfigurationTarget.Global);
-			await config.update("customcopilot.commitLanguage", importData.commitLanguage, vscode.ConfigurationTarget.Global);
-
-			await config.update("customcopilot.models", importData.models, vscode.ConfigurationTarget.Global);
-
-			for (const [provider, key] of Object.entries(importData.providerKeys)) {
-				const normalized = provider.toLowerCase();
-				if (key) {
-					await this.secrets.store(`customcopilot.apiKey.${normalized}`, key);
-				} else {
-					await this.secrets.delete(`customcopilot.apiKey.${normalized}`);
-				}
-			}
-
-			if (importData.providerKeySources) {
-				for (const [provider, source] of Object.entries(importData.providerKeySources)) {
-					await this.storeApiKeySource(provider.toLowerCase(), source);
-				}
-			}
-
-			vscode.window.showInformationMessage("Configuration imported successfully.");
-			await this.sendInit();
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error";
-			vscode.window.showErrorMessage(`Failed to import configuration: ${errorMessage}`);
-		}
+		await exportConfig(this.secrets);
+	}	private async importConfig() {
+		await importConfig(this.secrets, () => this.sendInit());
 	}
 }
 
@@ -1887,56 +1754,6 @@ export class SettingsPanel {
  * Returns the parsed components plus the 0-based index among duplicates
  * (or -1 when no #index suffix is present).
  */
-function parseWebviewModelKey(key: string): { baseId: string; configId: string | undefined; index: number } {
-	const hashIdx = key.lastIndexOf("#");
-	let index = -1;
-	let idPart = key;
-	if (hashIdx >= 0) {
-		const suffix = key.slice(hashIdx + 1);
-		if (/^\d+$/.test(suffix)) {
-			index = parseInt(suffix, 10);
-			idPart = key.slice(0, hashIdx);
-		}
-	}
-	const sep = idPart.indexOf("::");
-	if (sep >= 0) {
-		return { baseId: idPart.slice(0, sep), configId: idPart.slice(sep + 2), index };
-	}
-	return { baseId: idPart, configId: undefined, index };
-}
-
-/**
- * Remove the model identified by a webview model key from the models array.
- * When a #index suffix is present, only that specific duplicate is removed.
- * Without it, the first matching model (by id+configId) is removed.
- */
-function filterModelsByIdentifier(models: HFModelItem[], key: string): HFModelItem[] {
-	const parsed = parseWebviewModelKey(key);
-	// Build the list of matching models in array order so the index maps
-	// correctly to the #index suffix used in the webview.
-	const matchingIndices: number[] = [];
-	for (let i = 0; i < models.length; i++) {
-		const m = models[i];
-		if (
-			m.id === parsed.baseId &&
-			((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
-		) {
-			matchingIndices.push(i);
-		}
-	}
-	if (parsed.index >= 0 && parsed.index < matchingIndices.length) {
-		// Remove the specific duplicate at the given index
-		const targetIdx = matchingIndices[parsed.index];
-		return models.filter((_, i) => i !== targetIdx);
-	}
-	// No #index: remove the first matching model
-	const targetIdx = matchingIndices[0];
-	if (targetIdx === undefined) {
-		return models;
-	}
-	return models.filter((_, i) => i !== targetIdx);
-}
-
 export class SettingsViewProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = "customcopilot.settingsView";
 	private controller?: ConfigViewController;

@@ -1,7 +1,7 @@
 /**
  * A single underlying provider (e.g., together, groq) for a model.
  */
-export interface HFProvider {
+export interface RouterProviderInfo {
 	provider: string;
 	status: string;
 	supports_tools?: boolean;
@@ -12,7 +12,7 @@ export interface HFProvider {
 /**
  * A model entry returned by the Hugging Face router models endpoint.
  */
-export interface HFArchitecture {
+export interface RouterArchitectureInfo {
 	input_modalities?: string[];
 	output_modalities?: string[];
 }
@@ -20,7 +20,7 @@ export interface HFArchitecture {
 /**
  * Extended model item from API response with additional fields
  */
-export interface APIModelItem extends HFModelItem {
+export interface APIModelItem extends CustomModelItem {
 	input_token_price_per_m?: number;
 	output_token_price_per_m?: number;
 	title?: string;
@@ -37,7 +37,7 @@ export interface APIModelItem extends HFModelItem {
 	output_modalities?: string[];
 }
 
-export interface HFModelItem {
+export interface CustomModelItem {
 	id: string;
 	object?: string;
 	created?: number;
@@ -47,8 +47,8 @@ export interface HFModelItem {
 	baseUrl?: string;
 	proxyUrl?: string;
 	userAgent?: string;
-	providers?: HFProvider[];
-	architecture?: HFArchitecture;
+	providers?: RouterProviderInfo[];
+	architecture?: RouterArchitectureInfo;
 	context_length?: number;
 	vision?: boolean;
 	tool_calling?: boolean;
@@ -103,7 +103,7 @@ export interface HFModelItem {
 	 * "ollama" for Ollama native API, "anthropic" for Anthropic Messages, "gemini" for Gemini native API.
 	 * Default is "openai".
 	 */
-	apiMode?: HFApiMode;
+	apiMode?: CustomApiMode;
 
 	/**
 	 * Whether this model can be used for Git commit message generation.
@@ -130,18 +130,9 @@ export interface ReasoningConfig {
 }
 
 /**
- * Supplemental model info from the Hugging Face hub API.
- */
-// Deprecated: extra model info was previously fetched from the hub API
-export interface HFExtraModelInfo {
-	id: string;
-	pipeline_tag?: string;
-}
-
-/**
  * Response envelope for the router models listing.
  */
-export interface HFModelsResponse {
+export interface OpenAIModelsResponse {
 	object: string;
 	data: APIModelItem[];
 }
@@ -164,4 +155,4 @@ export interface RetryConfig {
 }
 
 /** Supports API mode. */
-export type HFApiMode = "openai" | "openai-responses" | "ollama" | "anthropic" | "gemini" | "zai";
+export type CustomApiMode = "openai" | "openai-responses" | "ollama" | "anthropic" | "gemini" | "zai";

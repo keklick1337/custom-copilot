@@ -7,7 +7,7 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem } from "../types";
+import type { CustomModelItem } from "../types";
 
 import type {
 	AnthropicMessage,
@@ -19,10 +19,43 @@ import type {
 } from "./anthropicTypes";
 
 import { isImageMimeType, isToolResultPart, collectToolResultText, convertToolsToOpenAI, mapRole } from "../utils";
+import { glmModelSupportsThinking, glmReasoningEffort } from "../reasoningEffort";
 
 import { CommonApi } from "../commonApi";
+import { accumulateUsage } from "../commonApi";
 import { logger } from "../logger";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
+
+/**
+ * True when a trailing user message's content consists solely of tool_result
+ * blocks, i.e. appending more tool_result blocks is a legal merge.
+ */
+function toolResultsFitForMerge(content: AnthropicContentBlock[]): boolean {
+	return content.length > 0 && content.every((b) => (b as { type?: string }).type === "tool_result");
+}
+
+/**
+ * Merge consecutive same-role messages into one (concatenating content
+ * blocks) to satisfy Anthropic's strict role-alternation requirement.
+ */
+function mergeConsecutiveAnthropicRoles(messages: AnthropicMessage[]): AnthropicMessage[] {
+	const out: AnthropicMessage[] = [];
+	for (const m of messages) {
+		const last = out[out.length - 1];
+		if (last && last.role === m.role) {
+			const prev: AnthropicContentBlock[] = Array.isArray(last.content)
+				? last.content
+				: [{ type: "text", text: String(last.content) }];
+			const cur: AnthropicContentBlock[] = Array.isArray(m.content)
+				? m.content
+				: [{ type: "text", text: String(m.content) }];
+			last.content = [...prev, ...cur];
+			continue;
+		}
+		out.push(m);
+	}
+	return out;
+}
 
 export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBody> {
 	constructor(modelId: string) {
@@ -39,7 +72,13 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		messages: readonly LanguageModelChatRequestMessage[],
 		modelConfig: { includeReasoningInRequest: boolean }
 	): AnthropicMessage[] {
+		// Fresh conversion state per request (adapters are reused across turns).
+		this.resetRequestState();
 		const out: AnthropicMessage[] = [];
+
+		// System parts are JOINED, not overwritten: Copilot Chat may send
+		// multiple system messages and only the last one would survive otherwise.
+		const systemParts: string[] = [];
 
 		for (const m of messages) {
 			const role = mapRole(m);
@@ -68,6 +107,8 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 					toolResults.push({
 						type: "tool_result",
 						tool_use_id: callId,
+						// Map the tool-error flag so the model can see failures.
+						is_error: (part as { isError?: boolean }).isError === true || undefined,
 						content,
 					});
 				} else if (part instanceof vscode.LanguageModelThinkingPart) {
@@ -82,13 +123,27 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			// Handle system messages separately (Anthropic uses top-level system field)
 			if (role === "system") {
 				if (joinedText) {
-					this._systemContent = joinedText;
+					systemParts.push(joinedText);
 				}
 				continue;
 			}
 
-			// Build content blocks for user/assistant messages
+			// Build content blocks for user/assistant messages.
+			// Anthropic requires thinking blocks FIRST in assistant content.
 			const contentBlocks: AnthropicContentBlock[] = [];
+
+			// Add thinking content for assistant messages. IMPORTANT: the
+			// Anthropic API rejects replayed thinking blocks without a valid
+			// `signature` (400 "Invalid signature in thinking block"), and VS
+			// Code's ThinkingPart carries no signature — so thinking is only
+			// replayed for the LATEST assistant turn (the pattern used by
+			// production Anthropic clients), and never fabricated.
+			if (role === "assistant" && modelConfig.includeReasoningInRequest && joinedThinking) {
+				contentBlocks.push({
+					type: "thinking",
+					thinking: joinedThinking,
+				});
+			}
 
 			// Add text content
 			if (joinedText) {
@@ -111,22 +166,23 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 				});
 			}
 
-			// Add thinking content for assistant messages
-			if (role === "assistant" && modelConfig.includeReasoningInRequest) {
-				contentBlocks.push({
-					type: "thinking",
-					thinking: joinedThinking || "Next step.",
-				});
-			}
-
 			// Add tool calls for assistant messages
 			for (const toolCall of toolCalls) {
 				contentBlocks.push(toolCall);
 			}
 
-			// For tool results, they should be added to user messages
-			// We'll add them to the current message if it's a user message
+			// Tool results live in user messages. When a tool result follows
+			// other content (or several tool results arrive as separate user
+			// messages), they are appended to/merged into ONE user turn —
+			// Anthropic 400s on consecutive same-role messages.
 			if (role === "user" && toolResults.length > 0) {
+				const last = out[out.length - 1];
+				if (last && last.role === "user" && Array.isArray(last.content) && toolResultsFitForMerge(last.content)) {
+					for (const toolResult of toolResults) {
+						last.content.push(toolResult);
+					}
+					continue;
+				}
 				for (const toolResult of toolResults) {
 					contentBlocks.push(toolResult);
 				}
@@ -148,12 +204,19 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			}
 		}
 
-		return out;
+		if (systemParts.length > 0) {
+			this._systemContent = systemParts.join("\n\n");
+		}
+
+		// Final safety: merge any remaining consecutive same-role messages
+		// (e.g. user text turn directly followed by a user tool-result turn
+		// that could not be merged above) — Anthropic requires alternation.
+		return mergeConsecutiveAnthropicRoles(out);
 	}
 
 	prepareRequestBody(
 		rb: AnthropicRequestBody,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): AnthropicRequestBody {
 		// Set max_tokens (required for Anthropic).
@@ -188,18 +251,40 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		// Map extended-thinking options.  `enable_thinking`/`thinking_budget`
 		// are the generic UI fields; the Zai-style `thinking: {type}` object is
 		// also honored.  Note the Anthropic API requires budget_tokens >= 1024
-		// when thinking is enabled.
+		// when thinking is enabled, AND max_tokens > budget_tokens (the model
+		// needs headroom for the visible answer on top of the thinking
+		// budget) — otherwise the API 400s and the request dies (ported from
+		// hermes-agent `_thinking_kwargs`: max_tokens = max(effective,
+		// budget + 4096)).
 		const zaiThinkingEnabled = um?.thinking?.type === "enabled";
 		if (um?.enable_thinking === true || zaiThinkingEnabled) {
 			const budget =
 				um?.thinking_budget ??
 				(um?.max_tokens !== undefined ? Math.max(1024, Math.floor(um.max_tokens * 0.8)) : 4096);
-			rb.thinking = { type: "enabled", budget_tokens: Math.max(1024, budget) };
+			const safeBudget = Math.max(1024, budget);
+			rb.thinking = { type: "enabled", budget_tokens: safeBudget };
+			// Ensure the output ceiling always exceeds the thinking budget by
+			// a comfortable answer allowance — previously a user-set
+			// max_tokens smaller than the budget made the model "think past
+			// its tokens" and the request fail with a 400.
+			rb.max_tokens = Math.max(rb.max_tokens ?? 0, safeBudget + 4096);
 			// Anthropic constraint: temperature must be 1 when thinking is on.
 			rb.temperature = 1;
 		} else if (um?.enable_thinking === false && !um?.extra?.thinking) {
 			// Explicitly disabled — don't send the field at all (absence = off).
 			delete rb.thinking;
+		}
+
+		// GLM-5.2/5.3 over the Anthropic-compatible wire (z.ai) also take a
+		// native `reasoning_effort`, clamped onto the family's vocabulary
+		// (ported from hermes-agent's zai profile): 5.2 = high/max, 5.3 =
+		// low..max. Only emit when the user expressed a preference; the effort
+		// is NOT forwarded for models whose family doesn't support thinking.
+		if (typeof um?.reasoning_effort === "string" && glmModelSupportsThinking(um.id)) {
+			const effort = glmReasoningEffort(um.reasoning_effort, um.id);
+			if (effort) {
+				(rb as unknown as Record<string, unknown>).reasoning_effort = effort;
+			}
 		}
 
 		// Add tools configuration
@@ -247,6 +332,8 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		token: CancellationToken
 	): Promise<void> {
 		const modelId = this._modelId;
+		// Fresh streaming state per response (adapters are reused across turns/retries).
+		this.resetRequestState();
 		logger.debug("anthropic.stream.start", { modelId });
 
 		const reader = responseBody.getReader();
@@ -323,24 +410,40 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			return;
 		}
 
-		// Handle error events
+		// Handle error events: surface as a thrown error instead of silently
+		// truncating the answer (the user would see a partial response with
+		// no indication anything went wrong).
 		if (chunk.type === "error") {
 			const errorType = chunk.error?.type || "unknown_error";
 			const errorMessage = chunk.error?.message || "Anthropic API streaming error";
 			console.error(`[Anthropic Provider] Streaming error: ${errorType} - ${errorMessage}`);
-			// We could throw here, but for now just log and continue
-			return;
+			throw new Error(`Anthropic streaming error (${errorType}): ${errorMessage}`);
 		}
 
 		if (chunk.type === "message_start" && chunk.message) {
-			// Extract message metadata (id, model, etc.)
-			// Could store for later use, but not required for basic streaming
+			// message_start carries the input (prompt) token count — the
+			// basis of the context-usage circle.
+			const inputTokens = (chunk.message as { usage?: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }).usage;
+			if (inputTokens) {
+				this._lastUsage = accumulateUsage(this._lastUsage, {
+					prompt_tokens:
+						(inputTokens.input_tokens ?? 0) +
+						(inputTokens.cache_read_input_tokens ?? 0) +
+						(inputTokens.cache_creation_input_tokens ?? 0),
+					prompt_tokens_details: {
+						cached_tokens: (inputTokens.cache_read_input_tokens ?? 0),
+					},
+				});
+			}
 			return;
 		}
 
 		if (chunk.type === "message_delta" && chunk.delta) {
-			// Extract stop_reason and usage information
-			// We're not processing usage per user request, but could log if needed
+			// message_delta carries the final output token count.
+			const usage = (chunk as { usage?: { output_tokens?: number } }).usage;
+			if (usage?.output_tokens !== undefined) {
+				this._lastUsage = accumulateUsage(this._lastUsage, { completion_tokens: usage.output_tokens });
+			}
 			return;
 		}
 
@@ -389,10 +492,19 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 					await this.tryEmitBufferedToolCall(idx, progress);
 				}
 			} else if (chunk.delta.type === "signature_delta" && chunk.delta.signature) {
-				// Signature for thinking block - ignore for now
-				// Could store for verification if needed later
+				// Signature for the current thinking block. Stored on the
+				// adapter so convertMessages could replay it if VS Code's
+				// ThinkingPart ever carries it; today it is simply not
+				// discardable evidence — log at debug for diagnostics.
+				logger.debug("anthropic.thinking.signature", { modelId: this._modelId });
 			}
-		} else if (chunk.type === "content_block_stop" || chunk.type === "message_stop") {
+		} else if (chunk.type === "content_block_stop") {
+			// End of ONE content block: finalize only that block's index.
+			// Flushing ALL buffers here would emit incomplete sibling tool_use
+			// blocks and permanently break parallel tool calls.
+			const idx = (chunk.index as number) ?? 0;
+			await this.flushToolCallBufferAt(idx, progress, /*throwOnInvalid*/ false);
+		} else if (chunk.type === "message_stop") {
 			// End of message - ensure thinking is ended and flush all tool calls
 			await this.flushToolCallBuffers(progress, false);
 			this.reportEndThinking(progress);
@@ -400,7 +512,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	}
 
 	async *createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
@@ -516,7 +628,7 @@ export async function fetchAnthropicModels(
 	customHeaders?: Record<string, string>,
 	networkOptions?: { proxyUrl?: string; userAgent?: string },
 	apiMode = "anthropic"
-): Promise<HFModelItem[]> {
+): Promise<CustomModelItem[]> {
 	const headers = CommonApi.prepareHeaders(apiKey, apiMode, customHeaders, networkOptions?.userAgent);
 	headers["Accept"] = "application/json";
 	const networkInit = buildFetchNetworkInit(networkOptions?.proxyUrl);
@@ -526,7 +638,7 @@ export async function fetchAnthropicModels(
 		? `${normalizedBaseUrl}/models`
 		: `${normalizedBaseUrl}/v1/models`;
 
-	const models: HFModelItem[] = [];
+	const models: CustomModelItem[] = [];
 	let afterId: string | undefined;
 	let page = 0;
 
@@ -568,12 +680,12 @@ export async function fetchAnthropicModels(
 				id: entry.id,
 				displayName: entry.display_name || entry.id,
 				owned_by: apiMode === "zai" ? "zai" : "anthropic",
-				apiMode: apiMode as import("../types").HFApiMode,
+				apiMode: apiMode as import("../types").CustomApiMode,
 				context_length: apiMode === "zai" && isGlm ? 1_000_000 : undefined,
 				max_tokens: apiMode === "zai" ? 16384 : undefined,
 				tool_calling: true,
 				vision: true,
-			} as HFModelItem);
+			} as CustomModelItem);
 		}
 
 		if (!parsed.has_more || !parsed.last_id) {

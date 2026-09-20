@@ -67,6 +67,68 @@
 							</div>
 						</div>
 					</section>
+					<section id="skillsSection" style="display: none">
+						<div class="section-header">
+							<h2>🧩 Skills</h2>
+						</div>
+						<div class="field-description" style="margin-bottom: 8px">
+							Skills are markdown instructions (SKILL.md) Copilot Chat picks up automatically from
+							 <code>~/.copilot/skills/</code> and the workspace skill folders. Browse the catalog, install,
+							 edit, or delete them here.
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label for="skillSearchInput">Search catalog (skills.sh + hermes-agent)</label>
+								<div style="display: flex; gap: 6px">
+									<input id="skillSearchInput" type="text" placeholder="e.g. git, pdf, review…" style="flex: 1" />
+									<button id="skillSearchBtn">Search</button>
+									<button id="skillRefreshBtn" title="Bypass cache and re-fetch">↻</button>
+								</div>
+							</div>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<label for="skillImportUrl">Import from URL / local file</label>
+								<div style="display: flex; gap: 6px">
+									<input id="skillImportUrl" type="text" placeholder="https://…/SKILL.md" style="flex: 1" />
+									<button id="skillImportUrlBtn">Import URL</button>
+									<button id="skillImportFileBtn" title="Pick a local SKILL.md">Import File…</button>
+								</div>
+							</div>
+						</div>
+						<div id="skillCatalogList" class="skill-list"></div>
+						<div class="section-header" style="margin-top: 16px">
+							<h2>Installed</h2>
+						</div>
+						<div class="row">
+							<div class="field field-wide">
+								<input id="skillLocalFilter" type="text" placeholder="Filter installed skills…" />
+							</div>
+						</div>
+						<div id="skillLocalList" class="skill-list"></div>
+						<div id="skillEditor" style="display: none; margin-top: 16px">
+							<div class="row">
+								<div class="field">
+									<label for="skillNameInput">Name</label>
+									<input id="skillNameInput" type="text" placeholder="my-skill" />
+								</div>
+								<div class="field">
+									<label for="skillDescInput">Description</label>
+									<input id="skillDescInput" type="text" placeholder="What this skill does" />
+								</div>
+							</div>
+							<div class="field field-wide" style="margin-top: 8px">
+								<label for="skillBodyInput">SKILL.md body (markdown)</label>
+								<textarea id="skillBodyInput" rows="14" spellcheck="false" style="width: 100%; font-family: var(--vscode-editor-font-family, monospace)"></textarea>
+							</div>
+							<div id="skillStatusLine" class="field-description" style="margin-top: 6px"></div>
+							<div style="display: flex; gap: 6px; margin-top: 8px">
+								<button id="skillSaveBtn">Save</button>
+								<button id="skillNewBtn">New Skill</button>
+								<button id="skillDeleteBtn" class="danger">Delete</button>
+							</div>
+						</div>
+					</section>
 					<section id="integrationSection">
 						<div class="section-header">
 							<h2>Global Settings</h2>

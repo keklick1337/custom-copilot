@@ -7,8 +7,22 @@ const proxyAgentCache = new Map<string, Dispatcher>();
 /** Reverse lookup: dispatcher instance -> the proxy URL it was built from (for curl logging). */
 const dispatcherProxyUrls = new WeakMap<Dispatcher, string>();
 
-/** Header names whose values are masked in the logged curl command. */
-const SENSITIVE_CURL_HEADERS = ["authorization", "x-api-key", "x-goog-api-key", "api-key", "cookie"];
+/** Header names whose values are masked in the logged curl command.
+ * Denylist-by-default: ANY header whose name looks credential-like is masked,
+ * so user-defined custom auth headers (e.g. `x-auth-token`, `Helix-Key`)
+ * cannot leak into logs. Only known-safe headers pass through unmasked. */
+const SAFE_CURL_HEADERS = new Set([
+	"accept",
+	"accept-encoding",
+	"accept-language",
+	"anthropic-version",
+	"cache-control",
+	"content-type",
+	"content-length",
+	"user-agent",
+	"host",
+	"connection",
+]);
 
 /**
  * Max chars of request body / response body to print to the VS Code extension-host
@@ -126,9 +140,9 @@ function headerEntries(headers: unknown): [string, string][] {
 	return Object.entries(headers as Record<string, string>).map(([k, v]) => [k, String(v)]);
 }
 
-/** Mask the value of sensitive headers (auth tokens, cookies, api keys). */
+/** Mask the value of any header not on the known-safe allowlist (see above). */
 function maskHeaderValue(name: string, value: string): string {
-	if (!SENSITIVE_CURL_HEADERS.includes(name.toLowerCase())) {
+	if (SAFE_CURL_HEADERS.has(name.toLowerCase())) {
 		return value;
 	}
 	const prefix = value.startsWith("Bearer ") ? "Bearer " : "";

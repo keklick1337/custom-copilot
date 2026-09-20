@@ -7,13 +7,13 @@ import {
 	Progress,
 } from "vscode";
 
-import type { HFModelItem } from "../types";
+import type { CustomModelItem } from "../types";
 
 import type { OllamaMessage, OllamaRequestBody, OllamaStreamChunk, OllamaToolCall } from "./ollamaTypes";
 
 import { isToolResultPart, collectToolResultText, convertToolsToOpenAI, mapRole } from "../utils";
 
-import { CommonApi } from "../commonApi";
+import { CommonApi, accumulateUsage } from "../commonApi";
 import { logger } from "../logger";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
 import { VersionManager } from "../versionManager";
@@ -32,6 +32,8 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		messages: readonly LanguageModelChatRequestMessage[],
 		_modelConfig: { includeReasoningInRequest: boolean }
 	): OllamaMessage[] {
+		// Fresh conversion state per request (adapters are reused across turns).
+		this.resetRequestState();
 		const out: OllamaMessage[] = [];
 
 		for (const m of messages) {
@@ -110,7 +112,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 
 	prepareRequestBody(
 		rb: OllamaRequestBody,
-		um: HFModelItem | undefined,
+		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): OllamaRequestBody {
 		// Add model options if configured
@@ -179,6 +181,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		progress: Progress<LanguageModelResponsePart2>,
 		token: CancellationToken
 	): Promise<void> {
+		this.resetRequestState();
 		const modelId = this._modelId;
 		logger.debug("ollama.stream.start", { modelId });
 
@@ -247,6 +250,14 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		chunk: OllamaStreamChunk,
 		progress: Progress<LanguageModelResponsePart2>
 	): Promise<void> {
+		// The final chunk carries the token accounting (prompt_eval_count /
+		// eval_count) — feeds the context-usage circle.
+		if (chunk.done && (chunk.prompt_eval_count !== undefined || chunk.eval_count !== undefined)) {
+			this._lastUsage = accumulateUsage(this._lastUsage, {
+				prompt_tokens: chunk.prompt_eval_count,
+				completion_tokens: chunk.eval_count,
+			});
+		}
 		const message = chunk.message;
 		if (!message) {
 			return;
@@ -280,7 +291,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 	}
 
 	async *createMessage(
-		model: HFModelItem,
+		model: CustomModelItem,
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
@@ -381,7 +392,7 @@ export async function fetchOllamaModels(
 	_apiKey: string,
 	customHeaders?: Record<string, string>,
 	networkOptions?: { proxyUrl?: string; userAgent?: string }
-): Promise<HFModelItem[]> {
+): Promise<CustomModelItem[]> {
 	const trimmed = baseUrl.replace(/\/+$/, "");
 	const url = `${trimmed}/api/tags`;
 
@@ -412,14 +423,14 @@ export async function fetchOllamaModels(
 	const parsed = (await resp.json()) as import("./ollamaTypes").OllamaTagsResponse;
 	const entries = parsed.models ?? [];
 
-	const models: HFModelItem[] = [];
+	const models: CustomModelItem[] = [];
 	for (const entry of entries) {
 		models.push({
 			id: entry.model,
 			displayName: entry.name,
 			owned_by: "ollama",
 			apiMode: "ollama",
-		} as HFModelItem);
+		} as CustomModelItem);
 	}
 
 	return models;
