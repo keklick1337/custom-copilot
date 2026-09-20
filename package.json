@@ -157,7 +157,7 @@
 			},
 			{
 				"vendor": "copilotcustommodelsendpoint-zai",
-				"displayName": "Z.AI Free",
+				"displayName": "Z.AI (Anthropic-compat)",
 				"configuration": {
 					"type": "object",
 					"properties": {
@@ -681,7 +681,160 @@
 					"description": "Custom User-Agent string to use for API requests. Default is a Chrome-based User-Agent."
 				}
 			}
-		}
+		},
+		"languageModelTools": [
+			{
+				"name": "customcopilot_searchSkills",
+				"toolReferenceName": "searchSkills",
+				"displayName": "Search Skill Catalog",
+				"modelDescription": "Search global agent-skill catalogs (skills.sh, hermes-agent repo) for installable SKILL.md skills. ALWAYS search with ENGLISH keywords (the catalogs are English-indexed; translate the user's request first). Results are ranked by trust (first-party owners like anthropics/openai/github, install counts) and include the FULL SKILL.md of the top candidates: read them, analyze which one actually fits the user's need, then call installSkill with the exact name.",
+				"userDescription": "Search the skills.sh / hermes-agent catalogs for installable skills.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"query": {
+							"type": "string",
+							"description": "Search keyword(s), e.g. 'git', 'pdf', 'code review'."
+						},
+						"source": {
+							"type": "string",
+							"enum": [
+								"skills.sh",
+								"hermes",
+								"all"
+							],
+							"description": "Catalog to search. Default: skills.sh."
+						},
+						"limit": {
+							"type": "number",
+							"description": "Max results to return (1-50, default 10)."
+						}
+					},
+					"required": [
+						"query"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_installSkill",
+				"toolReferenceName": "installSkill",
+				"displayName": "Install Skill",
+				"modelDescription": "Install a skill from the catalog into ~/.copilot/skills (available to Copilot Chat immediately). Calls searchSkills first if needed; pick a TRUSTED result (first-party owner or high installs) that matches the need. Always asks the user for confirmation. If the skill validates as CRITICAL, installation is refused and you receive a manual-review package: show ALL critical aspects to the user verbatim, offer a risk analysis with the current model, and never retry the install until the issues are fixed.",
+				"userDescription": "Install a skill from the catalog (with confirmation).",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"query": {
+							"type": "string",
+							"description": "The search query that found the skill (used to re-resolve it)."
+						},
+						"name": {
+							"type": "string",
+							"description": "Exact skill name from searchSkills results."
+						},
+						"source": {
+							"type": "string",
+							"enum": [
+								"skills.sh",
+								"hermes",
+								"all"
+							],
+							"description": "Catalog the skill was found in. Default: skills.sh."
+						}
+					},
+					"required": [
+						"query",
+						"name"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_readSkill",
+				"toolReferenceName": "readSkill",
+				"displayName": "Read Installed Skill",
+				"modelDescription": "Read the full SKILL.md (frontmatter + body) of an installed skill. Use before improving a skill, or when the user asks what an installed skill does. Also lists installed skills when the name is not found.",
+				"userDescription": "Read an installed skill's content.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"name": {
+							"type": "string",
+							"description": "Skill name (as shown in the installed list)."
+						}
+					},
+					"required": [
+						"name"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_improveSkill",
+				"toolReferenceName": "improveSkill",
+				"displayName": "Improve Installed Skill",
+				"modelDescription": "Rewrite an INSTALLED skill in place with an improved SKILL.md body (self-improvement). First readSkill to see the current content, then send the FULL new body. Requires a short summary of what changed (shown to the user in the confirmation). Always asks the user to confirm; refuses critical content (dangerous shell patterns). Use when the user says a skill behaved poorly, is outdated, or should be refined.",
+				"userDescription": "Improve an installed skill (with confirmation).",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"name": {
+							"type": "string",
+							"description": "Installed skill name to improve."
+						},
+						"newBody": {
+							"type": "string",
+							"description": "Full replacement markdown body (after frontmatter)."
+						},
+						"newDescription": {
+							"type": "string",
+							"description": "Optional replacement description."
+						},
+						"summary": {
+							"type": "string",
+							"description": "One or two sentences: what changed and why."
+						}
+					},
+					"required": [
+						"name",
+						"newBody",
+						"summary"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_createSkill",
+				"toolReferenceName": "createSkill",
+				"displayName": "Create Skill",
+				"modelDescription": "Create a NEW skill from scratch in ~/.copilot/skills when nothing suitable exists in the catalogs (searchSkills first!). Write a focused SKILL.md body (markdown instructions; name in frontmatter is derived from the name field). Always asks the user to confirm. Use when the user wants to capture a reusable workflow as a skill.",
+				"userDescription": "Create a new skill (with confirmation).",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"name": {
+							"type": "string",
+							"description": "Skill name: lowercase letters, digits, hyphens."
+						},
+						"description": {
+							"type": "string",
+							"description": "What the skill does; Copilot uses this to decide when to load it."
+						},
+						"body": {
+							"type": "string",
+							"description": "Full SKILL.md body (markdown instructions)."
+						}
+					},
+					"required": [
+						"name",
+						"description",
+						"body"
+					]
+				}
+			}
+		]
 	},
 	"main": "./out/extension.js",
 	"scripts": {

@@ -92,6 +92,12 @@ export function listLocalSkills(): LocalSkill[] {
 	return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Find a local skill by (frontmatter) name across all scanned folders. */
+export function findLocalSkillByName(name: string): LocalSkill | undefined {
+	const wanted = name.trim().toLowerCase();
+	return listLocalSkills().find((s) => s.name.toLowerCase() === wanted);
+}
+
 export function readSkill(dirPath: string): { frontmatter: SkillFrontmatter; body: string } | undefined {
 	try {
 		const content = fs.readFileSync(path.join(dirPath, "SKILL.md"), "utf8");
@@ -119,6 +125,31 @@ export async function writeSkill(name: string, frontmatter: SkillFrontmatter, bo
 	await fs.promises.mkdir(dir, { recursive: true });
 	await fs.promises.writeFile(path.join(dir, "SKILL.md"), serializeSkillMarkdown(frontmatter, body), "utf8");
 	return dir;
+}
+
+
+/** Write an entire skill folder (full install: SKILL.md + references/ etc.). */
+export async function writeSkillFolder(
+	name: string,
+	files: Array<{ relPath: string; content: Buffer }>
+): Promise<string> {
+	const safe = sanitizeSkillName(name);
+	const root = path.join(installRoot(), safe);
+	await fs.promises.mkdir(root, { recursive: true });
+	for (const f of files) {
+		// Path safety: reject traversal and absolute paths.
+		const rel = path.posix.normalize(f.relPath).replace(/^\.\/+/, "");
+		if (!rel || rel.startsWith("..") || path.posix.isAbsolute(rel)) {
+			throw new Error(`Refusing unsafe skill file path: ${f.relPath}`);
+		}
+		const target = path.join(root, rel);
+		if (!target.startsWith(root + path.sep) && target !== path.join(root, rel)) {
+			throw new Error(`Refusing unsafe skill file path: ${f.relPath}`);
+		}
+		await fs.promises.mkdir(path.dirname(target), { recursive: true });
+		await fs.promises.writeFile(target, f.content);
+	}
+	return root;
 }
 
 /** Overwrite an existing skill file in place (keeps its folder). */

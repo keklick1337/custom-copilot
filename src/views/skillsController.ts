@@ -7,8 +7,10 @@
 import * as vscode from "vscode";
 import {
 	fetchCatalog,
+	type SkillSource,
 	fetchSkillContent,
 	type CatalogSkill,
+	fetchSkillFolder,
 } from "../skills/skillCatalog";
 import {
 	deleteSkill,
@@ -18,6 +20,7 @@ import {
 	skillExists,
 	updateSkillFile,
 	writeSkill,
+	writeSkillFolder,
 } from "../skills/localSkills";
 import { isValidSkillName, parseSkillMarkdown, sanitizeSkillName } from "../skills/skillFile";
 import { proxyFetch } from "../network";
@@ -26,6 +29,11 @@ export interface SkillValidation {
 	ok: boolean;
 	issues: string[];
 	warnings: string[];
+	/** Overall status for the preview badge: "critical" blocks install,
+	 * "warning" is usable but flagged, "ok" is clean. */
+	status: "ok" | "warning" | "critical";
+	sizeChars: number;
+	lineCount: number;
 }
 
 /**
@@ -50,7 +58,18 @@ function validateSkill(name: string, description: string, body: string): SkillVa
 	if (body.length > 100_000) {
 		warnings.push("Body is very large (>100k chars); consider splitting the skill.");
 	}
-	return { ok: issues.length === 0, issues, warnings };
+	if (/\b(rm\s+-rf\s+\/|curl[^\n]*\|\s*(ba)?sh|eval\([^)]*\bfetch|powershell[^\n]*-enc)\b/i.test(body)) {
+		warnings.push("Body contains potentially dangerous shell patterns (rm -rf /, curl | sh, …) — review before installing.");
+	}
+	const status: "ok" | "warning" | "critical" = issues.length > 0 ? "critical" : warnings.length > 0 ? "warning" : "ok";
+	return {
+		ok: issues.length === 0,
+		issues,
+		warnings,
+		status,
+		sizeChars: body.length,
+		lineCount: body ? body.split("\n").length : 0,
+	};
 }
 
 export async function handleSkillsMessage(
@@ -71,7 +90,9 @@ export async function handleSkillsMessage(
 			case "skills.search": {
 				const query = String(message.query ?? "");
 				const forceRefresh = message.refresh === true;
-				const result = await fetchCatalog(skillsContext, query, forceRefresh);
+				const rawSource = String(message.source ?? "skills.sh");
+				const source: SkillSource = rawSource === "hermes" || rawSource === "all" ? rawSource : "skills.sh";
+				const result = await fetchCatalog(skillsContext, query, forceRefresh, source);
 				await webview.postMessage({
 					type: "skills.searchResults",
 					skills: result.skills.slice(0, 200),
@@ -97,7 +118,11 @@ export async function handleSkillsMessage(
 				}
 				const content = await fetchSkillContent(skill);
 				if (!content) {
-					await webview.postMessage({ type: "skills.installError", id: skill.id, error: "Could not fetch SKILL.md" });
+					await webview.postMessage({
+						type: "skills.installError",
+						id: skill.id,
+						error: `Could not fetch SKILL.md for "${skill.name}"${skill.repo ? ` from ${skill.repo}` : ""} — the skill may have moved or the repo is unavailable.`,
+					});
 					break;
 				}
 				const parsed = parseSkillMarkdown(content);
@@ -108,6 +133,7 @@ export async function handleSkillsMessage(
 				await webview.postMessage({
 					type: "skills.previewContent",
 					id: skill.id,
+					skill,
 					name,
 					description,
 					body,
@@ -124,7 +150,11 @@ export async function handleSkillsMessage(
 				}
 				const content = await fetchSkillContent(skill);
 				if (!content) {
-					await webview.postMessage({ type: "skills.installError", id: skill.id, error: "Could not fetch SKILL.md" });
+					await webview.postMessage({
+						type: "skills.installError",
+						id: skill.id,
+						error: `Could not fetch SKILL.md for "${skill.name}"${skill.repo ? ` from ${skill.repo}` : ""} — the skill may have moved or the repo is unavailable.`,
+					});
 					break;
 				}
 				const parsed = parseSkillMarkdown(content);
@@ -142,8 +172,16 @@ export async function handleSkillsMessage(
 					break;
 				}
 				const frontmatter = parsed?.frontmatter ?? { name, description };
-				const dir = await writeSkill(name, frontmatter, body);
-				await webview.postMessage({ type: "skills.installed", id: skill.id, name, dir });
+				// Full-folder install when possible (SKILL.md + references/ etc.);
+				// falls back to the single SKILL.md write.
+				let dir: string;
+				const folderFiles = await fetchSkillFolder(skill);
+				if (folderFiles && folderFiles.length > 1) {
+					dir = await writeSkillFolder(name, folderFiles);
+				} else {
+					dir = await writeSkill(name, frontmatter, body);
+				}
+				await webview.postMessage({ type: "skills.installed", id: skill.id, name, dir, fileCount: folderFiles?.length ?? 1 });
 				break;
 			}
 			case "skills.importUrl": {

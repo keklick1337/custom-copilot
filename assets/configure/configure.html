@@ -69,63 +69,104 @@
 					</section>
 					<section id="skillsSection" style="display: none">
 						<div class="section-header">
-							<h2>🧩 Skills</h2>
+							<h2 id="skillsTitle">🧩 My Skills</h2>
+							<button id="skillAddTabBtn" title="Add skills from the catalog">＋ Add</button>
 						</div>
 						<div class="field-description" style="margin-bottom: 8px">
 							Skills are markdown instructions (SKILL.md) Copilot Chat picks up automatically from
-							 <code>~/.copilot/skills/</code> and the workspace skill folders. Browse the catalog, install,
-							 edit, or delete them here.
+							<code>~/.copilot/skills/</code> and the workspace skill folders.
 						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label for="skillSearchInput">Search catalog (skills.sh + hermes-agent)</label>
-								<div style="display: flex; gap: 6px">
-									<input id="skillSearchInput" type="text" placeholder="e.g. git, pdf, review…" style="flex: 1" />
-									<button id="skillSearchBtn">Search</button>
-									<button id="skillRefreshBtn" title="Bypass cache and re-fetch">↻</button>
-								</div>
-							</div>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label for="skillImportUrl">Import from URL / local file</label>
-								<div style="display: flex; gap: 6px">
-									<input id="skillImportUrl" type="text" placeholder="https://…/SKILL.md" style="flex: 1" />
-									<button id="skillImportUrlBtn">Import URL</button>
-									<button id="skillImportFileBtn" title="Pick a local SKILL.md">Import File…</button>
-								</div>
-							</div>
-						</div>
-						<div id="skillCatalogList" class="skill-list"></div>
-						<div class="section-header" style="margin-top: 16px">
-							<h2>Installed</h2>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<input id="skillLocalFilter" type="text" placeholder="Filter installed skills…" />
-							</div>
-						</div>
-						<div id="skillLocalList" class="skill-list"></div>
-						<div id="skillEditor" style="display: none; margin-top: 16px">
+
+						<!-- ── Tab: My Skills ── -->
+						<div id="skillMyPane">
 							<div class="row">
-								<div class="field">
-									<label for="skillNameInput">Name</label>
-									<input id="skillNameInput" type="text" placeholder="my-skill" />
-								</div>
-								<div class="field">
-									<label for="skillDescInput">Description</label>
-									<input id="skillDescInput" type="text" placeholder="What this skill does" />
+								<div class="field field-wide">
+									<div style="display: flex; flex-wrap: wrap; gap: 6px">
+										<input id="skillLocalFilter" type="text" placeholder="Filter installed skills…" style="flex: 1 1 120px; min-width: 0" />
+										<button id="skillNewBtn" title="Create a new skill from scratch">＋ New</button>
+									</div>
 								</div>
 							</div>
-							<div class="field field-wide" style="margin-top: 8px">
-								<label for="skillBodyInput">SKILL.md body (markdown)</label>
-								<textarea id="skillBodyInput" rows="14" spellcheck="false" style="width: 100%; font-family: var(--vscode-editor-font-family, monospace)"></textarea>
+							<div id="skillLocalList" class="skill-list"></div>
+							<div id="skillEditor" style="display: none; margin-top: 16px">
+								<div class="row">
+									<div class="field">
+										<label for="skillNameInput">Name</label>
+										<input id="skillNameInput" type="text" placeholder="my-skill" />
+									</div>
+									<div class="field">
+										<label for="skillDescInput">Description</label>
+										<input id="skillDescInput" type="text" placeholder="What this skill does" />
+									</div>
+								</div>
+								<div class="field field-wide" style="margin-top: 8px">
+									<label for="skillBodyInput">SKILL.md body (markdown)</label>
+									<textarea id="skillBodyInput" rows="14" spellcheck="false" style="width: 100%; font-family: var(--vscode-editor-font-family, monospace)"></textarea>
+								</div>
+								<div id="skillStatusLine" class="field-description" style="margin-top: 6px"></div>
+								<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px">
+									<button id="skillSaveBtn" style="flex: 1 1 auto">Save</button>
+									<button id="skillDeleteBtn" class="danger" style="flex: 1 1 auto">Delete</button>
+									<button id="skillEditorCloseBtn">Close</button>
+								</div>
 							</div>
-							<div id="skillStatusLine" class="field-description" style="margin-top: 6px"></div>
-							<div style="display: flex; gap: 6px; margin-top: 8px">
-								<button id="skillSaveBtn">Save</button>
-								<button id="skillNewBtn">New Skill</button>
-								<button id="skillDeleteBtn" class="danger">Delete</button>
+						</div>
+
+						<!-- ── Tab: Add Skills ── -->
+						<div id="skillAddPane" style="display: none">
+							<div style="display: flex; gap: 6px; margin-bottom: 10px">
+								<button id="skillBackToMyBtn">← My Skills</button>
+								<span class="field-description" style="align-self: center">Search the catalogs and install into ~/.copilot/skills</span>
+							</div>
+							<div class="row">
+								<div class="field field-wide">
+									<label for="skillSourceSelect">Search source</label>
+									<div style="display: flex; flex-wrap: wrap; gap: 6px">
+										<select id="skillSourceSelect" style="flex: 1 1 100%; min-width: 0">
+											<option value="skills.sh" selected>skills.sh (default)</option>
+											<option value="hermes">hermes-agent repo</option>
+										</select>
+										<input id="skillSearchInput" type="text" placeholder="e.g. git, pdf, review…" style="flex: 1 1 100%; min-width: 0" />
+										<button id="skillSearchBtn" style="flex: 1 1 auto">Search</button>
+										<button id="skillRefreshBtn" title="Bypass cache and re-fetch">↻</button>
+									</div>
+									<div id="skillSearchHint" class="field-description">skills.sh: empty query returns nothing — type a keyword.</div>
+								</div>
+							</div>
+							<div class="row">
+								<div class="field field-wide">
+									<label for="skillSortSelect">Sort results</label>
+									<select id="skillSortSelect" style="max-width: 240px">
+										<option value="relevance" selected>Relevance (source order)</option>
+										<option value="installs">Installs (skills.sh)</option>
+										<option value="name">Name (A→Z)</option>
+									</select>
+								</div>
+							</div>
+							<div id="skillCatalogList" class="skill-list"></div>
+							<div id="skillPreviewPanel" style="display: none; margin-top: 12px; border: 1px solid var(--vscode-panel-border, #333); border-radius: 4px; padding: 10px">
+								<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+									<span id="skillPreviewStatus" class="badge"></span>
+									<strong id="skillPreviewName"></strong>
+									<span id="skillPreviewMeta" class="field-description"></span>
+								</div>
+								<div id="skillPreviewFindings" class="field-description" style="margin-top: 6px"></div>
+								<pre id="skillPreviewBody" style="max-height: 260px; overflow: auto; white-space: pre-wrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; margin: 8px 0 0 0"></pre>
+								<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px">
+									<button id="skillPreviewInstallBtn" style="flex: 1 1 auto">Install</button>
+									<button id="skillPreviewEditBtn" style="flex: 1 1 auto">Edit in form</button>
+									<button id="skillPreviewCloseBtn">Close</button>
+								</div>
+							</div>
+							<div class="row" style="margin-top: 14px">
+								<div class="field field-wide">
+									<label for="skillImportUrl">Import from URL / local file</label>
+									<div style="display: flex; flex-wrap: wrap; gap: 6px">
+										<input id="skillImportUrl" type="text" placeholder="https://…/SKILL.md" style="flex: 1 1 100%; min-width: 0" />
+										<button id="skillImportUrlBtn" style="flex: 1 1 auto">Import URL</button>
+										<button id="skillImportFileBtn" title="Pick a local SKILL.md" style="flex: 1 1 auto">Import File…</button>
+									</div>
+								</div>
 							</div>
 						</div>
 					</section>
@@ -533,7 +574,7 @@
 									<option value="ollama">Ollama (/api/chat)</option>
 									<option value="anthropic">Anthropic (/v1/messages)</option>
 									<option value="gemini">Gemini (generateContent)</option>
-									<option value="zai">Z.AI Free (Anthropic Bearer)</option>
+									<option value="zai">Z.AI (Anthropic Bearer)</option>
 								</select>
 							</div>
 						</div>

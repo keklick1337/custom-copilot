@@ -837,8 +837,32 @@ function selectSkillsScreen() {
 	}
 	setSpecialSectionVisibility("skillsSection");
 
-	refreshLocalSkills();
+	showSkillsMyPane();
 	updateActiveScreen();
+}
+
+/** Tab switching inside the Skills screen. My Skills is the default tab. */
+function showSkillsMyPane() {
+	const myPane = $("skillMyPane");
+	const addPane = $("skillAddPane");
+	if (myPane) { myPane.style.display = ""; }
+	if (addPane) { addPane.style.display = "none"; }
+	const title = $("skillsTitle");
+	if (title) { title.textContent = "🧩 My Skills"; }
+	const addBtn = $("skillAddTabBtn");
+	if (addBtn) { addBtn.style.display = ""; }
+	refreshLocalSkills($("skillLocalFilter") ? $("skillLocalFilter").value : "");
+}
+
+function showSkillsAddPane() {
+	const myPane = $("skillMyPane");
+	const addPane = $("skillAddPane");
+	if (myPane) { myPane.style.display = "none"; }
+	if (addPane) { addPane.style.display = ""; }
+	const title = $("skillsTitle");
+	if (title) { title.textContent = "🧩 Add Skills"; }
+	const addBtn = $("skillAddTabBtn");
+	if (addBtn) { addBtn.style.display = "none"; }
 }
 
 // ── Skills screen logic ────────────────────────────────────────────────────────
@@ -848,27 +872,56 @@ function skillPost(msg) {
 }
 
 function refreshLocalSkills(filter) {
+	__localSkillsPage = 0;
 	skillPost({ type: "skills.filterLocal", query: filter || "" });
 }
 
-function renderSkillCatalogList(skills, fromCache) {
+let __skillCatalogResults = [];
+
+function sortSkillResults(skills, mode) {
+	const out = [...skills];
+	if (mode === "installs") {
+		out.sort((a, b) => (b.installs ?? -1) - (a.installs ?? -1));
+	} else if (mode === "name") {
+		out.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+	}
+	return out; // "relevance" keeps the source's own ranking order
+}
+
+function renderSkillCatalogList(skills, fromCache, sortMode) {
 	const box = $("skillCatalogList");
 	if (!box) {
 		return;
 	}
 	if (!skills.length) {
-		box.innerHTML = `<div class="field-description">${fromCache ? "No results (cached)." : "No results. Try another query."}</div>`;
+		box.innerHTML = `<div class="field-description">${fromCache ? "No results (cached)." : "No results. Try another query (skills.sh needs a keyword)."}</div>`;
 		return;
 	}
+	__skillCatalogResults = skills;
+	skills = sortSkillResults(skills, sortMode || "relevance");
+	const hint = $("skillSearchHint");
+	if (hint) {
+		hint.style.display = "none";
+	}
+	// Card layout tuned for the NARROW sidebar: name on its own line, repo
+	// below it, installs to the side, no source badge (the search-source
+	// select already tells the user where results come from). An empty
+	// <div class="skill-inline-preview"> slot sits inside each card — the
+	// preview renders THERE, right on the card being inspected, instead of
+	// a separate panel at the bottom of the page.
 	box.innerHTML = skills
 		.map(
-			(s) => `<div class="provider-item" data-skill-id="${escAttr(s.id)}">
-			<span class="provider-item-name">${escHtml(s.name)}</span>
-			<span class="provider-item-meta">
-				<span class="badge">${escHtml(s.source)}</span>
-				<button class="icon-btn skill-install-btn" title="Install to ~/.copilot/skills">⬇</button>
-			</span>
-			<div class="field-description">${escHtml((s.description || "").slice(0, 160))}</div>
+			(s) => `<div class="provider-item skill-card" data-skill-id="${escAttr(s.id)}">
+			<div class="skill-card-row">
+				<span class="provider-item-name">${escHtml(s.name)}</span>
+				<span class="skill-card-side">
+					${s.installs !== undefined ? `<span class="field-description">⬇ ${s.installs.toLocaleString()}</span>` : ""}
+					<button class="icon-btn skill-install-btn" title="Install to ~/.copilot/skills">⬇</button>
+				</span>
+			</div>
+			${s.repo ? `<div class="field-description skill-card-repo">${escHtml(s.repo)}</div>` : ""}
+			${s.repo && s.description === s.repo ? "" : `<div class="field-description skill-card-desc">${escHtml((s.description || "").slice(0, 160))}</div>`}
+			<div class="skill-inline-preview" style="display: none"></div>
 		</div>`
 		)
 		.join("");
@@ -884,58 +937,464 @@ function renderSkillCatalogList(skills, fromCache) {
 			}
 		});
 	});
+	let expandedId = null;
 	box.querySelectorAll(".provider-item[data-skill-id]").forEach((item) => {
 		item.addEventListener("click", () => {
 			const id = item.getAttribute("data-skill-id");
 			const skill = skills.find((x) => x.id === id);
-			if (skill) {
-				skillPost({ type: "skills.preview", skill });
+			if (!skill) {
+				return;
+			}
+			// Toggle: clicking the expanded card collapses it.
+			if (expandedId === id) {
+				const slot = item.querySelector(".skill-inline-preview");
+				if (slot) { slot.style.display = "none"; }
+				expandedId = null;
+				return;
+			}
+			// Collapse any other expanded card first.
+			box.querySelectorAll(".skill-inline-preview").forEach((el) => {
+				el.style.display = "none";
+			});
+			const slot = item.querySelector(".skill-inline-preview");
+			if (slot) {
+				slot.innerHTML = `<div class="field-description" style="margin:6px 0">loading…</div>`;
+				slot.style.display = "";
+				expandedId = id;
+				window.__skillPreviewSlot = slot;
+				window.__skillPreviewCard = item;
+				item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+			}
+			skillPost({ type: "skills.preview", skill });
+		});
+	});
+}
+
+// ── Sandbox-safe confirmation ────────────────────────────────────────────────
+// Native confirm() is silently ignored in the sandboxed webview (no
+// allow-modals), which made delete/overwrite actions no-op. This inline
+// dialog replaces it everywhere.
+
+function webviewConfirm(question, confirmLabel = "Confirm") {
+	return new Promise((resolve) => {
+		const existing = document.getElementById("__ccConfirm");
+		if (existing) {
+			existing.remove();
+		}
+		const overlay = document.createElement("div");
+		overlay.id = "__ccConfirm";
+		overlay.style.cssText =
+			"position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;";
+		const box = document.createElement("div");
+		box.style.cssText =
+			"background:var(--vscode-editor-background,#222);border:1px solid var(--vscode-panel-border,#444);border-radius:6px;padding:14px;max-width:320px;font-family:var(--vscode-font-family,inherit)";
+		const textEl = document.createElement("div");
+		textEl.textContent = question;
+		textEl.style.marginBottom = "10px";
+		const btns = document.createElement("div");
+		btns.style.cssText = "display:flex;gap:6px";
+		const yes = document.createElement("button");
+		yes.textContent = confirmLabel;
+		yes.style.flex = "1 1 auto";
+		const no = document.createElement("button");
+		no.textContent = "Cancel";
+		no.style.flex = "1 1 auto";
+		btns.appendChild(yes);
+		btns.appendChild(no);
+		box.appendChild(textEl);
+		box.appendChild(btns);
+		overlay.appendChild(box);
+		document.body.appendChild(overlay);
+		const done = (v) => {
+			overlay.remove();
+			resolve(v);
+		};
+		yes.addEventListener("click", () => done(true));
+		no.addEventListener("click", () => done(false));
+		overlay.addEventListener("click", (e) => {
+			if (e.target === overlay) {
+				done(false);
 			}
 		});
 	});
 }
+
+// ── My Skills list: marketplace-style cards, paginated, inline expand ────────
+
+const SKILLS_PAGE_SIZE = 15;
+let __localSkillsAll = [];
+let __localSkillsPage = 0;
 
 function renderSkillLocalList(skills) {
 	const box = $("skillLocalList");
 	if (!box) {
 		return;
 	}
+	__localSkillsAll = skills;
+	if (__localSkillsPage >= Math.max(1, Math.ceil(skills.length / SKILLS_PAGE_SIZE))) {
+		__localSkillsPage = 0;
+	}
 	if (!skills.length) {
-		box.innerHTML = `<div class="field-description">No skills installed yet. Install from the catalog above or create a new one.</div>`;
+		box.innerHTML = `<div class="field-description">No skills installed yet. Open "＋ Add" to install from the catalog, or "＋ New" to create one.</div>`;
 		return;
 	}
-	box.innerHTML = skills
-		.map(
-			(s) => `<div class="provider-item" data-skill-dir="${escAttr(s.dirPath)}">
-			<span class="provider-item-name">${escHtml(s.name)}</span>
-			<span class="provider-item-meta">
-				<span class="badge">${escHtml(s.origin)}</span>
-			</span>
-			<div class="field-description">${escHtml((s.description || "").slice(0, 160))}</div>
+	renderLocalSkillsPage();
+}
+
+function renderLocalSkillsPage() {
+	const box = $("skillLocalList");
+	if (!box) {
+		return;
+	}
+	const skills = __localSkillsAll;
+	const totalPages = Math.max(1, Math.ceil(skills.length / SKILLS_PAGE_SIZE));
+	const page = Math.min(__localSkillsPage, totalPages - 1);
+	__localSkillsPage = page;
+	const slice = skills.slice(page * SKILLS_PAGE_SIZE, (page + 1) * SKILLS_PAGE_SIZE);
+	box.innerHTML =
+		slice
+			.map(
+				(s) => `<div class="provider-item skill-card" data-skill-dir="${escAttr(s.dirPath)}">
+			<div class="skill-card-row">
+				<span class="provider-item-name">${escHtml(s.name)}</span>
+				<span class="skill-card-side">
+					<span class="badge">${escHtml(s.scope === "user" ? "global" : "workspace")}</span>
+				</span>
+			</div>
+			<div class="field-description skill-card-repo">${escHtml(s.origin)}</div>
+			${s.description && s.description !== s.origin ? `<div class="field-description skill-card-desc">${escHtml(s.description.slice(0, 160))}</div>` : ""}
+			<div class="skill-inline-preview" style="display: none"></div>
 		</div>`
-		)
-		.join("");
+			)
+			.join("") +
+		(totalPages > 1
+			? `<div class="skill-pager" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px">
+				<button class="skill-pager-prev" style="flex: 1 1 auto" ${page === 0 ? "disabled" : ""}>← Prev</button>
+				<span class="field-description" style="flex: 0 0 auto">${page + 1} / ${totalPages} · ${skills.length} skills</span>
+				<button class="skill-pager-next" style="flex: 1 1 auto" ${page >= totalPages - 1 ? "disabled" : ""}>Next →</button>
+			</div>`
+			: "");
+
+	const prevBtn = box.querySelector(".skill-pager-prev");
+	if (prevBtn) {
+		prevBtn.addEventListener("click", () => {
+			__localSkillsPage = Math.max(0, __localSkillsPage - 1);
+			renderLocalSkillsPage();
+		});
+	}
+	const nextBtn = box.querySelector(".skill-pager-next");
+	if (nextBtn) {
+		nextBtn.addEventListener("click", () => {
+			__localSkillsPage++;
+			renderLocalSkillsPage();
+		});
+	}
+
+	let expandedDir = null;
 	box.querySelectorAll(".provider-item[data-skill-dir]").forEach((item) => {
 		item.addEventListener("click", () => {
-			skillPost({ type: "skills.read", dirPath: item.getAttribute("data-skill-dir") });
+			const dir = item.getAttribute("data-skill-dir");
+			const slot = item.querySelector(".skill-inline-preview");
+			if (!slot) {
+				return;
+			}
+			// Toggle: collapse when clicking the expanded card.
+			if (expandedDir === dir) {
+				slot.style.display = "none";
+				slot.innerHTML = "";
+				expandedDir = null;
+				return;
+			}
+			box.querySelectorAll(".skill-inline-preview").forEach((el) => {
+				el.style.display = "none";
+				el.innerHTML = "";
+			});
+			slot.innerHTML = `<div class="field-description" style="margin:6px 0">loading…</div>`;
+			slot.style.display = "";
+			expandedDir = dir;
+			window.__localSkillSlot = slot;
+			item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+			skillPost({ type: "skills.read", dirPath: dir });
 		});
 	});
 }
 
+/**
+ * Turn a local-skill card's expansion slot into a full in-place editor:
+ * view mode first (body + Edit), Edit swaps the slot's content to the edit
+ * form (name/description/body + Save/Cancel/Delete) without leaving the card.
+ */
+function renderLocalSkillEditorInto(slot, msg) {
+	const name = (msg.frontmatter && msg.frontmatter.name) || "";
+	const desc = (msg.frontmatter && msg.frontmatter.description) || "";
+	const body = msg.body || "";
+	const kb = body.length ? (body.length / 1024).toFixed(1) + " KB" : "";
+
+	const renderView = () => {
+		slot.innerHTML = `
+			<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px">
+				<strong>${escHtml(name)}</strong>
+				<span class="field-description">${escHtml(kb)}</span>
+			</div>
+			${desc ? `<div class="field-description" style="margin-top:4px">${escHtml(desc)}</div>` : ""}
+			<pre class="local-skill-body" style="max-height: 240px; overflow: auto; white-space: pre-wrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; margin: 6px 0 0 0; border-top: 1px solid var(--vscode-panel-border, #333); padding-top: 6px">${escHtml(body)}</pre>
+			<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px">
+				<button class="local-skill-edit" style="flex: 1 1 auto">Edit</button>
+				<button class="danger local-skill-delete" style="flex: 1 1 auto">Delete</button>
+				<button class="local-skill-collapse" style="flex: 0 0 auto">Close</button>
+			</div>`;
+		slot.querySelector(".local-skill-edit").addEventListener("click", (e) => {
+			e.stopPropagation();
+			renderEdit();
+		});
+		slot.querySelector(".local-skill-collapse").addEventListener("click", (e) => {
+			e.stopPropagation();
+			slot.style.display = "none";
+			slot.innerHTML = "";
+		});
+		slot.querySelector(".local-skill-delete").addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const dir = msg.dirPath || window.__skillEditorDir || "";
+			if (dir) {
+				skillPost({ type: "skills.delete", dirPath: dir });
+			}
+		});
+	};
+
+	const renderEdit = () => {
+		slot.innerHTML = `
+			<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px">
+				<strong>✏️ Editing: ${escHtml(name)}</strong>
+			</div>
+			<div style="margin-top:8px">
+				<div style="margin-bottom:6px">
+					<label class="field-description" for="lse-name">Name</label>
+					<input id="lse-name" type="text" value="${escAttr(name)}" style="width: 100%" />
+				</div>
+				<div style="margin-bottom:6px">
+					<label class="field-description" for="lse-desc">Description</label>
+					<input id="lse-desc" type="text" value="${escAttr(desc)}" style="width: 100%" />
+				</div>
+				<div>
+					<label class="field-description" for="lse-body">SKILL.md body (markdown)</label>
+					<textarea id="lse-body" rows="16" spellcheck="false" style="width: 100%; font-family: var(--vscode-editor-font-family, monospace); box-sizing: border-box">${escHtml(body)}</textarea>
+				</div>
+			</div>
+			<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px">
+				<button class="local-skill-save" style="flex: 1 1 auto">Save</button>
+				<button class="local-skill-cancel" style="flex: 1 1 auto">Back</button>
+				<button class="danger local-skill-delete" style="flex: 0 0 auto">Delete</button>
+			</div>`;
+		slot.querySelector(".local-skill-save").addEventListener("click", (e) => {
+			e.stopPropagation();
+			const newName = slot.querySelector("#lse-name").value.trim();
+			const newDesc = slot.querySelector("#lse-desc").value;
+			const newBody = slot.querySelector("#lse-body").value;
+			if (!newName) {
+				showProviderError("Name is required.");
+				return;
+			}
+			skillPost({
+				type: "skills.save",
+				dirPath: window.__skillEditorDir || msg.dirPath || "",
+				name: newName,
+				description: newDesc,
+				body: newBody,
+			});
+		});
+		slot.querySelector(".local-skill-cancel").addEventListener("click", (e) => {
+			e.stopPropagation();
+			renderView();
+		});
+		slot.querySelector(".local-skill-delete").addEventListener("click", async (e) => {
+			e.stopPropagation();
+			const dir = window.__skillEditorDir || msg.dirPath || "";
+			if (dir) {
+				skillPost({ type: "skills.delete", dirPath: dir });
+			}
+		});
+		slot.scrollIntoView({ block: "nearest", behavior: "smooth" });
+	};
+
+	renderView();
+}
+
+// ── Skills preview panel ──────────────────────────────────────────────────────
+
+function skillStatusBadge(status, alreadyInstalled) {
+	// Returns [text, color] for the status badge.
+	if (status === "critical") {
+		return ["● critical", "var(--vscode-errorForeground, #f66)"];
+	}
+	if (status === "warning" || alreadyInstalled) {
+		return ["● warning", "var(--vscode-editorWarning-foreground, #cc0)"];
+	}
+	return ["● ok", "var(--vscode-testing-iconPassed, #4c4)"];
+}
+
+function renderSkillPreviewInto(target, msg) {
+	const v = msg.validation || { status: "ok", issues: [], warnings: [] };
+	const [text, color] = skillStatusBadge(v.status, msg.alreadyInstalled);
+	const lines = [];
+	(v.issues || []).forEach((i) => lines.push(`✖ ${escHtml(i)}`));
+	if (msg.alreadyInstalled) {
+		lines.push("⚠ already installed — installing will overwrite it");
+	}
+	(v.warnings || []).forEach((w) => lines.push(`⚠ ${escHtml(w)}`));
+	if (!lines.length) {
+		lines.push("No issues found.");
+	}
+	const size = v.sizeChars !== undefined ? `${(v.sizeChars / 1024).toFixed(1)} KB · ${v.lineCount} lines` : "";
+	const inst = msg.alreadyInstalled ? " · already installed" : "";
+	target.innerHTML = `
+		<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px">
+			<span style="color: ${color}">${text}</span>
+			<strong>${escHtml(msg.name || "")}</strong>
+			<span class="field-description">${escHtml(size)}${escHtml(inst)}</span>
+		</div>
+		<div class="field-description" style="margin-top: 4px">${lines.join("<br>")}</div>
+		<pre style="max-height: 240px; overflow: auto; white-space: pre-wrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; margin: 6px 0 0 0; border-top: 1px solid var(--vscode-panel-border, #333); padding-top: 6px">${escHtml(msg.body || "(empty)")}</pre>
+		<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px">
+			<button class="skill-preview-install" style="flex: 1 1 auto" ${v.status === "critical" ? "disabled title=\"Fix critical issues first\"" : 'title="Install to ~/.copilot/skills"'}>Install</button>
+			<button class="skill-preview-edit" style="flex: 1 1 auto">Edit in form</button>
+			<button class="skill-preview-close" style="flex: 0 0 auto">Close</button>
+		</div>`;
+	const installBtn = target.querySelector(".skill-preview-install");
+	if (installBtn) {
+		installBtn.addEventListener("click", () => {
+			if (!msg.skill) {
+				return;
+			}
+			window.__pendingSkillOp = { type: "skills.install", skill: msg.skill };
+			skillPost({ type: "skills.install", skill: msg.skill });
+		});
+	}
+	const editBtn = target.querySelector(".skill-preview-edit");
+	if (editBtn) {
+		editBtn.addEventListener("click", () => {
+			window.__skillEditorDir = "";
+			if ($("skillNameInput")) { $("skillNameInput").value = msg.name || ""; }
+			if ($("skillDescInput")) { $("skillDescInput").value = msg.description || ""; }
+			if ($("skillBodyInput")) { $("skillBodyInput").value = msg.body || ""; }
+			showSkillsMyPane();
+			if ($("skillEditor")) { $("skillEditor").style.display = ""; }
+		});
+	}
+	const closeBtn = target.querySelector(".skill-preview-close");
+	if (closeBtn) {
+		closeBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			target.style.display = "none";
+			target.innerHTML = "";
+		});
+	}
+}
+
+function showSkillPreview(msg) {
+	window.__skillPreview = msg;
+	const slot = window.__skillPreviewSlot;
+	if (slot && slot.isConnected) {
+		renderSkillPreviewInto(slot, msg);
+		return;
+	}
+	const panel = $("skillPreviewPanel");
+	if (!panel) {
+		return;
+	}
+	renderSkillPreviewInto(panel, msg);
+	panel.style.display = "";
+}
+
+function initSkillPreviewPanel() {
+	const closeBtn = $("skillPreviewCloseBtn");
+	if (closeBtn) {
+		closeBtn.addEventListener("click", () => {
+			const panel = $("skillPreviewPanel");
+			if (panel) {
+				panel.style.display = "none";
+			}
+		});
+	}
+	const installBtn = $("skillPreviewInstallBtn");
+	if (installBtn) {
+		installBtn.addEventListener("click", () => {
+			const pv = window.__skillPreview;
+			if (!pv || !pv.skill) {
+				return;
+			}
+			window.__pendingSkillOp = { type: "skills.install", skill: pv.skill };
+			skillPost({ type: "skills.install", skill: pv.skill });
+		});
+	}
+	const editBtn = $("skillPreviewEditBtn");
+	if (editBtn) {
+		editBtn.addEventListener("click", () => {
+			const pv = window.__skillPreview;
+			if (!pv) {
+				return;
+			}
+			window.__skillEditorDir = "";
+			if ($("skillNameInput")) { $("skillNameInput").value = pv.name || ""; }
+			if ($("skillDescInput")) { $("skillDescInput").value = pv.description || ""; }
+			if ($("skillBodyInput")) { $("skillBodyInput").value = pv.body || ""; }
+			if ($("skillEditor")) { $("skillEditor").style.display = ""; }
+		});
+	}
+}
+
+function currentSkillSource() {
+	const sel = $("skillSourceSelect");
+	return sel ? sel.value : "skills.sh";
+}
+
+function currentSkillSort() {
+	const sel = $("skillSortSelect");
+	return sel ? sel.value : "relevance";
+}
+
+function runSkillSearch(refresh) {
+	const input = $("skillSearchInput");
+	const query = input ? input.value : "";
+	const source = currentSkillSource();
+	if (source === "skills.sh" && !query.trim()) {
+		showProviderError("skills.sh needs a search keyword (empty query returns nothing).");
+		return;
+	}
+	skillPost({ type: "skills.search", query, source, refresh: refresh === true });
+}
+
 function initSkillsScreen() {
+	// Tab navigation: ＋ Add (header) opens the catalog pane; ← back returns.
+	const addTabBtn = $("skillAddTabBtn");
+	if (addTabBtn) {
+		addTabBtn.addEventListener("click", showSkillsAddPane);
+	}
+	const backToMyBtn = $("skillBackToMyBtn");
+	if (backToMyBtn) {
+		backToMyBtn.addEventListener("click", showSkillsMyPane);
+	}
 	const searchBtn = $("skillSearchBtn");
 	const searchInput = $("skillSearchInput");
-	if (searchBtn && searchInput) {
-		searchBtn.addEventListener("click", () => skillPost({ type: "skills.search", query: searchInput.value }));
+	if (searchBtn) {
+		searchBtn.addEventListener("click", () => runSkillSearch(false));
+	}
+	if (searchInput) {
 		searchInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") {
-				skillPost({ type: "skills.search", query: searchInput.value });
+				runSkillSearch(false);
 			}
 		});
 	}
 	const refreshBtn = $("skillRefreshBtn");
-	if (refreshBtn && searchInput) {
-		refreshBtn.addEventListener("click", () => skillPost({ type: "skills.search", query: searchInput.value, refresh: true }));
+	if (refreshBtn) {
+		refreshBtn.addEventListener("click", () => runSkillSearch(true));
+	}
+	// Re-sort the already-fetched results without re-querying.
+	const sortSel = $("skillSortSelect");
+	if (sortSel) {
+		sortSel.addEventListener("change", () => {
+			renderSkillCatalogList(__skillCatalogResults, false, sortSel.value);
+		});
 	}
 	const importUrlBtn = $("skillImportUrlBtn");
 	const importUrlInput = $("skillImportUrl");
@@ -980,15 +1439,23 @@ function initSkillsScreen() {
 			if ($("skillEditor")) { $("skillEditor").style.display = ""; }
 		});
 	}
+	const editorCloseBtn = $("skillEditorCloseBtn");
+	if (editorCloseBtn) {
+		editorCloseBtn.addEventListener("click", () => {
+			const ed = $("skillEditor");
+			if (ed) { ed.style.display = "none"; }
+		});
+	}
 	const deleteBtn = $("skillDeleteBtn");
 	if (deleteBtn) {
-		deleteBtn.addEventListener("click", () => {
+		deleteBtn.addEventListener("click", async () => {
 			const dir = window.__skillEditorDir;
-			if (dir && confirm("Delete this skill?")) {
+			if (dir) {
 				skillPost({ type: "skills.delete", dirPath: dir });
 			}
 		});
 	}
+	initSkillPreviewPanel();
 }
 
 initSkillsScreen();
@@ -2254,7 +2721,7 @@ document.addEventListener("click", (e) => {
 
 // ── Message receiver ───────────────────────────────────────────────────────────
 
-window.addEventListener("message", ({ data: msg }) => {
+window.addEventListener("message", async ({ data: msg }) => {
 	// Skills screen messages have their own family.
 	if (msg && typeof msg.type === "string" && msg.type.startsWith("skills.")) {
 		switch (msg.type) {
@@ -2262,33 +2729,28 @@ window.addEventListener("message", ({ data: msg }) => {
 				renderSkillLocalList(msg.skills || []);
 				break;
 			case "skills.searchResults":
-				renderSkillCatalogList(msg.skills || [], msg.fromCache);
+				renderSkillCatalogList(msg.skills || [], msg.fromCache, currentSkillSort());
 				break;
 			case "skills.content": {
 				window.__skillEditorDir = msg.dirPath || "";
-				$("skillNameInput").value = (msg.frontmatter && msg.frontmatter.name) || "";
-				$("skillDescInput").value = (msg.frontmatter && msg.frontmatter.description) || "";
-				$("skillBodyInput").value = msg.body || "";
-				$("skillEditor").style.display = "";
+				const slot = window.__localSkillSlot;
+				if (slot && slot.isConnected) {
+					// The clicked card expands INTO a full editor in place.
+					renderLocalSkillEditorInto(slot, msg);
+				} else {
+					$("skillNameInput").value = (msg.frontmatter && msg.frontmatter.name) || "";
+					$("skillDescInput").value = (msg.frontmatter && msg.frontmatter.description) || "";
+					$("skillBodyInput").value = msg.body || "";
+					$("skillEditor").style.display = "";
+				}
 				break;
 			}
 			case "skills.previewContent": {
-				window.__skillEditorDir = "";
-				if ($("skillNameInput")) { $("skillNameInput").value = msg.name || ""; }
-				if ($("skillDescInput")) { $("skillDescInput").value = msg.description || ""; }
-				if ($("skillBodyInput")) { $("skillBodyInput").value = msg.body || ""; }
-				if ($("skillEditor")) { $("skillEditor").style.display = ""; }
-				const flags = [];
-				if (msg.alreadyInstalled) { flags.push("already installed — saving will overwrite"); }
-				if (msg.validation) {
-					(msg.validation.issues || []).forEach((i) => flags.push("⚠ " + i));
-					(msg.validation.warnings || []).forEach((w) => flags.push("· " + w));
-				}
-				if ($("skillStatusLine")) { $("skillStatusLine").textContent = flags.join("  |  "); }
+				showSkillPreview(msg);
 				break;
 			}
 			case "skills.alreadyInstalled": {
-				const installAnyway = confirm(`Skill "${msg.name}" is already installed. Overwrite it?`);
+				const installAnyway = await webviewConfirm(`Skill "${msg.name}" is already installed. Overwrite it?`, "Overwrite");
 				if (installAnyway) {
 					// Re-issue the pending operation with overwrite: true.
 					if (window.__pendingSkillOp) {
@@ -2304,6 +2766,12 @@ window.addEventListener("message", ({ data: msg }) => {
 			case "skills.deleted":
 				refreshLocalSkills($("skillLocalFilter") ? $("skillLocalFilter").value : "");
 				if ($("skillStatusLine")) { $("skillStatusLine").textContent = msg.type === "skills.installed" ? `Installed ${msg.name || ""}` : "Saved."; }
+				if (msg.type === "skills.installed") {
+					// flip to the My Skills tab so the user sees the result
+					showSkillsMyPane();
+					const panel = $("skillPreviewPanel");
+					if (panel) { panel.style.display = "none"; }
+				}
 				break;
 			case "skills.installError":
 			case "skills.error":

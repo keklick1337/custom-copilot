@@ -4,6 +4,7 @@ import type { CustomApiMode, CustomModelItem } from "./types";
 import { initStatusBar } from "./statusBar";
 import { SettingsViewProvider } from "./views/configView";
 import { setSkillsContext } from "./views/skillsController";
+import { SearchSkillsTool, InstallSkillTool, ReadSkillTool, ImproveSkillTool, CreateSkillTool } from "./skills/skillTools";
 import { logger } from "./logger";
 import { normalizeUserModels } from "./utils";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
@@ -27,12 +28,28 @@ const VENDOR_MODES: ReadonlyArray<{
 	{ vendor: "copilotcustommodelsendpoint-anthropic", mode: "anthropic", displayName: "Custom Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
 	{ vendor: "copilotcustommodelsendpoint-gemini", mode: "gemini", displayName: "Custom Gemini", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta" },
 	{ vendor: "copilotcustommodelsendpoint-ollama", mode: "ollama", displayName: "Custom Ollama", defaultBaseUrl: "http://localhost:11434" },
-	{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai", displayName: "Z.AI Free", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
+	{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai", displayName: "Z.AI (Anthropic-compat)", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
 ];
 
 export function activate(context: vscode.ExtensionContext) {
 	// Share the extension context with the skills screen (catalog cache storage).
 	setSkillsContext(context);
+
+	// Language-model tools: let Copilot Chat search and install skills from
+	// the global catalogs on its own (installs always confirm; critical
+	// validation findings are surfaced in the confirmation itself).
+	context.subscriptions.push(
+		vscode.lm.registerTool("customcopilot_searchSkills", new SearchSkillsTool())
+	);
+	context.subscriptions.push(
+		vscode.lm.registerTool("customcopilot_installSkill", new InstallSkillTool())
+	);
+	// Self-improvement loop: read → improve in place, or create from scratch.
+	context.subscriptions.push(
+		vscode.lm.registerTool("customcopilot_readSkill", new ReadSkillTool()),
+		vscode.lm.registerTool("customcopilot_improveSkill", new ImproveSkillTool()),
+		vscode.lm.registerTool("customcopilot_createSkill", new CreateSkillTool())
+	);
 	// Initialize logger
 	logger.init();
 
