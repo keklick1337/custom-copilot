@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import * as vscode from "vscode";
 import {
 	CancellationToken,
@@ -22,45 +23,121 @@ import {
 	resolveProxyUrl,
 	isNonRetryableError,
 	delayOrCancel,
+	parseRetryAfterMs,
+	modelNeedsReasoningEcho,
+	safeUrlHost,
+	withProviderDefaults,
+	isToolResultPart,
 } from "./utils";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
+import { applyModelConfiguration } from "./modelConfig";
+import { DEFAULT_IMAGE_MAX_DIMENSION, shrinkMessageImages } from "./imageResize";
+
+/** Per-model `image_max_dimension` wins over the global setting; 0 disables resizing. */
+function resolveImageMaxDimension(um: CustomModelItem, config: vscode.WorkspaceConfiguration): number {
+	const own = um.image_max_dimension;
+	if (typeof own === "number" && own >= 0) {
+		return Math.floor(own);
+	}
+	const global = config.get<number>("customcopilot.imageMaxDimension", DEFAULT_IMAGE_MAX_DIMENSION);
+	return typeof global === "number" && global >= 0 ? Math.floor(global) : DEFAULT_IMAGE_MAX_DIMENSION;
+}
 import { countMessageTokens, reportLearnedImageTokenCost } from "./provideToken";
 
-/** Previous request's real prompt_tokens (anchor for image-cost calibration). */
-let lastPromptTokensAnchor: number | undefined;
+/**
+ * Z.AI / BigModel business codes that are terminal for the key (plan caps,
+ * expiry, no model access, fair-use) — ZCode `failure-provider-business-codes.ts`.
+ * Matched as a quoted or bracketed code so unrelated numbers don't trigger.
+ */
+const ZAI_TERMINAL_QUOTA_RE = /["[](?:1304|1308|1309|1310|1311|1313)["\]]|"code"\s*:\s*(?:1304|1308|1309|1310|1311|1313)\b/;
+
+/** Retryable failures reported inside a 200 stream (ZCode business-code + network classes). */
+const TRANSIENT_STREAM_ERROR_RE =
+	/\[(?:1302|1303|1305|1312|1234|1230|1120|500|502|503|529)\]|\b(?:network_error(?:_retryable)?|internal network error|overloaded(?:_error)?|temporarily overloaded|api_error)\b/i;
+
+/** `retry-after-ms` header (OpenAI/Anthropic SDK convention) → ms. */
+function msHeader(value: string | null): number | undefined {
+	const n = value ? Number(value.trim()) : NaN;
+	return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
+/** Remove thinking / redacted_thinking blocks from an Anthropic request body; true if any were removed. */
+function stripReplayedThinking(body: unknown): boolean {
+	const messages = (body as { messages?: unknown } | null)?.messages;
+	if (!Array.isArray(messages)) {
+		return false;
+	}
+	let removed = false;
+	for (const msg of messages as Array<{ content?: unknown }>) {
+		if (!Array.isArray(msg.content)) {
+			continue;
+		}
+		const kept = (msg.content as Array<{ type?: string }>).filter(
+			(b) => b?.type !== "thinking" && b?.type !== "redacted_thinking"
+		);
+		if (kept.length !== msg.content.length) {
+			removed = true;
+			msg.content = kept.length > 0 ? kept : [{ type: "text", text: "(thinking omitted)" }];
+		}
+	}
+	return removed;
+}
+
+/** Previous request's real prompt_tokens + shape (anchor for image-cost calibration). */
+let lastPromptAnchor: { promptTokens: number; images: number; messages: number; textChars: number } | undefined;
+
+function countImages(msgs: readonly vscode.LanguageModelChatRequestMessage[]): number {
+	return msgs.reduce(
+		(sum, m) =>
+			sum +
+			(m.content ?? []).filter((p) => p instanceof vscode.LanguageModelDataPart && p.mimeType.startsWith("image/")).length,
+		0
+	);
+}
+
+function countTextChars(msgs: readonly vscode.LanguageModelChatRequestMessage[]): number {
+	let chars = 0;
+	for (const m of msgs) {
+		for (const p of m.content ?? []) {
+			if (p instanceof vscode.LanguageModelTextPart) {
+				chars += p.value.length;
+			}
+		}
+	}
+	return chars;
+}
 
 /**
  * Learn the per-image token price from provider-reported prompt_tokens.
- * Only fires when the request actually introduced NEW images vs the anchor
- * request — the residual is then attributable to those images alone.
+ * Only fires when this request is the direct continuation of the anchor
+ * (same conversation, a couple of messages more) AND it introduced new
+ * images: the residual minus the estimated cost of the new text is then
+ * attributable to those images alone. Unrelated conversations never mix.
  */
 function calibrateImageTokenCost(
 	realPromptTokens: number,
 	messages: readonly vscode.LanguageModelChatRequestMessage[]
 ): void {
 	try {
-		const countImages = (msgs: readonly vscode.LanguageModelChatRequestMessage[]): number =>
-			msgs.reduce(
-				(sum, m) =>
-					sum +
-					(m.content ?? []).filter(
-						(p) => p instanceof vscode.LanguageModelDataPart && p.mimeType.startsWith("image/")
-					).length,
-				0
-			);
-		const imagesNow = countImages(messages);
-		if (imagesNow <= 0 || lastPromptTokensAnchor === undefined) {
+		const images = countImages(messages);
+		const textChars = countTextChars(messages);
+		const anchor = lastPromptAnchor;
+		lastPromptAnchor = { promptTokens: realPromptTokens, images, messages: messages.length, textChars };
+		if (!anchor) {
 			return;
 		}
-		// Text-only estimate of the DELTA between the anchored request and now
-		// is expensive; approximate with the residual directly attributed to
-		// the image count only when the message count also grew sanely.
-		const residual = realPromptTokens - lastPromptTokensAnchor;
+		const newImages = images - anchor.images;
+		const newMessages = messages.length - anchor.messages;
+		if (newImages <= 0 || newMessages <= 0 || newMessages > 3 || textChars < anchor.textChars) {
+			return;
+		}
+		const textDeltaTokens = Math.ceil((textChars - anchor.textChars) / 4);
+		const residual = realPromptTokens - anchor.promptTokens - textDeltaTokens;
 		if (residual <= 0) {
 			return;
 		}
-		reportLearnedImageTokenCost(residual / imagesNow);
+		reportLearnedImageTokenCost(residual / newImages);
 	} catch {
 		// calibration is best-effort
 	}
@@ -69,14 +146,19 @@ import { updateContextStatusBar } from "./statusBar";
 import { notifyChatRequestStart } from "./chatActivity";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
-import { OllamaApi } from "./ollama/ollamaApi";
+import { OllamaApi, probeOllamaModel } from "./ollama/ollamaApi";
 import { OpenaiApi } from "./openai/openaiApi";
 import { OpenaiResponsesApi } from "./openai/openaiResponsesApi";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
-import { GeminiApi, buildGeminiGenerateContentUrl, type GeminiToolCallMeta } from "./gemini/geminiApi";
+import {
+	GeminiApi,
+	buildGeminiGenerateContentUrl,
+	mergeGeminiAlternating,
+	type GeminiToolCallMeta,
+} from "./gemini/geminiApi";
 import type { GeminiGenerateContentRequest } from "./gemini/geminiTypes";
-import { CommonApi, type ApiUsage } from "./commonApi";
+import { CommonApi, type ApiUsage, type MessageConversionConfig } from "./commonApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
 import { applyPromptOverride } from "./promptOverride";
@@ -90,6 +172,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 
 	private readonly _geminiToolCallMetaByCallId = new Map<string, GeminiToolCallMeta>();
 	private readonly _openaiResponsesPreviousResponseIdUnsupportedBaseUrls = new Set<string>();
+	private readonly _streamOptionsUnsupportedBaseUrls = new Set<string>();
 
 	/**
 	 * Fired whenever the user's model configuration (`customcopilot.models`)
@@ -176,7 +259,9 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			vscode.workspace.getConfiguration().get<unknown>("customcopilot.models", [])
 		);
 		const um = resolveUserModelById(model.id, userModels, this.vendorApiMode);
-		return countMessageTokens(text, { includeReasoningInRequest: um?.include_reasoning_in_request ?? false });
+		return countMessageTokens(text, {
+			includeReasoningInRequest: modelNeedsReasoningEcho(um ? withProviderDefaults(um, userModels) : um),
+		});
 	}
 
 	/**
@@ -341,8 +426,24 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			});
 
 			// Prepare model configuration
-			const modelConfig = {
-				includeReasoningInRequest: um?.include_reasoning_in_request ?? false,
+			// Reasoning echo: explicit `include_reasoning_in_request` wins;
+			// otherwise auto-on only for providers that REQUIRE it
+			// (DeepSeek/Kimi/MiMo — hermes reasoning-echo policy).
+			// Effective config (provider-level baseUrl/apiMode filled in) for
+			// everything that inspects the endpoint host.
+			const umEff: CustomModelItem = applyModelConfiguration(
+				{ ...withProviderDefaults(um, userModels), baseUrl, apiMode },
+				options.modelConfiguration
+			);
+			if (options.modelConfiguration) {
+				logger.debug("request.modelConfiguration", { ...options.modelConfiguration });
+			}
+			messages = shrinkMessageImages(messages, resolveImageMaxDimension(umEff, config));
+			const requestHost = safeUrlHost(baseUrl);
+			const modelConfig: MessageConversionConfig = {
+				includeReasoningInRequest: modelNeedsReasoningEcho(umEff),
+				replayReasoningDetails: requestHost === "openrouter.ai" || requestHost.endsWith(".openrouter.ai"),
+				nativeAnthropic: requestHost === "api.anthropic.com" || requestHost.endsWith(".anthropic.com"),
 			};
 
 			// Update Token Usage
@@ -362,12 +463,11 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 						elapsed,
 						remainingDelay,
 					});
-					await new Promise<void>((resolve) => {
-						const timeout = setTimeout(() => {
-							clearTimeout(timeout);
-							resolve();
-						}, remainingDelay);
-					});
+					// Cancellable: pressing Stop during the pacing delay must not
+					// still fire the request afterwards.
+					if (await delayOrCancel(remainingDelay, token)) {
+						throw new vscode.CancellationError();
+					}
 				}
 			}
 
@@ -375,7 +475,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			// newline-separated under the same secret) are load-balanced per request.
 			const provider = um?.owned_by;
 			const normalizedProvider = (provider ?? "").trim().toLowerCase();
-			const keySourceProxyUrl = resolveProxyUrl(um?.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
+			const keySourceProxyUrl = resolveProxyUrl(umEff.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
 			const apiKeys = await this.resolveApiKeys(provider, keySourceProxyUrl);
 			if (apiKeys.length === 0) {
 				logger.warn("apiKey.missing", {
@@ -403,9 +503,9 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			// benched and another tried instead of surfacing the error).
 			if (apiKeys.length > 1) {
 				retryConfig.max_attempts = Math.max(retryConfig.max_attempts ?? 3, apiKeys.length + 1);
-				retryConfig.status_codes = [...new Set([...(retryConfig.status_codes ?? []), 401, 403, 408, 409])];
+				retryConfig.status_codes = [...new Set([...(retryConfig.status_codes ?? []), 401, 402, 403, 408, 409])];
 			}
-			const proxyUrl = resolveProxyUrl(um?.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
+			const proxyUrl = resolveProxyUrl(umEff.proxyUrl, config.get<string>("customcopilot.proxyUrl", "").trim());
 			const requestNetworkInit = buildFetchNetworkInit(proxyUrl);
 
 			// Abort the in-flight HTTP request the moment the user presses Stop in VS
@@ -433,17 +533,36 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					triedKeys.add(lastSelectedKey);
 					keyBalancer.recordRequest(normalizedProvider, lastSelectedKey);
 				}
-				return CommonApi.prepareHeaders(lastSelectedKey, apiMode, um?.headers, um?.userAgent);
+				// Adapter-specific headers (e.g. anthropic-beta) first, so the
+				// user's custom headers can still override them.
+				const adapterHeaders = (activeAdapter as { requestHeaders?: Record<string, string> } | undefined)
+					?.requestHeaders;
+				return CommonApi.prepareHeaders(
+					lastSelectedKey,
+					apiMode,
+					{ ...(adapterHeaders ?? {}), ...(um?.headers ?? {}) },
+					umEff.userAgent
+				);
 			};
 			// A "fatal" key error means this specific key cannot be used (quota
 			// exhausted, invalid/disabled key, forbidden). Such a key is benched
 			// hard so the balancer immediately rotates to another one.
 			const isFatalKeyError = (status: number, body: string): boolean => {
-				if (status === 401 || status === 403) {
+				// 402 Payment Required = this key's billing is exhausted (hermes _V_BILLING).
+				if (status === 401 || status === 402 || status === 403) {
 					return true;
 				}
 				if (status === 429) {
-					return /insufficient_quota|invalid_api_key|billing|access_terminated|account_deactivated|exceeded your current quota/i.test(
+					// Overload 429s (Z.AI 1305 "temporarily overloaded", "overloaded")
+					// are NOT the key's fault — back off on the same key instead.
+					if (/\b1305\b|temporarily overloaded|overloaded_error/i.test(body)) {
+						return false;
+					}
+					if (ZAI_TERMINAL_QUOTA_RE.test(body)) {
+						return true;
+					}
+					// Z.AI 1113 / 余额不足 = the key's balance is exhausted.
+					return /insufficient_quota|invalid_api_key|billing|access_terminated|account_deactivated|exceeded your current quota|"1113"|\b1113\b|insufficient balance|余额不足|insufficient credits|payment required|out of funds|budget limit exceeded|credit balance/i.test(
 						body
 					);
 				}
@@ -452,8 +571,19 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			// Records the failure against the current key and returns an Error to
 			// throw. When the key is dead (fatal) and other keys exist, the error is
 			// flagged `retryImmediately` so executeWithRetry rotates without backoff.
-			const handleKeyError = (status: number, statusText: string, body: string, message: string): Error => {
+			const handleKeyError = (
+				status: number,
+				statusText: string,
+				body: string,
+				message: string,
+				retryAfterMs?: number
+			): Error => {
 				const fatal = isFatalKeyError(status, body);
+				// Z.AI plan caps (1304 daily, 1308 usage, 1309 plan expired, 1310
+				// weekly/monthly, 1311 model not in plan, 1313 fair use) are
+				// terminal for THIS key: rotate if another key exists, otherwise
+				// fail fast instead of backing off (ZCode business-code policy).
+				const terminalQuota = ZAI_TERMINAL_QUOTA_RE.test(body);
 				keyBalancer.reportError(normalizedProvider, lastSelectedKey, {
 					fatal,
 					message: `[${status}] ${statusText}`,
@@ -462,11 +592,17 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					status?: number;
 					errorText?: string;
 					retryImmediately?: boolean;
+					retryAfterMs?: number;
 				};
 				err.status = status;
 				err.errorText = body;
+				if (retryAfterMs !== undefined) {
+					err.retryAfterMs = retryAfterMs;
+				}
 				if (fatal && apiKeys.length > 1) {
 					err.retryImmediately = true;
+				} else if (terminalQuota) {
+					(err as { nonRetryable?: boolean }).nonRetryable = true;
 				}
 				return err;
 			};
@@ -489,6 +625,25 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			// branch) — read after streaming to report token usage.
 			let activeAdapter: CommonApi<unknown, unknown> | undefined;
 
+			// Count real content parts streamed by the adapter (usage/marker
+			// data parts excluded) for the empty-response guard.
+			let contentPartCount = 0;
+			const outerProgress = trackingProgress;
+			trackingProgress = {
+				report: (part) => {
+					if (
+						(part instanceof vscode.LanguageModelTextPart && part.value.trim().length > 0) ||
+						part instanceof vscode.LanguageModelToolCallPart ||
+						(part instanceof vscode.LanguageModelThinkingPart &&
+							(Array.isArray(part.value) ? part.value.join("") : part.value).length > 0)
+					) {
+						contentPartCount++;
+					}
+					outerProgress.report(part);
+				},
+			};
+
+			let transientStreamRetried = false;
 			const sendWithRetry = async (
 				url: string,
 				body: unknown,
@@ -497,22 +652,59 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			): Promise<void> => {
 				const usageAdapter = activeAdapter as { _lastUsage?: ApiUsage } | undefined;
 				logger.debug("request.body", { url, requestBody: body });
+				let strippedThinking = false;
 				const response = await executeWithRetry(async () => {
-					const res = await proxyFetch(url, {
+					let res = await proxyFetch(url, {
 						...requestNetworkInit,
 						method: "POST",
 						headers: selectRequestHeaders(),
 						body: JSON.stringify(body),
 					});
 
+					// Anthropic binds signed thinking to the system/tools prefix it was
+					// created under; Copilot changes both mid-conversation. Drop replayed
+					// thinking blocks once and resend instead of failing the turn.
+					if (res.status === 400 && !strippedThinking) {
+						const errorText = await res.clone().text();
+						if (/signature.{0,40}thinking|thinking.{0,40}signature|bound to a different conversation/i.test(errorText)) {
+							strippedThinking = stripReplayedThinking(body);
+							if (strippedThinking) {
+								logger.warn("request.thinking.stripped", { model: model.id });
+								res = await proxyFetch(url, {
+									...requestNetworkInit,
+									method: "POST",
+									headers: selectRequestHeaders(),
+									body: JSON.stringify(body),
+								});
+							}
+						}
+					}
+
 					if (!res.ok) {
 						const errorText = await res.text();
 						console.error(`[customcopilot] ${errorLabel} error response`, errorText);
+						// Anthropic fast mode has its own rate limit / capacity:
+						// on 429/529 drop `speed` and retry at standard speed
+						// right away (the body is re-serialized per attempt).
+						const fastBody = body as { speed?: string } | null;
+						if ((res.status === 429 || res.status === 529) && fastBody && fastBody.speed === "fast") {
+							delete fastBody.speed;
+							logger.warn("request.fastMode.fallback", { status: res.status, model: model.id });
+							const fallbackErr = new Error(
+								`${errorLabel}: fast mode unavailable [${res.status}], retrying at standard speed`
+							) as Error & { status?: number; retryImmediately?: boolean };
+							fallbackErr.status = res.status;
+							fallbackErr.retryImmediately = true;
+							throw fallbackErr;
+						}
 						throw handleKeyError(
 							res.status,
 							res.statusText,
 							errorText,
-							`${errorLabel}: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`
+							`${errorLabel}: [${res.status}] ${res.statusText}${errorText ? `\n${errorText}` : ""}\nURL: ${url}`,
+							res.headers.get("x-should-retry") === "false"
+								? undefined
+								: (msHeader(res.headers.get("retry-after-ms")) ?? parseRetryAfterMs(res.headers.get("retry-after")))
 						);
 					}
 
@@ -523,7 +715,39 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				if (!response.body) {
 					throw new Error(`No response body from ${errorLabel}`);
 				}
-				await processStream(response.body);
+				const contentPartsBefore = contentPartCount;
+				try {
+					await processStream(response.body);
+				} catch (streamErr) {
+					// Transient business error inside an HTTP 200 stream (Z.AI 1302/1303/1305/1312/1234,
+					// network_error, overloaded) before anything was shown: resend once.
+					const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+					if (
+						contentPartCount === contentPartsBefore &&
+						!token.isCancellationRequested &&
+						!transientStreamRetried &&
+						TRANSIENT_STREAM_ERROR_RE.test(msg)
+					) {
+						transientStreamRetried = true;
+						logger.warn("request.stream.transientRetry", { model: model.id, error: msg.slice(0, 300) });
+						await delayOrCancel(1500 + Math.floor(Math.random() * 1500), token);
+						return sendWithRetry(url, body, errorLabel, processStream);
+					}
+					throw streamErr;
+				}
+
+				// Empty-response guard (hermes `empty_response_guard`): a
+				// stream that completed without a single text/thinking/tool
+				// part is an upstream failure, not an answer. Throwing lets the
+				// chat-level auto-retry kick in and otherwise shows an error
+				// instead of a blank reply.
+				// Exception: right after tool results an empty end_turn/STOP is
+				// a legitimate "nothing more to add" (Claude, Gemini).
+				const lastMessage = messages[messages.length - 1];
+				const answersToolResults = (lastMessage?.content ?? []).some((p) => isToolResultPart(p));
+				if (contentPartCount === contentPartsBefore && !answersToolResults && !token.isCancellationRequested) {
+					throw new Error(`${errorLabel}: the model returned an empty response.`);
+				}
 
 				// Report token usage as a LanguageModelDataPart with the
 				// "usage" mime type — the same internal contract Copilot's own
@@ -545,7 +769,6 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					// anchor + locally-estimated text delta is the price of
 					// the images this request introduced.
 					calibrateImageTokenCost(usage.prompt_tokens, messages);
-					lastPromptTokensAnchor = usage.prompt_tokens;
 				}
 				};
 
@@ -559,7 +782,28 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					messages: ollamaApi.convertMessages(messages, modelConfig),
 					stream: true,
 				};
-				ollamaRequestBody = ollamaApi.prepareRequestBody(ollamaRequestBody, um, options);
+				ollamaRequestBody = ollamaApi.prepareRequestBody(ollamaRequestBody, umEff, options);
+				// Ask the server for the model's real window / capabilities (cached).
+				const ollamaInfo = await probeOllamaModel(
+					normalizedBaseUrl,
+					parsedModelId.baseId,
+					CommonApi.prepareHeaders(apiKeys[0], "ollama", umEff.headers, umEff.userAgent),
+					requestNetworkInit
+				);
+				if (ollamaInfo?.contextLength && ollamaRequestBody.options?.num_ctx === undefined) {
+					// Without num_ctx Ollama uses its small default and silently
+					// truncates the prompt. Capped at the window advertised to
+					// Copilot (128K default) so a huge GGUF max can't blow up the
+					// KV-cache allocation.
+					ollamaRequestBody.options = {
+						...(ollamaRequestBody.options ?? {}),
+						num_ctx: Math.min(ollamaInfo.contextLength, umEff.context_length ?? 128000),
+					};
+				}
+				if (ollamaInfo?.capabilities && !ollamaInfo.capabilities.includes("thinking") && ollamaRequestBody.think) {
+					// `think` on a non-thinking model is a 400 (hermes gates on /api/show).
+					delete ollamaRequestBody.think;
+				}
 				await sendWithRetry(
 					`${normalizedBaseUrl}/api/chat`,
 				ollamaRequestBody,
@@ -577,7 +821,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					messages: anthropicApi.convertMessages(messages, modelConfig),
 					stream: true,
 				};
-				requestBody = anthropicApi.prepareRequestBody(requestBody, um, options);
+				requestBody = anthropicApi.prepareRequestBody(requestBody, umEff, options);
 				const url = normalizedBaseUrl.endsWith("/v1")
 					? `${normalizedBaseUrl}/messages`
 					: `${normalizedBaseUrl}/v1/messages`;
@@ -590,9 +834,10 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				activeAdapter = openaiResponsesApi as unknown as CommonApi<unknown, unknown>;
 				const statefulModelId = parsedModelId.baseId;
 
-				// Convert full history once (also extracts system `instructions`).
-				const fullInput = openaiResponsesApi.convertMessages(messages, modelConfig);
-
+				// Convert the delta FIRST, the full history LAST: every
+				// convertMessages call resets adapter state, and the final call
+				// must be the one that captured the system prompt — otherwise
+				// `instructions` vanished on every turn after the first.
 				const marker = findLastOpenAIResponsesStatefulMarker(statefulModelId, messages);
 				let deltaInput: unknown[] | null = null;
 				if (marker && marker.index >= 0 && marker.index < messages.length - 1) {
@@ -601,6 +846,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 						deltaInput = converted;
 					}
 				}
+				const fullInput = openaiResponsesApi.convertMessages(messages, modelConfig);
 
 				const canUsePreviousResponseId =
 					!!marker?.marker &&
@@ -613,12 +859,15 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					input: canUsePreviousResponseId ? deltaInput! : fullInput,
 					stream: true,
 				};
-				requestBody = openaiResponsesApi.prepareRequestBody(requestBody, um, options);
+				requestBody = openaiResponsesApi.prepareRequestBody(requestBody, umEff, options);
 
 				// Add prompt_cache_key to enable OpenAI prompt caching.
 				// Without this parameter, cached_tokens is always 0 even with identical requests.
+				// OpenAI caps the key at 64 chars (hermes bounds it the same way).
 				if (!requestBody.prompt_cache_key) {
-					requestBody.prompt_cache_key = `customcopilot-${parsedModelId.baseId}`;
+					const cacheKey = `customcopilot-${parsedModelId.baseId}`;
+					requestBody.prompt_cache_key =
+						cacheKey.length <= 64 ? cacheKey : `pck_${createHash("sha256").update(cacheKey).digest("hex").slice(0, 24)}`;
 				}
 
 				// If the user explicitly set `previous_response_id` via `extra`, don't apply stateful slicing.
@@ -640,28 +889,63 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				};
 
 				const url = `${normalizedBaseUrl}/responses`;
-				try {
-					await sendWithRetry(url, requestBody, "Responses API", processResponsesStream);
-				} catch (err) {
-					// Some Responses-compatible gateways don't support `previous_response_id`.
-					// Fall back to sending full history when the previous-response attempt fails.
+				const errorText = (err: unknown): string => String((err as { errorText?: unknown })?.errorText ?? "");
+				const errorStatus = (err: unknown): number | undefined => {
 					const status = (err as { status?: unknown })?.status;
+					return typeof status === "number" ? status : undefined;
+				};
+				// Encrypted reasoning is bound to the org/key that issued it: with
+				// a multi-key pool (or after a key change) replay fails with
+				// invalid_encrypted_content. Retry once without the replayed
+				// reasoning items (hermes error_classifier).
+				const sendResponses = async (body: Record<string, unknown>): Promise<void> => {
+					try {
+						await sendWithRetry(url, body, "Responses API", processResponsesStream);
+					} catch (err) {
+						const hasReasoning =
+							Array.isArray(body.input) && body.input.some((i) => (i as { type?: unknown }).type === "reasoning");
+						if (
+							errorStatus(err) === 400 &&
+							hasReasoning &&
+							/invalid_encrypted_content|could not be verified|could not decrypt|not issued to this/i.test(errorText(err))
+						) {
+							logger.warn("responses.encrypted_reasoning.rejected", { modelId: model.id });
+							const stripped: Record<string, unknown> = {
+								...body,
+								input: (body.input as unknown[]).filter((i) => (i as { type?: unknown }).type !== "reasoning"),
+							};
+							delete stripped.include;
+							await sendWithRetry(url, stripped, "Responses API", processResponsesStream);
+							return;
+						}
+						throw err;
+					}
+				};
+
+				try {
+					await sendResponses(requestBody);
+				} catch (err) {
+					// Some Responses-compatible gateways don't support
+					// `previous_response_id`: fall back to the full history — but
+					// only for errors that are actually about it (an auth error,
+					// 413 or context overflow must not disable stateful mode).
+					const status = errorStatus(err);
 					const shouldFallback =
-						addedPreviousResponseId && typeof status === "number" && status >= 400 && status < 500 && status !== 429;
+						addedPreviousResponseId &&
+						status !== undefined &&
+						status >= 400 &&
+						status < 500 &&
+						![401, 403, 413, 429].includes(status) &&
+						/previous_response|previous response|not found|unsupported|unknown parameter|unrecognized/i.test(errorText(err));
 					if (!shouldFallback) {
 						throw err;
 					}
 
 					this._openaiResponsesPreviousResponseIdUnsupportedBaseUrls.add(normalizedBaseUrl);
 
-					let fallbackBody: Record<string, unknown> = {
-						model: parsedModelId.baseId,
-						input: fullInput,
-						stream: true,
-					};
-					fallbackBody = openaiResponsesApi.prepareRequestBody(fallbackBody, um, options);
+					const fallbackBody: Record<string, unknown> = { ...requestBody, input: fullInput };
 					delete fallbackBody.previous_response_id;
-					await sendWithRetry(url, fallbackBody, "Responses API", processResponsesStream);
+					await sendResponses(fallbackBody);
 				}
 			} else if (apiMode === "gemini") {
 				// Gemini native API mode
@@ -689,11 +973,11 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					contents.push({ role: msg.role, parts: msg.parts });
 				}
 
-				let requestBody: GeminiGenerateContentRequest = { contents };
+				let requestBody: GeminiGenerateContentRequest = { contents: mergeGeminiAlternating(contents) };
 				if (systemParts.length > 0) {
 					requestBody.systemInstruction = { role: "user", parts: [{ text: systemParts.join("\n") }] };
 				}
-				requestBody = geminiApi.prepareRequestBody(requestBody, um, options);
+				requestBody = geminiApi.prepareRequestBody(requestBody, umEff, options);
 
 				const url = buildGeminiGenerateContentUrl(BASE_URL, parsedModelId.baseId, true);
 				if (!url) {
@@ -712,13 +996,34 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 					stream: true,
 					stream_options: { include_usage: true },
 				};
-				requestBody = openaiApi.prepareRequestBody(requestBody, um, options);
-				await sendWithRetry(
-					`${normalizedBaseUrl}/chat/completions`,
-				requestBody,
-				"API",
-				(body) => openaiApi.processStreamingResponse(body, trackingProgress, token)
-			);
+				requestBody = openaiApi.prepareRequestBody(requestBody, umEff, options);
+				const chatUrl = `${normalizedBaseUrl}/chat/completions`;
+				// Remembered per endpoint (hermes latches it per session) so
+				// later turns don't pay a 400 round-trip each time.
+				if (this._streamOptionsUnsupportedBaseUrls.has(normalizedBaseUrl)) {
+					delete requestBody.stream_options;
+				}
+				const processChatStream = (body: ReadableStream<Uint8Array>) =>
+					openaiApi.processStreamingResponse(body, trackingProgress, token);
+				try {
+					await sendWithRetry(chatUrl, requestBody, "API", processChatStream);
+				} catch (err) {
+					// Some OpenAI-compatible servers reject `stream_options`
+					// (hermes `_rejects_stream_options`): retry once without it.
+					const status = (err as { status?: unknown }).status;
+					const errorText = String((err as { errorText?: unknown }).errorText ?? "");
+					const rejectsStreamOptions =
+						(status === 400 || status === 422) &&
+						/stream_options/i.test(errorText) &&
+						/extra|not supported|unrecognized|unexpected|unknown|not permitted|invalid/i.test(errorText);
+					if (!rejectsStreamOptions || requestBody.stream_options === undefined) {
+						throw err;
+					}
+					logger.warn("request.stream_options.unsupported", { modelId: model.id });
+					this._streamOptionsUnsupportedBaseUrls.add(normalizedBaseUrl);
+					delete requestBody.stream_options;
+					await sendWithRetry(chatUrl, requestBody, "API", processChatStream);
+				}
 		}
 		} catch (err) {
 			console.error("[customcopilot] Chat request failed", {

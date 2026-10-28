@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { MessageConversionConfig } from "./commonApi";
 import { LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { tokenizerManager } from "./tokenizer/tokenizerManager";
 import { getImageDimensions } from "./tokenizer/imageUtils";
@@ -16,7 +17,7 @@ export const BaseTokensPerName = 1;
 
 export async function countMessageTokens(
 	text: string | LanguageModelChatRequestMessage,
-	modelConfig: { includeReasoningInRequest: boolean }
+	modelConfig: MessageConversionConfig
 ): Promise<number> {
 	if (typeof text === "string") {
 		return textTokenLength(text);
@@ -43,8 +44,33 @@ export async function countMessageTokens(
 				totalTokens += BaseTokensPerName;
 				totalTokens += await textTokenLength(JSON.stringify(part.input));
 			} else if (part instanceof vscode.LanguageModelToolResultPart) {
-				// Tool result token calculation
-				totalTokens += await textTokenLength(JSON.stringify(part.content));
+				// Tool result token calculation. Count each content part by kind:
+				// JSON.stringify of a DataPart serializes its Uint8Array byte by
+				// byte ({"0":137,...}), turning one screenshot into millions of
+				// phantom tokens.
+				for (const c of part.content) {
+					if (c instanceof vscode.LanguageModelTextPart) {
+						totalTokens += await textTokenLength(c.value);
+					} else if (c instanceof vscode.LanguageModelDataPart) {
+						if (c.mimeType.startsWith("image/")) {
+							totalTokens += calculateImageTokenCost(createDataUrl(c));
+						} else if (c.mimeType === "cache_control") {
+							/* ignore */
+						} else if (/^text\/|json|xml/i.test(c.mimeType)) {
+							totalTokens += await textTokenLength(new TextDecoder().decode(c.data));
+						} else {
+							totalTokens += calculateNonImageBinaryTokens(c.data.byteLength);
+						}
+					} else if (typeof c === "string") {
+						totalTokens += await textTokenLength(c);
+					} else {
+						try {
+							totalTokens += await textTokenLength(JSON.stringify(c) ?? "");
+						} catch {
+							/* ignore */
+						}
+					}
+				}
 			} else if (part instanceof vscode.LanguageModelThinkingPart) {
 				// Thinking Token
 				if (modelConfig.includeReasoningInRequest) {
@@ -146,9 +172,13 @@ function calculateImageTokenCost(imageUrl: string): number {
 		height = Math.round(height * scaleFactor);
 	}
 
-	const scaleFactor = 768 / Math.min(width, height);
-	width = Math.round(width * scaleFactor);
-	height = Math.round(height * scaleFactor);
+	// Downscale so the short side is at most 768 (never upscale small images:
+	// a 100x100 icon is one tile, not four).
+	if (Math.min(width, height) > 768) {
+		const shortSideScale = 768 / Math.min(width, height);
+		width = Math.round(width * shortSideScale);
+		height = Math.round(height * shortSideScale);
+	}
 
 	const tiles = Math.ceil(width / 512) * Math.ceil(height / 512);
 

@@ -76,6 +76,14 @@
 							Skills are markdown instructions (SKILL.md) Copilot Chat picks up automatically from
 							<code>~/.copilot/skills/</code> and the workspace skill folders.
 						</div>
+						<div class="row" style="align-items: center; gap: 6px; margin-bottom: 8px">
+							<label for="skillSafetyMode" class="field-description" style="flex: 0 0 auto">🛡️ Security scan</label>
+							<select id="skillSafetyMode" title="Scan skills for exfiltration, prompt injection and destructive commands before installing or saving" style="flex: 1 1 auto; min-width: 0">
+								<option value="block">Block dangerous skills (recommended)</option>
+								<option value="warn">Warn only (never block)</option>
+								<option value="off">Off (no scan)</option>
+							</select>
+						</div>
 
 						<!-- ── Tab: My Skills ── -->
 						<div id="skillMyPane">
@@ -736,20 +744,29 @@
 									</div>
 									<div class="field">
 										<label for="modelReasoningEffort">Thinking</label>
-										<div class="field-description">Reasoning effort (low / medium / high)</div>
+										<div class="field-description">Reasoning effort (clamped to what the model supports)</div>
 										<select id="modelReasoningEffort">
-											<option value="">Off</option>
+											<option value="">Default (provider decides)</option>
+											<option value="none">None — disable thinking</option>
+											<option value="minimal">Minimal</option>
 											<option value="low">Low</option>
 											<option value="medium">Medium</option>
 											<option value="high">High</option>
+											<option value="xhigh">XHigh</option>
 											<option value="max">Max</option>
+											<option value="ultra">Ultra</option>
 										</select>
 									</div>
 									<div class="field">
 										<label for="modelDelay">Delay (ms)</label>
 										<input id="modelDelay" type="number" placeholder="0" min="0" />
 									</div>
+									<div class="field">
+										<label for="modelImageMaxDimension" title="Images whose long edge exceeds this are downscaled before sending (0 = never). Empty = global customcopilot.imageMaxDimension (2048).">Image Max Edge (px)</label>
+										<input id="modelImageMaxDimension" type="number" placeholder="2048" min="0" max="8192" />
+									</div>
 								</div>
+								<div id="modelModeHint" class="field-description mode-hint"></div>
 
 								<div class="advanced-toggle" id="toggleAdvancedSettings">
 									<span id="toggleAdvancedLabel">▶ Advanced</span>
@@ -802,6 +819,23 @@
 											<label for="modelThinkingBudget">Thinking Budget</label>
 											<input id="modelThinkingBudget" type="number" min="128" />
 										</div>
+										<div class="field">
+											<label for="modelPromptCache" title="Anthropic prompt caching (cache_control). Empty = default (global TTL for Claude / MiniMax-M2, off otherwise).">Prompt Cache</label>
+											<select id="modelPromptCache">
+												<option value=""></option>
+												<option value="5m">5 min</option>
+												<option value="1h">1 hour</option>
+												<option value="off">Off</option>
+											</select>
+										</div>
+										<div class="field">
+											<label for="modelFastMode" title="Anthropic fast mode (speed: fast) — up to 2.5x output speed at premium pricing. Opus 5.5 / Opus 5 / Opus 4.8. Falls back to standard speed on 429/529.">Fast Mode</label>
+											<select id="modelFastMode">
+												<option value=""></option>
+												<option value="true">On</option>
+												<option value="false">Off</option>
+											</select>
+										</div>
 									</div>
 									<div class="row">
 										<div class="field">
@@ -817,11 +851,12 @@
 											<select id="modelThinkingType">
 												<option value=""></option>
 												<option value="enabled">Enabled</option>
+												<option value="adaptive">Adaptive</option>
 												<option value="disabled">Disabled</option>
 											</select>
 										</div>
 									</div>
-									<div class="subsection">
+									<div class="subsection" id="openRouterReasoningSection">
 										<h3>OpenRouter Reasoning</h3>
 										<div class="row">
 											<div class="field">
@@ -835,11 +870,15 @@
 											<div class="field">
 												<label for="modelReasoningEffortOR">Effort</label>
 												<select id="modelReasoningEffortOR">
-													<option value=""></option>
-													<option value="max">Max</option>
-													<option value="high">High</option>
-													<option value="medium">Medium</option>
+													<option value="">Default (provider decides)</option>
+													<option value="none">None — disable thinking</option>
+													<option value="minimal">Minimal</option>
 													<option value="low">Low</option>
+													<option value="medium">Medium</option>
+													<option value="high">High</option>
+													<option value="xhigh">XHigh</option>
+													<option value="max">Max</option>
+													<option value="ultra">Ultra</option>
 													<option value="auto">Auto</option>
 												</select>
 											</div>

@@ -2,14 +2,21 @@ import * as vscode from "vscode";
 import { CancellationToken, LanguageModelChatInformation } from "vscode";
 
 import type { CustomApiMode, CustomModelItem, OpenAIModelsResponse } from "./types";
-import { normalizeUserModels } from "./utils";
+import { normalizeUserModels, resolveThinkingEnabled } from "./utils";
 import { VersionManager } from "./versionManager";
 import { fetchGeminiModels } from "./gemini/geminiModels";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
 import { fetchAnthropicModels } from "./anthropic/anthropicApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
-import { inferModelCapabilities } from "./modelCapabilities";
+import { inferModelCapabilities, knownContextLength } from "./modelCapabilities";
+import { claudeContextLength } from "./anthropic/anthropicModels";
+import { buildConfigurationSchema } from "./modelConfig";
+
+/** apiMode stored on the provider placeholder / a sibling model of the same provider. */
+function providerApiMode(m: CustomModelItem, all: CustomModelItem[]): CustomApiMode | undefined {
+	return all.find((x) => x !== m && x.owned_by === m.owned_by && x.apiMode)?.apiMode;
+}
 
 const DEFAULT_CONTEXT_LENGTH = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
@@ -73,7 +80,11 @@ export async function prepareLanguageModelChatInformation(
 		const idCounters = new Map<string, number>();
 		// Return user-provided models directly
 		infos = scopedModels.map((m) => {
-			const contextLen = m?.context_length ?? DEFAULT_CONTEXT_LENGTH;
+			// Unset context_length: known family window (GLM, Claude 1M/200K)
+			// before the generic default — Claude 4.6+ would otherwise be
+			// squeezed into a 128K window.
+			const contextLen =
+				m?.context_length ?? knownContextLength(m.id) ?? claudeContextLength(m.id) ?? DEFAULT_CONTEXT_LENGTH;
 			const maxOutput = m?.max_completion_tokens ?? m?.max_tokens ?? DEFAULT_MAX_TOKENS;
 			const maxInput = Math.max(1, contextLen - maxOutput);
 
@@ -99,7 +110,12 @@ export async function prepareLanguageModelChatInformation(
 			if (m.vision) {
 				caps.push("vision");
 			}
-			if (m.enable_thinking || m.thinking || m.reasoning_effort || m.reasoning?.enabled) {
+			const thinkingPref = resolveThinkingEnabled(m);
+			if (
+				thinkingPref === true ||
+				(thinkingPref === undefined &&
+					((!!m.reasoning_effort && m.reasoning_effort !== "none") || m.reasoning?.enabled === true))
+			) {
 				caps.push("thinking");
 			}
 			const capsText = caps.length > 0 ? ` • ${caps.join(", ")}` : "";
@@ -133,6 +149,11 @@ export async function prepareLanguageModelChatInformation(
 					toolCalling: supportsTools,
 					imageInput: m?.vision ?? false,
 				},
+				configurationSchema: buildConfigurationSchema(
+					m,
+					m.apiMode ?? providerApiMode(m, userModels) ?? vendorMode ?? "openai",
+					contextLen
+				),
 			} satisfies LanguageModelChatInformation;
 		});
 	} else {
@@ -236,6 +257,9 @@ export async function fetchModels(
 				reasoning_effort: apiModel.reasoning_effort,
 				enable_thinking: apiModel.enable_thinking,
 				thinking_budget: apiModel.thinking_budget,
+				prompt_cache: apiModel.prompt_cache,
+				fast_mode: apiModel.fast_mode,
+				image_max_dimension: apiModel.image_max_dimension,
 				thinking: apiModel.thinking,
 				temperature: apiModel.temperature,
 				top_p: apiModel.top_p,

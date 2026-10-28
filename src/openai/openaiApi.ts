@@ -1,3 +1,4 @@
+import type { MessageConversionConfig } from "../commonApi";
 import * as vscode from "vscode";
 import {
 	CancellationToken,
@@ -23,16 +24,35 @@ import {
 	createDataUrl,
 	isToolResultPart,
 	collectToolResultText,
+	collectToolResultImages,
 	convertToolsToOpenAI,
 	mapRole,
 	safeUrlHost,
+	isZaiHost,
+	resolveThinkingEnabled,
 } from "../utils";
-import { clampEffort, OPENAI_COMPAT_WIRE_EFFORTS } from "../reasoningEffort";
+import { clampEffort, compatThinkingParams, glmThinkingParams, OPENAI_COMPAT_WIRE_EFFORTS } from "../reasoningEffort";
+import { isMoonshotModel, sanitizeMoonshotToolParameters } from "./moonshotSchema";
 
 import { CommonApi } from "../commonApi";
 import { accumulateUsage, type ApiUsage } from "../commonApi";
 import { logger } from "../logger";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
+
+/** Gemini `extra_content` (thought signatures) by tool call id, for replay. */
+const GEMINI_EXTRA_CONTENT_BY_CALL_ID = new Map<string, unknown>();
+
+function rememberGeminiExtraContent(callId: string, extra: unknown): void {
+	GEMINI_EXTRA_CONTENT_BY_CALL_ID.set(callId, extra);
+	if (GEMINI_EXTRA_CONTENT_BY_CALL_ID.size > 2000) {
+		for (const key of GEMINI_EXTRA_CONTENT_BY_CALL_ID.keys()) {
+			GEMINI_EXTRA_CONTENT_BY_CALL_ID.delete(key);
+			if (GEMINI_EXTRA_CONTENT_BY_CALL_ID.size <= 1500) {
+				break;
+			}
+		}
+	}
+}
 
 export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unknown>> {
 	constructor(modelId: string) {
@@ -47,7 +67,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 	 */
 	convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		modelConfig: { includeReasoningInRequest: boolean }
+		modelConfig: MessageConversionConfig
 	): OpenAIChatMessage[] {
 		// Fresh conversion state per request (adapters are reused across turns).
 		this.resetRequestState();
@@ -58,7 +78,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			const imageParts: vscode.LanguageModelDataPart[] = [];
 			const toolCalls: OpenAIToolCall[] = [];
 			const toolResults: { callId: string; content: string }[] = [];
+			const toolResultImages: vscode.LanguageModelDataPart[] = [];
 			const reasoningParts: string[] = [];
+			let reasoningDetails: unknown[] | undefined;
 
 			for (const part of m.content ?? []) {
 				if (part instanceof vscode.LanguageModelTextPart) {
@@ -66,19 +88,32 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 				} else if (part instanceof vscode.LanguageModelDataPart && isImageMimeType(part.mimeType)) {
 					imageParts.push(part);
 				} else if (part instanceof vscode.LanguageModelToolCallPart) {
-					const id = part.callId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+					const id = part.callId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 					let args = "{}";
 					try {
 						args = JSON.stringify(part.input ?? {});
 					} catch {
 						args = "{}";
 					}
-					toolCalls.push({ id, type: "function", function: { name: part.name, arguments: args } });
+					const toolCall: OpenAIToolCall = { id, type: "function", function: { name: part.name, arguments: args } };
+					// Gemini/Gemma on the OpenAI-compatible endpoint require the
+					// thought signature captured with the call (hermes keeps
+					// `extra_content.google.thought_signature` for these models).
+					const extra = GEMINI_EXTRA_CONTENT_BY_CALL_ID.get(id);
+					if (extra && /gemini|gemma/i.test(this._modelId)) {
+						(toolCall as OpenAIToolCall & { extra_content?: unknown }).extra_content = extra;
+					}
+					toolCalls.push(toolCall);
 				} else if (isToolResultPart(part)) {
 					const callId = (part as { callId?: string }).callId ?? "";
 					const content = collectToolResultText(part as { content?: ReadonlyArray<unknown> });
 					toolResults.push({ callId, content });
+					toolResultImages.push(...collectToolResultImages(part as { content?: ReadonlyArray<unknown> }));
 				} else if (part instanceof vscode.LanguageModelThinkingPart) {
+					const details = (part.metadata as { reasoning_details?: unknown } | undefined)?.reasoning_details;
+					if (Array.isArray(details) && details.length > 0) {
+						reasoningDetails = [...(reasoningDetails ?? []), ...details];
+					}
 					const content = Array.isArray(part.value) ? part.value.join("") : part.value;
 					reasoningParts.push(content);
 				}
@@ -97,18 +132,28 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 					assistantMessage.content = joinedText;
 				}
 
-				if (modelConfig.includeReasoningInRequest && joinedThinking) {
-					// Replay actual thinking only — fabricating placeholder
-					// reasoning ("Next step.") pollutes context on providers
-					// that condition on reasoning_content.
-					assistantMessage.reasoning_content = joinedThinking;
+				if (modelConfig.includeReasoningInRequest) {
+					// Replay actual thinking only. Providers that REQUIRE the
+					// field (DeepSeek/Kimi/MiMo) get a single space pad when no
+					// thinking was captured — hermes `_copy_reasoning_content_for_api`;
+					// never fabricated text ("" is rejected by DeepSeek V4).
+					// Every assistant turn needs the field there (hermes
+					// message_sanitization: "every assistant turn still needs it").
+					assistantMessage.reasoning_content = joinedThinking || " ";
+				}
+
+				// OpenRouter: reasoning blocks (with signatures / encrypted
+				// data) must be passed back unmodified to continue a
+				// tool-calling turn on Anthropic/Gemini upstreams.
+				if (reasoningDetails && modelConfig.replayReasoningDetails) {
+					assistantMessage.reasoning_details = reasoningDetails;
 				}
 
 				if (toolCalls.length > 0) {
 					assistantMessage.tool_calls = toolCalls;
 				}
 
-				if (assistantMessage.content || assistantMessage.reasoning_content || assistantMessage.tool_calls) {
+				if (assistantMessage.content || assistantMessage.tool_calls) {
 					out.push(assistantMessage);
 				}
 			}
@@ -118,9 +163,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 				out.push({ role: "tool", tool_call_id: tr.callId, content: tr.content || "" });
 			}
 
+			// Chat Completions tool messages are text-only: forward tool-result
+			// images (screenshots…) in a follow-up user message, the same way
+			// Copilot's BYOK OpenAI provider does, instead of dropping them.
+			const followUpImages = role === "user" ? [...toolResultImages, ...imageParts] : toolResultImages;
+
 			// process user messages
 			if (role === "user") {
-				if (imageParts.length > 0) {
+				if (followUpImages.length > 0) {
 					// multi-modal message
 					const contentArray: ChatMessageContent[] = [];
 
@@ -129,9 +179,11 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 							type: "text",
 							text: joinedText,
 						});
+					} else if (toolResultImages.length > 0) {
+						contentArray.push({ type: "text", text: "Image(s) returned by the tool call above:" });
 					}
 
-					for (const imagePart of imageParts) {
+					for (const imagePart of followUpImages) {
 						const dataUrl = createDataUrl(imagePart);
 						contentArray.push({
 							type: "image_url",
@@ -178,19 +230,69 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
 		// max_tokens / max_completion_tokens (mutually exclusive)
 		// max_completion_tokens takes precedence (newer OpenAI standard for reasoning models)
+		// Direct OpenAI / Azure and GPT-4o+/o-series/GPT-5 models reject
+		// `max_tokens` ("use max_completion_tokens") — hermes
+		// `model_forces_max_completion_tokens`.
+		const bareModel = (um?.id ?? "").toLowerCase().slice((um?.id ?? "").lastIndexOf("/") + 1);
+		const host = safeUrlHost(um?.baseUrl);
+		const forcesCompletionTokens =
+			host === "api.openai.com" ||
+			host.endsWith(".openai.azure.com") ||
+			/^(gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4)/.test(bareModel);
 		if (um?.max_completion_tokens !== undefined) {
 			rb.max_completion_tokens = um.max_completion_tokens;
 		} else if (um?.max_tokens !== undefined) {
-			rb.max_tokens = um.max_tokens;
+			if (forcesCompletionTokens) {
+				rb.max_completion_tokens = um.max_tokens;
+			} else {
+				rb.max_tokens = um.max_tokens;
+			}
 		}
 
-		// OpenAI reasoning configuration. The effort is clamped onto the
-		// OpenAI-compat wire vocabulary (ported from hermes-agent): arbitrary
-		// endpoints top out at "max", so "ultra" verbatim would 400.
-		if (um?.reasoning_effort !== undefined) {
+		// Z.AI (api.z.ai / open.bigmodel.cn) GLM wire — hermes ZaiProfile:
+		// `thinking: {type}` only when the user expressed a preference, and a
+		// top-level `reasoning_effort` only for GLM-5.2/5.3, clamped onto the
+		// family's vocabulary (a generic "medium" would 400 on 5.2).
+		const zaiEndpoint = isZaiHost(um?.baseUrl);
+		// DeepSeek / Kimi / Ollama have their own effort vocabularies and
+		// toggles (hermes provider profiles); undefined = generic handling.
+		const compat =
+			um && !zaiEndpoint
+				? compatThinkingParams(
+						safeUrlHost(um.baseUrl),
+						um.baseUrl ?? "",
+						um.id,
+						resolveThinkingEnabled(um),
+						typeof um.reasoning_effort === "string" ? um.reasoning_effort : undefined
+					)
+				: undefined;
+		if (compat) {
+			if (compat.thinking && um?.thinking?.type === undefined) {
+				rb.thinking = compat.thinking;
+			}
+			if (compat.reasoning_effort) {
+				rb.reasoning_effort = compat.reasoning_effort;
+			}
+			if (compat.think !== undefined) {
+				rb.think = compat.think;
+			}
+		} else if (zaiEndpoint && um) {
+			const glm = glmThinkingParams(um.id, resolveThinkingEnabled(um), um.reasoning_effort);
+			if (glm.thinking) {
+				rb.thinking = glm.thinking;
+			}
+			if (glm.reasoning_effort) {
+				rb.reasoning_effort = glm.reasoning_effort;
+			}
+		} else if (um?.reasoning_effort !== undefined) {
+			// OpenAI reasoning configuration. The effort is clamped onto the
+			// OpenAI-compat wire vocabulary (ported from hermes-agent): arbitrary
+			// endpoints top out at "max", so "ultra" verbatim would 400.
 			const effortValue: unknown = um.reasoning_effort;
 			if (typeof effortValue === "string") {
-				const normalized = effortValue.trim().toLowerCase();
+				// An explicit "thinking off" (enable_thinking:false / thinking.type
+				// disabled) wins over a leftover effort level.
+				const normalized = resolveThinkingEnabled(um) === false ? "none" : effortValue.trim().toLowerCase();
 				if (normalized === "none") {
 					// Explicitly disabled: top-level "none" (Ollama /v1 and most
 					// OpenAI-compat servers understand it; never a thinking=True).
@@ -208,9 +310,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			}
 		}
 
-		// enable_thinking (non-OpenRouter only)
+		// enable_thinking (non-OpenRouter only; Z.AI uses `thinking` above)
 		const enableThinking = um?.enable_thinking;
-		if (enableThinking !== undefined) {
+		if (enableThinking !== undefined && !zaiEndpoint && !compat) {
 			rb.enable_thinking = enableThinking;
 
 			if (um?.thinking_budget !== undefined) {
@@ -218,22 +320,30 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			}
 		}
 
-		// thinking (Zai provider)
-		if (um?.thinking?.type !== undefined) {
+		// thinking (Volcengine/ARK-style `thinking: {type}` on other hosts)
+		// (not where a provider profile already decided the toggle — Moonshot
+		// 400s when both `thinking` and `reasoning_effort` are sent)
+		if (um?.thinking?.type !== undefined && !zaiEndpoint && !(compat && Object.keys(compat).length > 0)) {
 			rb.thinking = {
 				type: um.thinking.type,
 			};
 		}
 
-		// OpenRouter reasoning configuration
-		if (um?.reasoning !== undefined) {
+		// OpenRouter reasoning configuration (never on Z.AI, whose wire
+		// takes `thinking` + `reasoning_effort` instead)
+		if (um?.reasoning !== undefined && !zaiEndpoint) {
 			const reasoningConfig: ReasoningConfig = um.reasoning as ReasoningConfig;
 			if (reasoningConfig.enabled !== false) {
 				const reasoningObj: Record<string, unknown> = {};
 				const effort = reasoningConfig.effort;
 				const maxTokensReasoning = reasoningConfig.max_tokens || 2000; // Default 2000 as per docs
 				if (effort && effort !== "auto") {
-					reasoningObj.effort = effort;
+					// Clamp like every other effort ("ultra" 400s on OpenRouter/xAI).
+					const normalizedEffort = String(effort).trim().toLowerCase();
+					reasoningObj.effort =
+						normalizedEffort === "none"
+							? "none"
+							: clampEffort(normalizedEffort, OPENAI_COMPAT_WIRE_EFFORTS) ?? normalizedEffort;
 				} else {
 					// If auto or unspecified, use max_tokens (Anthropic-style fallback)
 					reasoningObj.max_tokens = maxTokensReasoning;
@@ -256,7 +366,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		// tools
 		const toolConfig = convertToolsToOpenAI(options);
 		if (toolConfig.tools) {
-			rb.tools = toolConfig.tools;
+			// Kimi/Moonshot accept only a strict JSON-Schema subset (hermes
+			// sanitize_moonshot_tools); other providers get the schemas as-is.
+			rb.tools = isMoonshotModel(um?.id)
+				? toolConfig.tools.map((t) => ({
+						...t,
+						function: { ...t.function, parameters: sanitizeMoonshotToolParameters(t.function.parameters) },
+					}))
+				: toolConfig.tools;
 		}
 		if (toolConfig.tool_choice) {
 			rb.tool_choice = toolConfig.tool_choice;
@@ -292,8 +409,17 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		return rb;
 	}
 
+	/** Per-response tool-call slot bookkeeping (see `resolveToolSlot`). */
+	private _toolSlotByIndex = new Map<number, number>();
+	private _toolSlotIds = new Map<number, string>();
+	private _nextToolSlot = 0;
+	private _lastToolSlot: number | undefined;
+	/** OpenRouter reasoning_details merged by index across deltas. */
+	private _reasoningDetails = new Map<string, Record<string, unknown>>();
+	private _finishReason: string | undefined;
+
 	/**
-	 * Read and parse the HF Router streaming (SSE-like) response and report parts.
+	 * Read and parse the streaming (SSE) response and report parts.
 	 * @param responseBody The readable stream body.
 	 * @param progress Progress reporter for streamed parts.
 	 * @param token Cancellation token.
@@ -304,68 +430,143 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		token: CancellationToken
 	): Promise<void> {
 		this.resetRequestState();
+		this._toolSlotByIndex.clear();
+		this._toolSlotIds.clear();
+		this._nextToolSlot = 0;
+		this._lastToolSlot = undefined;
+		this._reasoningDetails.clear();
+		this._finishReason = undefined;
 		const modelId = this._modelId;
 		logger.debug("openai.stream.start", { modelId });
 
-		const reader = responseBody.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-
 		try {
-			while (true) {
-				if (token.isCancellationRequested) {
-					break;
+			for await (const line of this.readStreamLines(responseBody, token)) {
+				const data = CommonApi.sseData(line);
+				if (!data) {
+					continue;
+				}
+				logger.debug("openai.stream.chunk", { modelId, data });
+				if (data === "[DONE]") {
+					continue;
 				}
 
-				const { done, value } = await reader.read();
-				if (done) {
-					break;
+				let parsed: Record<string, unknown>;
+				try {
+					parsed = JSON.parse(data);
+				} catch (e) {
+					console.error("[OpenAI Provider] Failed to parse SSE chunk:", e, "data:", data);
+					logger.error("openai.stream.chunk.error", {
+						modelId,
+						error: e instanceof Error ? e.message : String(e),
+						data,
+					});
+					continue;
 				}
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
-					if (!line.startsWith("data:")) {
-						continue;
-					}
-					const data = line.slice(5).trim();
-					logger.debug("openai.stream.chunk", { modelId, data });
-					if (data === "[DONE]") {
-						// Do not throw on [DONE]; any incomplete/empty buffers are ignored.
-						await this.flushToolCallBuffers(progress, /*throwOnInvalid*/ false);
-						continue;
-					}
-
-					try {
-						const parsed = JSON.parse(data);
-						await this.processDelta(parsed, progress);
-					} catch (e) {
-						console.error("[OpenAI Provider] Failed to parse SSE chunk:", e, "data:", data);
-						logger.error("openai.stream.chunk.error", {
-							modelId,
-							error: e instanceof Error ? e.message : String(e),
-							data,
-						});
-					}
+				// In-stream error object (OpenRouter, vLLM, Z.AI…): surface it
+				// instead of ending with a silently truncated answer.
+				if (parsed.error && !parsed.choices) {
+					const err = parsed.error as Record<string, unknown> | string;
+					const msg =
+						typeof err === "string" ? err : typeof err.message === "string" ? err.message : JSON.stringify(err);
+					const code = typeof err === "object" && err ? String(err.code ?? "") : "";
+					throw new Error(`API stream error${code ? ` [${code}]` : ""}: ${msg}`);
 				}
+				await this.processDelta(parsed, progress);
 			}
-			logger.debug("openai.stream.done", { modelId });
+			// Streams that end without [DONE] / finish_reason must not lose
+			// a fully-received tool call.
+			await this.flushToolCallBuffers(progress, /*throwOnInvalid*/ false);
+			this.flushReasoningDetails(progress);
+			this.reportStopNotice(progress, this._finishReason);
+			logger.debug("openai.stream.done", { modelId, finishReason: this._finishReason ?? "" });
 		} catch (e) {
 			console.error("[OpenAI Provider] Streaming response error:", e);
 			logger.error("openai.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
 			throw e;
 		} finally {
-			reader.releaseLock();
 			// If there's an active thinking sequence, end it first
 			this.reportEndThinking(progress);
 		}
 	}
 
 	/**
+	 * Map a streamed tool-call delta onto a stable internal slot. Providers
+	 * disagree on `index`: some omit it, some reuse index 0 for every
+	 * parallel call (distinguished only by id), some repeat the id on every
+	 * chunk. A new id always opens a new slot; id-less chunks continue the
+	 * slot of their index (or the last slot when index is absent).
+	 */
+	private resolveToolSlot(tc: Record<string, unknown>): number {
+		const id = typeof tc.id === "string" && tc.id ? tc.id : undefined;
+		const pIdx = typeof tc.index === "number" ? tc.index : undefined;
+		if (id) {
+			for (const [slot, sid] of this._toolSlotIds) {
+				if (sid === id) {
+					this._lastToolSlot = slot;
+					return slot;
+				}
+			}
+			if (pIdx !== undefined) {
+				const existing = this._toolSlotByIndex.get(pIdx);
+				if (existing !== undefined && !this._toolSlotIds.has(existing)) {
+					this._toolSlotIds.set(existing, id);
+					this._lastToolSlot = existing;
+					return existing;
+				}
+			}
+			const slot = this._nextToolSlot++;
+			this._toolSlotIds.set(slot, id);
+			if (pIdx !== undefined) {
+				this._toolSlotByIndex.set(pIdx, slot);
+			}
+			this._lastToolSlot = slot;
+			return slot;
+		}
+		if (pIdx !== undefined) {
+			let slot = this._toolSlotByIndex.get(pIdx);
+			if (slot === undefined) {
+				slot = this._nextToolSlot++;
+				this._toolSlotByIndex.set(pIdx, slot);
+			}
+			this._lastToolSlot = slot;
+			return slot;
+		}
+		if (this._lastToolSlot === undefined) {
+			this._lastToolSlot = this._nextToolSlot++;
+		}
+		return this._lastToolSlot;
+	}
+
+	/** Merge one streamed OpenRouter reasoning_details entry into the accumulator. */
+	private mergeReasoningDetail(detail: Record<string, unknown>, position: number): void {
+		const key = `${typeof detail.index === "number" ? detail.index : position}:${String(detail.type ?? "")}`;
+		const acc = this._reasoningDetails.get(key);
+		if (!acc) {
+			this._reasoningDetails.set(key, { ...detail });
+			return;
+		}
+		for (const [k, v] of Object.entries(detail)) {
+			if ((k === "text" || k === "summary") && typeof v === "string") {
+				acc[k] = (typeof acc[k] === "string" ? (acc[k] as string) : "") + v;
+			} else if (v !== undefined && v !== null && v !== "") {
+				acc[k] = v;
+			}
+		}
+	}
+
+	/** Attach the merged reasoning_details to the thinking sequence for replay. */
+	private flushReasoningDetails(progress: Progress<LanguageModelResponsePart2>): void {
+		if (this._reasoningDetails.size === 0) {
+			return;
+		}
+		const merged = Array.from(this._reasoningDetails.values());
+		this._reasoningDetails.clear();
+		this.reportThinkingMetadata(progress, { reasoning_details: merged });
+	}
+
+	/**
 	 * Handle a single streamed delta chunk, emitting text and tool call parts.
-	 * @param delta Parsed SSE chunk from the Router.
+	 * @param delta Parsed SSE chunk.
 	 * @param progress Progress reporter for parts.
 	 */
 	private async processDelta(
@@ -386,72 +587,83 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			return false;
 		}
 
-		const deltaObj = choice.delta as Record<string, unknown> | undefined;
+		const deltaObj = (choice.delta ?? choice.message) as Record<string, unknown> | undefined;
 
 		// Process thinking content first (before regular text content)
 		try {
-			let maybeThinking =
-				(choice as Record<string, unknown> | undefined)?.thinking ??
-				(deltaObj as Record<string, unknown> | undefined)?.thinking ??
-				(deltaObj as Record<string, unknown> | undefined)?.reasoning ??
-				(deltaObj as Record<string, unknown> | undefined)?.reasoning_content;
-
-			// OpenRouter/Claude reasoning_details array handling (new)
-			const maybeReasoningDetails =
-				(deltaObj as Record<string, unknown>)?.reasoning_details ??
-				(choice as Record<string, unknown>)?.reasoning_details;
-			if (maybeReasoningDetails && Array.isArray(maybeReasoningDetails) && maybeReasoningDetails.length > 0) {
-				// Prioritize details array over simple reasoning
-				const details: Array<ReasoningDetail> = maybeReasoningDetails as Array<ReasoningDetail>;
-				// Sort by index to preserve order (in case out-of-order chunks)
-				const sortedDetails = details.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-
-				for (const detail of sortedDetails) {
+			// OpenRouter reasoning_details: visible text comes from
+			// reasoning.text / reasoning.summary; encrypted blocks are kept
+			// only for replay (never shown as "[REDACTED]" noise).
+			const maybeReasoningDetails = deltaObj?.reasoning_details ?? choice.reasoning_details;
+			let hadDetailsText = false;
+			if (Array.isArray(maybeReasoningDetails) && maybeReasoningDetails.length > 0) {
+				(maybeReasoningDetails as Array<ReasoningDetail>).forEach((detail, position) => {
+					if (!detail || typeof detail !== "object") {
+						return;
+					}
+					this.mergeReasoningDetail(detail as unknown as Record<string, unknown>, position);
 					let extractedText = "";
 					if (detail.type === "reasoning.summary") {
 						extractedText = (detail as ReasoningSummaryDetail).summary;
 					} else if (detail.type === "reasoning.text") {
 						extractedText = (detail as ReasoningTextDetail).text;
-					} else if (detail.type === "reasoning.encrypted") {
-						extractedText = "[REDACTED]"; // As per docs
-					} else {
-						extractedText = JSON.stringify(detail); // Fallback for unknown
 					}
-
-					if (extractedText) {
+					if (typeof extractedText === "string" && extractedText) {
 						this.bufferThinkingContent(extractedText, progress);
+						hadDetailsText = true;
 						emitted = true;
 					}
-				}
-				maybeThinking = null; // Skip simple thinking if details present
+				});
 			}
 
-			// Fallback to simple thinking if no details
-			if (maybeThinking !== undefined && maybeThinking !== null) {
-				let text = "";
-				// let metadata: Record<string, unknown> | undefined;
-				if (maybeThinking && typeof maybeThinking === "object") {
-					const mt = maybeThinking as Record<string, unknown>;
-					text = typeof mt["text"] === "string" ? (mt["text"] as string) : JSON.stringify(mt);
-					// metadata = mt["metadata"] ? (mt["metadata"] as Record<string, unknown>) : undefined;
-				} else if (typeof maybeThinking === "string") {
-					text = maybeThinking;
-				}
-				if (text) {
-					this.bufferThinkingContent(text, progress);
-					emitted = true;
+			// Plain reasoning text: the FIRST non-empty field wins — several
+			// servers send the same text under both `reasoning` and
+			// `reasoning_content`, which would otherwise be shown twice.
+			if (!hadDetailsText) {
+				const candidates = [
+					deltaObj?.reasoning_content,
+					deltaObj?.reasoning,
+					deltaObj?.thinking,
+					choice.thinking,
+				];
+				for (const candidate of candidates) {
+					let text = "";
+					if (typeof candidate === "string") {
+						text = candidate;
+					} else if (candidate && typeof candidate === "object") {
+						const mt = candidate as Record<string, unknown>;
+						text = typeof mt.text === "string" ? mt.text : typeof mt.content === "string" ? mt.content : "";
+					}
+					if (text) {
+						this.bufferThinkingContent(text, progress);
+						emitted = true;
+						break;
+					}
 				}
 			}
 		} catch (e) {
 			console.error("[customcopilot] Failed to process thinking/reasoning_details:", e);
 		}
 
-		if (deltaObj?.content) {
-			const content = String(deltaObj.content);
+		// A refusal is the answer (hermes promotes it to content): without
+		// this a refusal-only stream looked like an empty response.
+		if (typeof deltaObj?.refusal === "string" && deltaObj.refusal) {
+			this.reportEndThinking(progress);
+			if (this.processTextContent(deltaObj.refusal, progress).emittedAny) {
+				this._hasEmittedAssistantText = true;
+				emitted = true;
+			}
+		}
+
+		if (typeof deltaObj?.content === "string" && deltaObj.content) {
+			const content = deltaObj.content;
 
 			// Process XML think blocks or text content (mutually exclusive)
 			const xmlRes = this.processXmlThinkBlocks(content, progress);
 			if (xmlRes.emittedAny) {
+				if (this._hasEmittedText) {
+					this._hasEmittedAssistantText = true;
+				}
 				emitted = true;
 			} else {
 				// If there's an active thinking sequence, end it first
@@ -466,7 +678,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			}
 		}
 
-		if (deltaObj?.tool_calls) {
+		if (Array.isArray(deltaObj?.tool_calls) && deltaObj.tool_calls.length > 0) {
 			// If there's an active thinking sequence, end it first
 			this.reportEndThinking(progress);
 
@@ -474,27 +686,37 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 
 			// SSEProcessor-like: if first tool call appears after text, emit a whitespace
 			// to ensure any UI buffers/linkifiers are flushed without adding visible noise.
-			if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText && toolCalls.length > 0) {
+			if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText) {
 				progress.report(new vscode.LanguageModelTextPart(" "));
 				this._emittedBeginToolCallsHint = true;
 			}
 
 			for (const tc of toolCalls) {
-				const idx = (tc.index as number) ?? 0;
-				// Ignore any further deltas for an index we've already completed
+				if (!tc || typeof tc !== "object") {
+					continue;
+				}
+				const idx = this.resolveToolSlot(tc);
+				// Ignore any further deltas for a slot we've already completed
 				if (this._completedToolCallIndices.has(idx)) {
 					continue;
 				}
 				const buf = this._toolCallBuffers.get(idx) ?? { args: "" };
-				if (tc.id && typeof tc.id === "string") {
-					buf.id = tc.id as string;
+				if (typeof tc.id === "string" && tc.id) {
+					buf.id = tc.id;
 				}
 				const func = tc.function as Record<string, unknown> | undefined;
-				if (func?.name && typeof func.name === "string") {
-					buf.name = func.name as string;
+				if (typeof func?.name === "string" && func.name) {
+					buf.name = func.name;
+				}
+				const extraContent = tc.extra_content;
+				if (extraContent && typeof extraContent === "object" && buf.id) {
+					rememberGeminiExtraContent(buf.id, extraContent);
 				}
 				if (typeof func?.arguments === "string") {
-					buf.args += func.arguments as string;
+					buf.args += func.arguments;
+				} else if (func?.arguments && typeof func.arguments === "object") {
+					// A few servers send arguments as an already-parsed object.
+					buf.args = JSON.stringify(func.arguments);
 				}
 				this._toolCallBuffers.set(idx, buf);
 
@@ -503,10 +725,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 			}
 		}
 
-		const finish = (choice.finish_reason as string | undefined) ?? undefined;
-		if (finish === "tool_calls" || finish === "stop") {
-			// On both 'tool_calls' and 'stop', emit any buffered calls and throw on invalid JSON
-			await this.flushToolCallBuffers(progress, /*throwOnInvalid*/ true);
+		const finish = typeof choice.finish_reason === "string" ? choice.finish_reason : undefined;
+		if (finish) {
+			this._finishReason = finish;
+		}
+		if (finish === "tool_calls" || finish === "stop" || finish === "function_call") {
+			// Emit any buffered calls; an unparseable call is dropped with a
+			// log rather than failing the whole (already-streamed) response.
+			await this.flushToolCallBuffers(progress, /*throwOnInvalid*/ false);
 		}
 		return emitted;
 	}
@@ -516,7 +742,8 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
-		apiKey: string
+		apiKey: string,
+		signal?: AbortSignal
 	): AsyncGenerator<{ type: "text"; text: string }> {
 		// Combine system prompt with first user message or as separate system message
 		const openaiMessages = [...messages];
@@ -539,6 +766,7 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		// Make the API request
 		const response = await proxyFetch(url, {
 			...networkInit,
+			...(signal ? { signal } : {}),
 			method: "POST",
 			headers,
 			body: JSON.stringify(requestBody),
@@ -561,7 +789,9 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
-				if (done) break;
+				if (done) {
+					break;
+				}
 
 				buffer += decoder.decode(value, { stream: true });
 				const lines = buffer.split("\n");
@@ -572,14 +802,14 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 						continue;
 					}
 					const data = line.slice(5).trim();
-					if (data === "[DONE]") continue;
+					if (data === "[DONE]") {continue;}
 
 					try {
 						const parsed = JSON.parse(data);
 
 						// OpenAI-compatible streaming response
 						const choice = (parsed.choices as Record<string, unknown>[] | undefined)?.[0];
-						if (!choice) continue;
+						if (!choice) {continue;}
 
 						const deltaObj = choice.delta as Record<string, unknown> | undefined;
 						if (deltaObj?.content) {
@@ -587,13 +817,17 @@ export class OpenaiApi extends CommonApi<OpenAIChatMessage, Record<string, unkno
 							yield { type: "text", text: content };
 						}
 						// Handle finish reason
-						if (choice.finish_reason) break;
+						if (choice.finish_reason) {
+							break;
+						}
 					} catch (e) {
 						console.error("[OpenAI Provider] Failed to parse SSE chunk:", e, "data:", data);
 					}
 				}
 			}
 		} finally {
+			// Cancel (not only release) so an abandoned stream frees the socket.
+			await reader.cancel().catch(() => undefined);
 			reader.releaseLock();
 		}
 	}

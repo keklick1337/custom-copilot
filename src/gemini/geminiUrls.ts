@@ -71,10 +71,12 @@ export function normalizeGeminiModelPath(modelId: string): string {
 		return "models/gemini-3-pro-preview";
 	}
 
-	const last = raw.includes("/") ? raw.split("/").filter(Boolean).pop() || raw : raw;
-	if (last.startsWith("models/") || last.startsWith("tunedModels/")) {
-		return last;
+	// Keep explicit resource paths (tuned models live under tunedModels/,
+	// which must not be rewritten to models/) — check BEFORE splitting.
+	if (/^(models|tunedModels)\/[^/?&]+$/.test(raw) && !raw.includes("..")) {
+		return raw;
 	}
+	const last = raw.includes("/") ? raw.split("/").filter(Boolean).pop() || raw : raw;
 
 	if (last.includes("..") || last.includes("?") || last.includes("&")) {
 		return "";
@@ -92,7 +94,9 @@ export function buildGeminiGenerateContentUrl(rawBaseUrl: string, modelId: strin
 	try {
 		const normalized = normalizeBaseUrl(value);
 		const u0 = new URL(normalized);
-		let basePath = (u0.pathname || "").replace(/\/+$/, "") || "/";
+		// hermes normalize_gemini_base_url: drop an OpenAI-compat "/openai"
+		// suffix (native calls go to the version root).
+		let basePath = (u0.pathname || "").replace(/\/+$/, "").replace(/\/openai$/i, "") || "/";
 
 		// If configured as a full endpoint, keep it (just switch method based on stream).
 		if (/:generateContent$/i.test(basePath) || /:streamGenerateContent$/i.test(basePath)) {
@@ -112,7 +116,18 @@ export function buildGeminiGenerateContentUrl(rawBaseUrl: string, modelId: strin
 		}
 
 		// If base already contains a version segment, don't append again.
-		if (!/\/v1beta$/i.test(basePath) && !/\/v1beta\//i.test(`${basePath}/`)) {
+		// Any version segment (v1, v1beta, v1alpha, v1beta1…) counts.
+		const hasVersion = /\/v\d+(?:alpha|beta)?\d*$/i.test(basePath) || /\/v\d+(?:alpha|beta)?\d*\//i.test(`${basePath}/`);
+		const vertexExpress = /aiplatform\.googleapis\.com$/i.test(u0.hostname) && !basePath.includes("/projects/");
+		if (vertexExpress) {
+			// Vertex AI express mode: …/v1beta1/publishers/google/models/…
+			if (!/\/publishers\/google$/i.test(basePath)) {
+				if (!hasVersion) {
+					basePath = joinPathPrefix(basePath, "/v1beta1");
+				}
+				basePath = joinPathPrefix(basePath, "/publishers/google");
+			}
+		} else if (!hasVersion) {
 			basePath = joinPathPrefix(basePath, "/v1beta");
 		}
 

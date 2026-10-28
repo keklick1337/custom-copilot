@@ -164,6 +164,11 @@ const el = {
 	modelReasoningEffort: $("modelReasoningEffort"),
 	modelEnableThinking: $("modelEnableThinking"),
 	modelThinkingBudget: $("modelThinkingBudget"),
+	modelPromptCache: $("modelPromptCache"),
+	modelFastMode: $("modelFastMode"),
+	modelImageMaxDimension: $("modelImageMaxDimension"),
+	modelModeHint: $("modelModeHint"),
+	openRouterReasoningSection: $("openRouterReasoningSection"),
 	modelIncludeReasoning: $("modelIncludeReasoning"),
 	modelThinkingType: $("modelThinkingType"),
 	modelReasoningEnabled: $("modelReasoningEnabled"),
@@ -199,7 +204,7 @@ const dropdownHeader = el.modelIdDropdown.querySelector(".dropdown-header");
 const PROVIDER_PRESETS = [
 	// ── First-party ──
 	{ group: "First-party", label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai" },
-	{ group: "First-party", label: "OpenAI (Responses API)", provider: "openai", baseUrl: "https://api.openai.com/v1", apiMode: "openai-responses" },
+	{ group: "First-party", label: "OpenAI (Responses API)", provider: "openai-responses", baseUrl: "https://api.openai.com/v1", apiMode: "openai-responses" },
 	{ group: "First-party", label: "Anthropic (Claude)", provider: "anthropic", baseUrl: "https://api.anthropic.com/v1", apiMode: "anthropic" },
 	{ group: "First-party", label: "Google Gemini (AI Studio)", provider: "google", baseUrl: "https://generativelanguage.googleapis.com/v1beta", apiMode: "gemini" },
 	{ group: "First-party", label: "xAI (Grok)", provider: "xai", baseUrl: "https://api.x.ai/v1", apiMode: "openai" },
@@ -207,7 +212,10 @@ const PROVIDER_PRESETS = [
 	// ── GLM / Z.AI ──
 	{ group: "GLM / Z.AI", label: "Z.AI (GLM, OpenAI-compat)", provider: "zai-openai", baseUrl: "https://api.z.ai/api/paas/v4", apiMode: "openai" },
 	{ group: "GLM / Z.AI", label: "Z.AI (Anthropic-compat)", provider: "zai", baseUrl: "https://api.z.ai/api/anthropic", apiMode: "zai" },
+	{ group: "GLM / Z.AI", label: "Z.AI Coding Plan (GLM, OpenAI-compat)", provider: "zai-coding", baseUrl: "https://api.z.ai/api/coding/paas/v4", apiMode: "openai" },
 	{ group: "GLM / Z.AI", label: "Zhipu bigmodel.cn (GLM)", provider: "zhipu", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiMode: "openai" },
+	{ group: "GLM / Z.AI", label: "Zhipu bigmodel.cn (Anthropic-compat)", provider: "zhipu-anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic", apiMode: "zai" },
+	{ group: "GLM / Z.AI", label: "Zhipu bigmodel.cn Coding Plan", provider: "zhipu-coding", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4", apiMode: "openai" },
 
 	// ── Aggregators ──
 	{ group: "Aggregators", label: "OpenRouter", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiMode: "openai" },
@@ -244,7 +252,7 @@ const PROVIDER_PRESETS = [
 
 	// ── Local / self-hosted ──
 	{ group: "Local / self-hosted", label: "Ollama (native API)", provider: "ollama", baseUrl: "http://localhost:11434", apiMode: "ollama" },
-	{ group: "Local / self-hosted", label: "Ollama (OpenAI-compat)", provider: "ollama", baseUrl: "http://localhost:11434/v1", apiMode: "openai" },
+	{ group: "Local / self-hosted", label: "Ollama (OpenAI-compat)", provider: "ollama-openai", baseUrl: "http://localhost:11434/v1", apiMode: "openai" },
 	{ group: "Local / self-hosted", label: "LM Studio", provider: "lmstudio", baseUrl: "http://localhost:1234/v1", apiMode: "openai" },
 	{ group: "Local / self-hosted", label: "vLLM", provider: "vllm", baseUrl: "http://localhost:8000/v1", apiMode: "openai" },
 	{ group: "Local / self-hosted", label: "llama.cpp server", provider: "llamacpp", baseUrl: "http://localhost:8080/v1", apiMode: "openai" },
@@ -852,6 +860,7 @@ function showSkillsMyPane() {
 	const addBtn = $("skillAddTabBtn");
 	if (addBtn) { addBtn.style.display = ""; }
 	refreshLocalSkills($("skillLocalFilter") ? $("skillLocalFilter").value : "");
+	skillPost({ type: "skills.getSafety" });
 }
 
 function showSkillsAddPane() {
@@ -1417,6 +1426,12 @@ function initSkillsScreen() {
 	if (localFilter) {
 		localFilter.addEventListener("input", () => refreshLocalSkills(localFilter.value));
 	}
+	const safetySelect = $("skillSafetyMode");
+	if (safetySelect) {
+		// The host confirms weakening the scan and replies with the effective
+		// mode (skills.safety), which re-syncs the select if cancelled.
+		safetySelect.addEventListener("change", () => skillPost({ type: "skills.setSafety", mode: safetySelect.value }));
+	}
 	const saveBtn = $("skillSaveBtn");
 	if (saveBtn) {
 		saveBtn.addEventListener("click", () => {
@@ -1492,7 +1507,33 @@ $("gitCommitBackBtn").addEventListener("click", showEmptyState);
 el.exportConfig.addEventListener("click", () => vscode.postMessage({ type: "exportConfig" }));
 el.importConfig.addEventListener("click", () => vscode.postMessage({ type: "importConfig" }));
 
+/**
+ * Returns an error message when a JSON textarea is non-empty but not a JSON
+ * object. A typo must never be saved as "no value" (that silently wiped the
+ * stored headers/extra).
+ */
+function jsonObjectFieldError(text, label) {
+	const t = (text || "").trim();
+	if (!t) {
+		return "";
+	}
+	try {
+		const v = JSON.parse(t);
+		if (!v || typeof v !== "object" || Array.isArray(v)) {
+			return `${label} must be a JSON object.`;
+		}
+		return "";
+	} catch (e) {
+		return `${label} is not valid JSON: ${e && e.message ? e.message : e}`;
+	}
+}
+
 el.saveProviderBtn.addEventListener("click", () => {
+	const headersError = jsonObjectFieldError(el.pHeaders.value, "Headers");
+	if (headersError) {
+		showProviderError(headersError);
+		return;
+	}
 	if (state.isNewProvider) {
 		const name = el.pName.value.trim();
 		if (!name) {
@@ -2441,12 +2482,98 @@ $("cancelModel").addEventListener("click", () => {
 	resetModelForm();
 });
 
+// ── Adaptive model form (fields shown per apiMode / provider host) ─────────────
+
+// Which apiModes consume each model field (mirrors the adapters in src/).
+const ALL_MODES = ["openai", "openai-responses", "anthropic", "zai", "gemini", "ollama"];
+const MODEL_FIELD_MODES = {
+	modelMaxCompletionTokens: ["openai", "openai-responses", "gemini"],
+	modelTopK: ["openai", "anthropic", "zai", "gemini", "ollama"],
+	modelMinP: ["openai", "ollama"],
+	modelFrequencyPenalty: ["openai", "gemini", "ollama"],
+	modelPresencePenalty: ["openai", "gemini", "ollama"],
+	modelRepetitionPenalty: ["openai", "ollama"],
+	modelThinkingBudget: ["openai", "anthropic", "zai", "gemini"],
+	modelPromptCache: ["anthropic", "zai"],
+	modelFastMode: ["anthropic"],
+	modelIncludeReasoning: ["openai", "anthropic", "zai", "ollama"],
+	modelThinkingType: ["openai", "openai-responses"],
+	modelEnableThinking: ALL_MODES,
+};
+
+const MODE_HINTS = {
+	openai: "OpenAI-compatible chat: sampling, penalties and reasoning effort are sent as-is (clamped per provider).",
+	"openai-responses": "OpenAI Responses API: effort maps to reasoning.effort; penalties/top_k are not part of this API.",
+	anthropic: "Anthropic Messages: thinking is adaptive (Claude 4.6+) or budgeted; prompt cache and fast mode apply here.",
+	zai: "Z.AI Anthropic wire: GLM thinking on/off is sent explicitly; GLM-5.2/5.3 take an effort level.",
+	gemini: "Gemini: effort maps to thinkingLevel (3.x) or thinkingBudget (2.5).",
+	ollama: "Ollama native: context length becomes num_ctx; thinking is the think flag.",
+};
+
+function hostOf(url) {
+	try {
+		return new URL(url).hostname.toLowerCase();
+	} catch {
+		return "";
+	}
+}
+
+function currentModelTarget() {
+	const info = state.selectedProvider ? getProviderInfo(state.selectedProvider) : {};
+	const editing = findModelByKey(el.modelIdInput.getAttribute("data-original-key") || "");
+	const apiMode = (editing && editing.apiMode) || info.apiMode || el.pApiMode.value || "openai";
+	const baseUrl = (editing && editing.baseUrl) || info.baseUrl || el.pBaseUrl.value || "";
+	return { apiMode, host: hostOf(baseUrl) };
+}
+
+function setFieldVisible(input, visible) {
+	const field = input && input.closest(".field");
+	if (field) {
+		field.classList.toggle("hidden", !visible);
+	}
+}
+
+function applyModelFieldVisibility() {
+	const { apiMode, host } = currentModelTarget();
+	const isZaiHost = host.endsWith("z.ai") || host.endsWith("bigmodel.cn");
+	const isOpenRouter = host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+	const isNativeAnthropic = host.endsWith("anthropic.com");
+	for (const [id, modes] of Object.entries(MODEL_FIELD_MODES)) {
+		let visible = modes.includes(apiMode);
+		// Z.AI's OpenAI wire ignores raw thinking.type / enable_thinking budgets.
+		if (isZaiHost && apiMode === "openai" && (id === "modelThinkingType" || id === "modelThinkingBudget")) {
+			visible = false;
+		}
+		if (isNativeAnthropic && id === "modelIncludeReasoning") {
+			visible = false;
+		}
+		// Keep a field visible when it already holds a value, so nothing is silently lost.
+		const input = el[id];
+		if (!visible && input && input.value !== "") {
+			visible = true;
+		}
+		setFieldVisible(input, visible);
+	}
+	const orVisible =
+		(apiMode === "openai" && isOpenRouter) ||
+		[el.modelReasoningEnabled, el.modelReasoningEffortOR, el.modelReasoningExclude, el.modelReasoningMaxTokens].some(
+			(i) => i && i.value !== ""
+		);
+	el.openRouterReasoningSection.classList.toggle("hidden", !orVisible);
+	el.modelModeHint.textContent = `${apiMode}${host ? ` · ${host}` : ""} — ${MODE_HINTS[apiMode] || ""}`;
+}
+
+el.pApiMode.addEventListener("change", applyModelFieldVisibility);
+el.pBaseUrl.addEventListener("input", applyModelFieldVisibility);
+
 // ── Model form helpers ─────────────────────────────────────────────────────────
 
 function showModelForm(title) {
 	el.modelFormTitle.textContent = title;
 	el.modelFormSection.style.display = "block";
 	el.modelFormSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	// populate/reset run right after this; refresh visibility once they finish.
+	setTimeout(applyModelFieldVisibility, 0);
 }
 
 function hideModelForm() {
@@ -2470,6 +2597,7 @@ function resetModelForm() {
 		"modelMinP",
 		"modelFrequencyPenalty",
 		"modelPresencePenalty",
+		"modelImageMaxDimension",
 		"modelRepetitionPenalty",
 		"modelThinkingBudget",
 		"modelReasoningMaxTokens",
@@ -2484,13 +2612,18 @@ function resetModelForm() {
 		"modelTools",
 		"modelReasoningEffort",
 		"modelEnableThinking",
+		"modelPromptCache",
+		"modelFastMode",
 		"modelThinkingType",
 		"modelIncludeReasoning",
 		"modelReasoningEnabled",
 		"modelReasoningExclude",
 		"modelReasoningEffortOR",
 	].forEach((f) => {
-		if (el[f] && el[f].tagName === "SELECT") el[f].selectedIndex = 0;
+		if (el[f] && el[f].tagName === "SELECT") {
+			el[f].querySelectorAll("option[data-custom]").forEach((o) => o.remove());
+			el[f].selectedIndex = 0;
+		}
 	});
 
 	el.advancedContent.style.display = "none";
@@ -2530,14 +2663,17 @@ function populateModelForm(model, mid) {
 	el.modelFrequencyPenalty.value = model.frequency_penalty != null ? model.frequency_penalty : "";
 	el.modelPresencePenalty.value = model.presence_penalty != null ? model.presence_penalty : "";
 	el.modelRepetitionPenalty.value = model.repetition_penalty != null ? model.repetition_penalty : "";
-	el.modelReasoningEffort.value = model.reasoning_effort || "";
+	setSelectValuePreserving(el.modelReasoningEffort, model.reasoning_effort);
 	el.modelEnableThinking.value = model.enable_thinking != null ? String(model.enable_thinking) : "";
 	el.modelThinkingBudget.value = model.thinking_budget != null ? model.thinking_budget : "";
+	el.modelPromptCache.value = model.prompt_cache || "";
+	el.modelImageMaxDimension.value = model.image_max_dimension != null ? model.image_max_dimension : "";
+	el.modelFastMode.value = model.fast_mode != null ? String(model.fast_mode) : "";
 	el.modelIncludeReasoning.value =
 		model.include_reasoning_in_request != null ? String(model.include_reasoning_in_request) : "";
-	el.modelThinkingType.value = model.thinking?.type || "";
+	setSelectValuePreserving(el.modelThinkingType, model.thinking?.type);
 	el.modelReasoningEnabled.value = model.reasoning?.enabled != null ? String(model.reasoning.enabled) : "";
-	el.modelReasoningEffortOR.value = model.reasoning?.effort || "";
+	setSelectValuePreserving(el.modelReasoningEffortOR, model.reasoning?.effort);
 	el.modelReasoningExclude.value = model.reasoning?.exclude != null ? String(model.reasoning.exclude) : "";
 	el.modelReasoningMaxTokens.value = model.reasoning?.max_tokens != null ? model.reasoning.max_tokens : "";
 	el.modelHeaders.value = model.headers ? JSON.stringify(model.headers, null, 2) : "";
@@ -2567,6 +2703,9 @@ function collectModelFormData() {
 		reasoning_effort: el.modelReasoningEffort.value || undefined,
 		enable_thinking: boolOrUndef(el.modelEnableThinking.value),
 		thinking_budget: numOrUndef(el.modelThinkingBudget.value),
+		prompt_cache: el.modelPromptCache.value || undefined,
+		fast_mode: boolOrUndef(el.modelFastMode.value),
+		image_max_dimension: numOrUndef(el.modelImageMaxDimension.value),
 		include_reasoning_in_request: boolOrUndef(el.modelIncludeReasoning.value),
 		thinking: el.modelThinkingType.value ? { type: el.modelThinkingType.value } : undefined,
 		reasoning: buildReasoningObj(),
@@ -2587,6 +2726,16 @@ function buildReasoningObj() {
 
 function validateModelData(d) {
 	showModelError("");
+	for (const [field, label] of [
+		[el.modelHeaders, "Headers"],
+		[el.modelExtra, "Extra"],
+	]) {
+		const jsonError = field ? jsonObjectFieldError(field.value, label) : "";
+		if (jsonError) {
+			showModelError(jsonError);
+			return false;
+		}
+	}
 	if (!d.id) {
 		showModelError("Model ID is required.");
 		return false;
@@ -2654,6 +2803,30 @@ function showModelError(msg) {
 	if (msg) el.modelError.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+// ── Select helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Set a <select>'s value without silently dropping values that have no matching
+ * <option> (assigning such a value would blank the select and the next save
+ * would erase the user's config). Unknown values get a temporary
+ * "<value> (custom)" option, marked data-custom so it is replaced next time.
+ */
+function setSelectValuePreserving(select, value) {
+	if (!select) {
+		return;
+	}
+	select.querySelectorAll("option[data-custom]").forEach((o) => o.remove());
+	const v = value == null ? "" : String(value);
+	if (v && !Array.from(select.options).some((o) => o.value === v)) {
+		const opt = document.createElement("option");
+		opt.value = v;
+		opt.textContent = `${v} (custom)`;
+		opt.dataset.custom = "true";
+		select.appendChild(opt);
+	}
+	select.value = v;
+}
+
 // ── Model ID dropdown ──────────────────────────────────────────────────────────
 
 function populateModelDropdown(models) {
@@ -2677,10 +2850,12 @@ function populateModelDropdown(models) {
 			if (m.vision != null) {
 				el.modelVision.value = String(m.vision);
 			}
+			// Only adopt an effort the endpoint explicitly reports. A bare
+			// enable_thinking / reasoning.enabled flag says nothing about the
+			// effort level — leave the select on "Default (provider decides)"
+			// rather than silently writing an effort without the thinking flag.
 			if (m.reasoning_effort) {
-				el.modelReasoningEffort.value = String(m.reasoning_effort);
-			} else if (m.enable_thinking === true || m.reasoning?.enabled === true) {
-				el.modelReasoningEffort.value = "medium";
+				setSelectValuePreserving(el.modelReasoningEffort, String(m.reasoning_effort));
 			}
 			hideDropdown();
 		});
@@ -2758,6 +2933,14 @@ window.addEventListener("message", async ({ data: msg }) => {
 					}
 				} else {
 					refreshLocalSkills("");
+				}
+				break;
+			}
+			case "skills.safety": {
+				const sel = $("skillSafetyMode");
+				if (sel && msg.mode) {
+					sel.value = msg.mode;
+					sel.style.borderColor = msg.mode === "block" ? "" : "var(--vscode-inputValidation-warningBorder, #c90)";
 				}
 				break;
 			}

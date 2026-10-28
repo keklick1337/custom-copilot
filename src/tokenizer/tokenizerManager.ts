@@ -32,7 +32,9 @@ class TokenCache {
 			this.cache.size > 0
 		) {
 			const firstKey = this.cache.keys().next().value;
-			if (firstKey === undefined) break;
+			if (firstKey === undefined) {
+				break;
+			}
 			const evictedSize = firstKey.length * 2 + 8;
 			this.cache.delete(firstKey);
 			this.currentSize -= evictedSize;
@@ -105,7 +107,9 @@ export class TokenizerManager {
 	}
 
 	async countTokens(text: string): Promise<number> {
-		if (!text) return 0;
+		if (!text) {
+			return 0;
+		}
 
 		const cached = this.cache.get(text);
 		if (cached !== undefined) {

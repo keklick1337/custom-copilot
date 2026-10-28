@@ -1,3 +1,4 @@
+import type { MessageConversionConfig } from "../commonApi";
 import * as vscode from "vscode";
 import {
 	CancellationToken,
@@ -11,7 +12,15 @@ import type { CustomModelItem } from "../types";
 
 import type { OllamaMessage, OllamaRequestBody, OllamaStreamChunk, OllamaToolCall } from "./ollamaTypes";
 
-import { isToolResultPart, collectToolResultText, convertToolsToOpenAI, mapRole } from "../utils";
+import {
+	isImageMimeType,
+	isToolResultPart,
+	collectToolResultText,
+	collectToolResultImages,
+	convertToolsToOpenAI,
+	mapRole,
+	resolveThinkingEnabled,
+} from "../utils";
 
 import { CommonApi, accumulateUsage } from "../commonApi";
 import { logger } from "../logger";
@@ -30,11 +39,15 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 	 */
 	convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		_modelConfig: { includeReasoningInRequest: boolean }
+		_modelConfig: MessageConversionConfig
 	): OllamaMessage[] {
 		// Fresh conversion state per request (adapters are reused across turns).
 		this.resetRequestState();
 		const out: OllamaMessage[] = [];
+
+		// Ollama tool messages are matched by tool NAME (calls carry no id):
+		// remember the name of every assistant tool call by its callId.
+		const toolNameByCallId = new Map<string, string>();
 
 		for (const m of messages) {
 			const role = mapRole(m);
@@ -42,14 +55,14 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 			const imageParts: string[] = [];
 			let thinkingContent = "";
 			const toolCalls: OllamaToolCall[] = [];
-			const toolResults: { toolName: string; content: string }[] = [];
+			const toolResults: { toolName: string; content: string; images: string[] }[] = [];
 
 			for (const part of m.content ?? []) {
 				if (part instanceof vscode.LanguageModelTextPart) {
 					textParts.push(part.value);
 				} else if (part instanceof vscode.LanguageModelDataPart) {
 					// Convert image data to base64 for Ollama
-					if (part.mimeType.startsWith("image/")) {
+					if (isImageMimeType(part.mimeType)) {
 						const base64Data = Buffer.from(part.data).toString("base64");
 						imageParts.push(base64Data);
 					}
@@ -59,6 +72,9 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 					thinkingContent += content;
 				} else if (part instanceof vscode.LanguageModelToolCallPart) {
 					// Capture tool calls from assistant
+					if (part.callId) {
+						toolNameByCallId.set(part.callId, part.name);
+					}
 					toolCalls.push({
 						function: {
 							name: part.name,
@@ -68,24 +84,28 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 				} else if (isToolResultPart(part)) {
 					// Capture tool results
 					const content = collectToolResultText(part);
-					const toolName = (part as { toolName?: string }).toolName ?? "unknown";
-					toolResults.push({ toolName, content });
+					const toolName = toolNameByCallId.get(part.callId) ?? "unknown";
+					const images = collectToolResultImages(part).map((img) => Buffer.from(img.data).toString("base64"));
+					toolResults.push({ toolName, content, images });
 				}
 			}
 
 			// Handle tool results as separate "tool" role messages
 			for (const tr of toolResults) {
-				out.push({
+				const toolMessage: OllamaMessage = {
 					role: "tool",
 					content: tr.content,
 					tool_name: tr.toolName,
-				});
+				};
+				if (tr.images.length > 0) {
+					toolMessage.images = tr.images;
+				}
+				out.push(toolMessage);
 			}
 
 			// Handle regular messages
-			if (textParts.length > 0 || imageParts.length > 0 || toolCalls.length > 0) {
-				const content = textParts.join("").trim();
-
+			const content = textParts.join("").trim();
+			if (content || imageParts.length > 0 || toolCalls.length > 0) {
 				const ollamaMessage: OllamaMessage = {
 					role,
 					content,
@@ -95,7 +115,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 					ollamaMessage.images = imageParts;
 				}
 
-				if (thinkingContent.trim() && role === "assistant") {
+				if (_modelConfig.includeReasoningInRequest && thinkingContent.trim() && role === "assistant") {
 					ollamaMessage.thinking = thinkingContent;
 				}
 
@@ -115,40 +135,53 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		um: CustomModelItem | undefined,
 		options?: ProvideLanguageModelChatResponseOptions
 	): OllamaRequestBody {
-		// Add model options if configured
-		if (
-			um?.temperature !== undefined ||
-			um?.top_p !== undefined ||
-			um?.top_k !== undefined ||
-			um?.min_p !== undefined ||
-			um?.max_tokens !== undefined ||
-			um?.enable_thinking !== undefined
-		) {
-			rb.options = {};
-			if (um.temperature !== undefined && um.temperature !== null) {
-				rb.options.temperature = um.temperature;
-			}
-			if (um.top_p !== undefined && um.top_p !== null) {
-				rb.options.top_p = um.top_p;
-			}
-			if (um.top_k !== undefined) {
-				rb.options.top_k = um.top_k;
-			}
-			if (um.min_p !== undefined) {
-				rb.options.min_p = um.min_p;
-			}
-			if (um.max_tokens !== undefined) {
-				rb.options.num_predict = um.max_tokens;
-			}
+		// Model options. `num_ctx` is essential: without it Ollama runs the
+		// model with its small default window (2K–8K) and SILENTLY truncates
+		// Copilot's prompt from the front (hermes sends options.num_ctx).
+		const modelOptions: NonNullable<OllamaRequestBody["options"]> = {};
+		if (um?.temperature !== undefined && um.temperature !== null) {
+			modelOptions.temperature = um.temperature;
+		}
+		if (um?.top_p !== undefined && um.top_p !== null) {
+			modelOptions.top_p = um.top_p;
+		}
+		if (um?.top_k !== undefined) {
+			modelOptions.top_k = um.top_k;
+		}
+		if (um?.min_p !== undefined) {
+			modelOptions.min_p = um.min_p;
+		}
+		if (um?.max_tokens !== undefined) {
+			modelOptions.num_predict = um.max_tokens;
+		}
+		if (typeof um?.context_length === "number" && um.context_length > 0) {
+			modelOptions.num_ctx = um.context_length;
+		}
+		if (um?.repetition_penalty !== undefined) {
+			modelOptions.repeat_penalty = um.repetition_penalty;
+		}
+		if (um?.presence_penalty !== undefined) {
+			modelOptions.presence_penalty = um.presence_penalty;
+		}
+		if (um?.frequency_penalty !== undefined) {
+			modelOptions.frequency_penalty = um.frequency_penalty;
+		}
+		if (Object.keys(modelOptions).length > 0) {
+			rb.options = modelOptions;
 		}
 
-		// Map the generic enable_thinking toggle to Ollama's `think` flag.
-		// Only set it when the user made an explicit choice — absence lets the
-		// model's default behavior apply.
-		if (um?.enable_thinking === true) {
+		// Map the thinking preference to Ollama's `think` flag. gpt-oss only
+		// takes graded levels ("low"/"medium"/"high", booleans are ignored);
+		// others take a boolean. No preference → model default.
+		const thinkingEnabled = resolveThinkingEnabled(um);
+		const effort = typeof um?.reasoning_effort === "string" ? um.reasoning_effort.trim().toLowerCase() : "";
+		const isGptOss = /gpt-oss/i.test(um?.id ?? "");
+		if (thinkingEnabled === false) {
+			rb.think = isGptOss ? "low" : false;
+		} else if (isGptOss && effort) {
+			rb.think = effort === "minimal" || effort === "low" ? "low" : effort === "medium" ? "medium" : "high";
+		} else if (thinkingEnabled === true || (effort && effort !== "none")) {
 			rb.think = true;
-		} else if (um?.enable_thinking === false) {
-			rb.think = false;
 		}
 
 		// Add tools if provided
@@ -185,57 +218,45 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		const modelId = this._modelId;
 		logger.debug("ollama.stream.start", { modelId });
 
-		const reader = responseBody.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-
+		let doneReason: string | undefined;
 		try {
-			while (true) {
-				if (token.isCancellationRequested) {
-					break;
+			for await (const line of this.readStreamLines(responseBody, token)) {
+				if (!line.trim()) {
+					continue;
 				}
-
-				const { done, value } = await reader.read();
-				if (done) {
-					break;
+				let chunk: OllamaStreamChunk & { error?: unknown; done_reason?: string };
+				try {
+					chunk = JSON.parse(line);
+				} catch (e) {
+					console.error("[Ollama Provider] Failed to parse streaming chunk:", e, "data:", line);
+					logger.error("ollama.stream.chunk.error", {
+						modelId,
+						error: e instanceof Error ? e.message : String(e),
+						data: line,
+					});
+					continue;
 				}
+				logger.debug("ollama.stream.chunk", { modelId, data: chunk });
+				// Mid-stream failure (model crashed, OOM…) arrives as {"error": "..."}.
+				if (chunk.error) {
+					throw new Error(`Ollama stream error: ${typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error)}`);
+				}
+				await this.processOllamaDelta(chunk, progress);
 
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
-					if (!line.trim()) {
-						continue;
-					}
-
-					try {
-						const chunk: OllamaStreamChunk = JSON.parse(line);
-						logger.debug("ollama.stream.chunk", { modelId, data: chunk });
-						await this.processOllamaDelta(chunk, progress);
-
-						// Check if this is the final chunk
-						if (chunk.done) {
-							// End any active thinking sequence
-							this.reportEndThinking(progress);
-						}
-					} catch (e) {
-						console.error("[Ollama Provider] Failed to parse streaming chunk:", e, "data:", line);
-						logger.error("ollama.stream.chunk.error", {
-							modelId,
-							error: e instanceof Error ? e.message : String(e),
-							data: line,
-						});
-					}
+				// Check if this is the final chunk
+				if (chunk.done) {
+					doneReason = chunk.done_reason;
+					// End any active thinking sequence
+					this.reportEndThinking(progress);
 				}
 			}
+			this.reportStopNotice(progress, doneReason);
 			logger.debug("ollama.stream.done", { modelId });
 		} catch (e) {
 			console.error("[Ollama Provider] Streaming response error:", e);
 			logger.error("ollama.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
 			throw e;
 		} finally {
-			reader.releaseLock();
 			// End any active thinking sequence
 			this.reportEndThinking(progress);
 		}
@@ -275,8 +296,26 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 			this.reportEndThinking(progress);
 
 			for (const tc of message.tool_calls) {
+				const name = tc?.function?.name;
+				if (!name) {
+					continue;
+				}
+				let args: unknown = tc.function.arguments;
+				if (typeof args === "string") {
+					try {
+						args = JSON.parse(args);
+					} catch {
+						args = {};
+					}
+				}
 				const id = `ollama_tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-				progress.report(new vscode.LanguageModelToolCallPart(id, tc.function.name, tc.function.arguments));
+				progress.report(
+					new vscode.LanguageModelToolCallPart(
+						id,
+						name,
+						args && typeof args === "object" ? (args as Record<string, unknown>) : {}
+					)
+				);
 			}
 		}
 
@@ -287,6 +326,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 
 			// Emit text content
 			progress.report(new vscode.LanguageModelTextPart(message.content));
+			this._hasEmittedAssistantText = true;
 		}
 	}
 
@@ -295,7 +335,8 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
-		apiKey: string
+		apiKey: string,
+		signal?: AbortSignal
 	): AsyncGenerator<{ type: "text"; text: string }> {
 		// Convert to Ollama message format
 		const ollamaMessages: OllamaMessage[] = [];
@@ -328,6 +369,7 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		// Make the API request
 		const response = await proxyFetch(url, {
 			...networkInit,
+			...(signal ? { signal } : {}),
 			method: "POST",
 			headers,
 			body: JSON.stringify(requestBody),
@@ -350,14 +392,18 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
-				if (done) break;
+				if (done) {
+					break;
+				}
 
 				buffer += decoder.decode(value, { stream: true });
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
 
 				for (const line of lines) {
-					if (!line.trim()) continue;
+					if (!line.trim()) {
+						continue;
+					}
 
 					try {
 						const chunk: OllamaStreamChunk = JSON.parse(line);
@@ -374,6 +420,8 @@ export class OllamaApi extends CommonApi<OllamaMessage, OllamaRequestBody> {
 				}
 			}
 		} finally {
+			// Cancel (not only release) so an abandoned stream frees the socket.
+			await reader.cancel().catch(() => undefined);
 			reader.releaseLock();
 		}
 	}
@@ -435,3 +483,85 @@ export async function fetchOllamaModels(
 
 	return models;
 }
+
+/** Result of an Ollama `/api/show` probe. */
+export interface OllamaModelInfo {
+	/** Runtime window (Modelfile num_ctx), else the GGUF training max. */
+	contextLength?: number;
+	/** `capabilities` (Ollama 0.6+): "completion", "tools", "thinking", "vision"… */
+	capabilities?: string[];
+}
+
+const ollamaShowCache = new Map<string, Promise<OllamaModelInfo | undefined>>();
+
+/**
+ * Probe `POST {base}/api/show` once per (server, model) — hermes
+ * `query_ollama_num_ctx`. Used to send a real `num_ctx` when the user didn't
+ * configure `context_length` (otherwise Ollama runs its small default window
+ * and silently truncates the prompt) and to gate `think` on models that
+ * actually support thinking. Never throws; undefined when unavailable.
+ */
+export function probeOllamaModel(
+	baseUrl: string,
+	model: string,
+	headers: Record<string, string>,
+	networkInit: RequestInit
+): Promise<OllamaModelInfo | undefined> {
+	const root = baseUrl.replace(/\/+$/, "").replace(/\/(api|v1)$/i, "");
+	const key = `${root}|${model}`;
+	let pending = ollamaShowCache.get(key);
+	if (!pending) {
+		pending = (async () => {
+			try {
+				const resp = await proxyFetch(`${root}/api/show`, {
+					...networkInit,
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: JSON.stringify({ name: model }),
+				});
+				if (!resp.ok) {
+					return undefined;
+				}
+				const data = (await resp.json()) as {
+					parameters?: string;
+					model_info?: Record<string, unknown>;
+					capabilities?: unknown;
+				};
+				let contextLength: number | undefined;
+				for (const line of (data.parameters ?? "").split("\n")) {
+					const parts = line.trim().split(/\s+/);
+					if (line.includes("num_ctx") && parts.length >= 2) {
+						const n = parseInt(parts[parts.length - 1], 10);
+						if (Number.isFinite(n) && n > 0) {
+							contextLength = n;
+							break;
+						}
+					}
+				}
+				if (contextLength === undefined) {
+					for (const [k, v] of Object.entries(data.model_info ?? {})) {
+						if (k.includes("context_length") && typeof v === "number" && v > 0) {
+							contextLength = Math.floor(v);
+							break;
+						}
+					}
+				}
+				const capabilities = Array.isArray(data.capabilities)
+					? data.capabilities.filter((c): c is string => typeof c === "string")
+					: undefined;
+				return { contextLength, capabilities };
+			} catch {
+				return undefined;
+			}
+		})();
+		ollamaShowCache.set(key, pending);
+		// A failed probe may be retried on a later request.
+		void pending.then((info) => {
+			if (!info) {
+				ollamaShowCache.delete(key);
+			}
+		});
+	}
+	return pending;
+}
+

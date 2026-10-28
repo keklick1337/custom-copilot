@@ -33,6 +33,18 @@ export interface ApiUsage {
 	[key: string]: unknown;
 }
 
+/**
+ * Per-request knobs that change how chat history is converted to a wire.
+ */
+export interface MessageConversionConfig {
+	/** Echo captured reasoning back as `reasoning_content` / unsigned thinking. */
+	includeReasoningInRequest: boolean;
+	/** Replay OpenRouter `reasoning_details` (only openrouter.ai accepts the field). */
+	replayReasoningDetails?: boolean;
+	/** Native Anthropic endpoint: signed thinking blocks may be replayed. */
+	nativeAnthropic?: boolean;
+}
+
 /** Merge/replace the usage accumulator with numbers from a stream chunk. */
 export function accumulateUsage(target: ApiUsage | undefined, patch: Partial<ApiUsage>): ApiUsage {
 	const next: ApiUsage = target
@@ -112,6 +124,15 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	 */
 	protected _lastUsage: ApiUsage | undefined;
 
+	/**
+	 * Opaque replay state (Anthropic thinking signature, Gemini
+	 * thoughtSignature, OpenRouter reasoning_details, Responses encrypted
+	 * reasoning…) attached as `metadata` to the closing ThinkingPart, the
+	 * same channel Copilot's own BYOK providers use. VS Code keeps it in the
+	 * chat history, so `convertMessages` can replay it on the next turn.
+	 */
+	protected _pendingThinkingMetadata: Record<string, unknown> | undefined;
+
 	/** Set the model ID for logging purposes. */
 	protected _modelId = "";
 
@@ -145,6 +166,105 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		}
 		this._systemContent = undefined;
 		this._lastUsage = undefined;
+		this._pendingThinkingMetadata = undefined;
+	}
+
+	/**
+	 * Iterate the lines of a streamed response body (SSE or JSON-lines).
+	 * Handles CRLF, stops on cancellation, and — unlike a bare split loop —
+	 * also yields the final line when the stream ends without a newline.
+	 */
+	protected async *readStreamLines(
+		responseBody: ReadableStream<Uint8Array>,
+		token: CancellationToken
+	): AsyncGenerator<string> {
+		const reader = responseBody.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		try {
+			while (!token.isCancellationRequested) {
+				const { done, value } = await reader.read();
+				if (done) {
+					break;
+				}
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+				for (const line of lines) {
+					yield line.endsWith("\r") ? line.slice(0, -1) : line;
+					if (token.isCancellationRequested) {
+						return;
+					}
+				}
+			}
+			buffer += decoder.decode();
+			if (buffer.trim() && !token.isCancellationRequested) {
+				yield buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
+			}
+		} finally {
+			// Cancel (not just release) so an abandoned stream frees the socket.
+			try {
+				await reader.cancel();
+			} catch {
+				// already closed
+			}
+			reader.releaseLock();
+		}
+	}
+
+	/** Extract the payload of an SSE `data:` line, or undefined for other lines. */
+	protected static sseData(line: string): string | undefined {
+		if (!line.startsWith("data:")) {
+			return undefined;
+		}
+		return line.slice(5).trim();
+	}
+
+	/**
+	 * Attach opaque replay metadata to the current thinking sequence. When a
+	 * sequence is open it is merged into its closing part; otherwise a
+	 * standalone empty ThinkingPart carries it.
+	 */
+	protected reportThinkingMetadata(progress: Progress<LanguageModelResponsePart2>, metadata: Record<string, unknown>): void {
+		this._pendingThinkingMetadata = { ...(this._pendingThinkingMetadata ?? {}), ...metadata };
+		if (!this._currentThinkingId) {
+			this._currentThinkingId = this.generateThinkingId();
+		}
+		this.reportEndThinking(progress);
+	}
+
+	/**
+	 * Surface why a response stopped early (output limit, content filter) as
+	 * visible text — otherwise the user only sees a silently cut-off answer.
+	 */
+	protected reportStopNotice(progress: Progress<LanguageModelResponsePart2>, reason: string | undefined): void {
+		const r = (reason ?? "").toLowerCase();
+		let notice = "";
+		if (r === "model_context_window_exceeded") {
+			// Context overflow (input + output exceeded the window), NOT the
+			// output cap — raising max_tokens makes it worse (ZCode treats it
+			// as a compaction trigger).
+			notice =
+				"⚠️ The response was cut off: the conversation exceeded the model's context window. Start a new chat or compact the history (or lower context_length / max_tokens for this model).";
+		} else if (r === "length" || r === "max_tokens" || r === "max_output_tokens") {
+			notice = "⚠️ The response was cut off: the model hit its output token limit (raise max_tokens for this model).";
+		} else if (
+			r === "content_filter" ||
+			r === "sensitive" ||
+			r === "safety" ||
+			r === "recitation" ||
+			r === "blocklist" ||
+			r === "prohibited_content" ||
+			r === "spii" ||
+			r === "refusal"
+		) {
+			notice = `⚠️ The response was stopped by the provider's content filter (${reason}).`;
+		}
+		if (notice) {
+			this.reportEndThinking(progress);
+			progress.report(new vscode.LanguageModelTextPart(`${this._hasEmittedAssistantText ? "\n\n" : ""}${notice}`));
+			this._hasEmittedAssistantText = true;
+		}
 	}
 
 	/**
@@ -155,7 +275,7 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	 */
 	abstract convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		modelConfig: { includeReasoningInRequest: boolean }
+		modelConfig: MessageConversionConfig
 	): TMessage[];
 
 	/**
@@ -189,6 +309,7 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 	 * @param messages The messages to send.
 	 * @param baseUrl The base URL for the API.
 	 * @param apiKey The API key to use.
+	 * @param signal Aborts the HTTP request (and the stream) when fired.
 	 * @returns An async iterable of text chunks.
 	 */
 	abstract createMessage(
@@ -196,7 +317,8 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
-		apiKey: string
+		apiKey: string,
+		signal?: AbortSignal
 	): AsyncGenerator<{ type: "text"; text: string }>;
 
 	/**
@@ -335,11 +457,18 @@ export abstract class CommonApi<TMessage, TRequestBody> {
 		if (!this._currentThinkingId) {
 			return;
 		}
+		const metadata = this._pendingThinkingMetadata;
+		this._pendingThinkingMetadata = undefined;
 		// Always clean up state after attempting to end the thinking sequence
 		try {
 			this.flushThinkingBuffer(progress);
 			// End the current thinking sequence with empty content and same ID
-			progress.report(new LanguageModelThinkingPart("", this._currentThinkingId));
+			// (carrying any opaque replay state as metadata).
+			progress.report(
+				metadata
+					? new LanguageModelThinkingPart("", this._currentThinkingId, metadata)
+					: new LanguageModelThinkingPart("", this._currentThinkingId)
+			);
 		} catch (e) {
 			console.error("[customcopilot] Failed to end thinking sequence:", e);
 		}

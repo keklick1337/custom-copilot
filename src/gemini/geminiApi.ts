@@ -1,3 +1,4 @@
+import type { MessageConversionConfig } from "../commonApi";
 import * as vscode from "vscode";
 import {
 	CancellationToken,
@@ -19,9 +20,11 @@ import {
 	isImageMimeType,
 	isToolResultPart,
 	collectToolResultText,
+	collectToolResultImages,
 	convertToolsToOpenAI,
 	mapRole,
 	tryParseJSONObject,
+	resolveThinkingEnabled,
 } from "../utils";
 
 import type {
@@ -38,7 +41,6 @@ export interface GeminiChatMessage {
 export interface GeminiToolCallMeta {
 	name: string;
 	thoughtSignature?: string;
-	thought?: string;
 	createdAt: number;
 }
 
@@ -51,7 +53,42 @@ function normalizeStringEffort(value: unknown): string {
  * GEMINI_DEFAULT_MAX_OUTPUT_TOKENS). */
 const GEMINI_THINKING_MAX_OUTPUT_TOKENS = 65535;
 
+/** Google's documented placeholder for a functionCall whose signature is unknown. */
+const GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+
 export { buildGeminiGenerateContentUrl } from "./geminiUrls";
+
+/** Placeholder model turn between a functionResponse turn and human text (gemini-cli / hermes). */
+const GEMINI_INTERRUPTED_PLACEHOLDER = "[The previous response was interrupted before it completed.]";
+
+function hasFunctionResponse(c: { parts: GeminiPart[] }): boolean {
+	return c.parts.some((p) => !!p && typeof p === "object" && "functionResponse" in p);
+}
+
+/**
+ * Gemini's alternation contract (hermes `_merge_alternating`): adjacent
+ * same-role contents merge (else 400 "multiturn requests must alternate"),
+ * EXCEPT a functionResponse-only user turn is never fused with human text
+ * (Gemini 3 would read the text as part of the tool result) — a placeholder
+ * model turn is interposed instead.
+ */
+export function mergeGeminiAlternating<T extends { role: string; parts: GeminiPart[] }>(contents: T[]): T[] {
+	const merged: T[] = [];
+	for (const content of contents) {
+		const prev = merged[merged.length - 1];
+		let sameRole = prev !== undefined && prev.role === content.role;
+		if (sameRole && content.role === "user" && hasFunctionResponse(prev) !== hasFunctionResponse(content)) {
+			sameRole = false;
+			merged.push({ role: "model", parts: [{ text: GEMINI_INTERRUPTED_PLACEHOLDER }] } as T);
+		}
+		if (sameRole) {
+			prev.parts = [...prev.parts, ...content.parts];
+		} else {
+			merged.push({ ...content, parts: [...content.parts] });
+		}
+	}
+	return merged;
+}
 export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateContentRequest> {
 	constructor(
 		modelId: string,
@@ -62,7 +99,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 
 	convertMessages(
 		messages: readonly LanguageModelChatRequestMessage[],
-		_modelConfig: { includeReasoningInRequest: boolean }
+		_modelConfig: MessageConversionConfig
 	): GeminiChatMessage[] {
 		// Fresh conversion state per request (adapters are reused across turns).
 		this.resetRequestState();
@@ -73,7 +110,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			const textParts: string[] = [];
 			const imageParts: vscode.LanguageModelDataPart[] = [];
 			const toolCalls: Array<{ callId: string; name: string; args: Record<string, unknown> }> = [];
-			const toolResults: Array<{ callId: string; outputText: string }> = [];
+			const toolResults: Array<{ callId: string; outputText: string; images: vscode.LanguageModelDataPart[] }> = [];
 
 			for (const part of m.content ?? []) {
 				if (part instanceof vscode.LanguageModelTextPart) {
@@ -87,16 +124,22 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 				} else if (isToolResultPart(part)) {
 					const callId = (part as { callId?: string }).callId ?? "";
 					const outputText = collectToolResultText(part as { content?: ReadonlyArray<unknown> });
-					toolResults.push({ callId, outputText });
+					const images = collectToolResultImages(part as { content?: ReadonlyArray<unknown> });
+					toolResults.push({ callId, outputText, images });
 				}
 			}
 
 			return { text: textParts.join("").trim(), imageParts, toolCalls, toolResults };
 		};
 
+		// Gemini 3+ pairs calls/responses by id and accepts multimodal tool
+		// output; 2.x rejects both fields (hermes gemini_native_adapter).
+		const isGemini3 = /gemini-[3-9]/i.test(this._modelId);
+
 		const toolResultToFunctionResponsePart = (
 			callId: string,
 			outputText: string,
+			images: vscode.LanguageModelDataPart[] = [],
 			fallbackName = ""
 		): GeminiPart | null => {
 			if (!callId) {
@@ -108,9 +151,19 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 				return null;
 			}
 
-			const parsed = tryParseJSONObject(outputText);
+			// JSON containing $ref is sent as text (Gemini resolves refs and 400s).
+			const parsed = outputText.includes("$ref") ? { ok: false as const } : tryParseJSONObject(outputText);
 			const responseValue: Record<string, unknown> = parsed.ok ? parsed.value : { output: outputText };
-			return { functionResponse: { name, response: responseValue } };
+			const functionResponse: NonNullable<GeminiPart["functionResponse"]> = { name, response: responseValue };
+			if (isGemini3) {
+				functionResponse.id = callId;
+				if (images.length > 0) {
+					functionResponse.parts = images.map((img) => ({
+						inlineData: { mimeType: img.mimeType, data: Buffer.from(img.data).toString("base64") },
+					}));
+				}
+			}
+			return { functionResponse };
 		};
 
 		const isToolResultOnly = (extracted: {
@@ -142,7 +195,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 						break;
 					}
 					for (const tr of ex2.toolResults) {
-						const part = toolResultToFunctionResponsePart(tr.callId, tr.outputText);
+						const part = toolResultToFunctionResponsePart(tr.callId, tr.outputText, tr.images);
 						if (part) {
 							respParts.push(part);
 						}
@@ -164,6 +217,15 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			}
 
 			if (role === "user") {
+				// Tool results that share a message with text/images: answer the
+				// calls in their own functionResponse turn (mergeGeminiAlternating
+				// keeps it apart from the human text turn).
+				const respParts = extracted.toolResults
+					.map((tr) => toolResultToFunctionResponsePart(tr.callId, tr.outputText, tr.images))
+					.filter((p): p is GeminiPart => p !== null);
+				if (respParts.length > 0) {
+					out.push({ role: "user", parts: respParts });
+				}
 				const parts: GeminiPart[] = [];
 				if (extracted.text) {
 					parts.push({ text: extracted.text });
@@ -191,17 +253,21 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 				toolNameByCallId.set(callId, name);
 				callOrder.push({ callId, name });
 
-				const fcPart: Record<string, unknown> = {
-					functionCall: { name, args: tc.args },
-				};
+				const functionCall: NonNullable<GeminiPart["functionCall"]> = { name, args: tc.args };
+				if (isGemini3) {
+					functionCall.id = callId;
+				}
+				// Thinking models require the thoughtSignature captured with the
+				// call. When it is unknown (call from another provider, or the
+				// in-memory cache was lost on reload) use Google's documented
+				// skip sentinel instead of failing with a 400 (hermes
+				// `_SKIP_SIGNATURE`). `thought` is a boolean flag in the API
+				// schema — never replay the thought TEXT on a call part.
 				const meta = this.toolCallMetaByCallId?.get(callId);
-				if (meta?.thoughtSignature) {
-					fcPart.thoughtSignature = meta.thoughtSignature;
-				}
-				if (meta?.thought) {
-					fcPart.thought = meta.thought;
-				}
-				parts.push(fcPart as GeminiPart);
+				parts.push({
+					functionCall,
+					thoughtSignature: meta?.thoughtSignature || GEMINI_SKIP_THOUGHT_SIGNATURE,
+				});
 			}
 
 			if (parts.length > 0) {
@@ -219,7 +285,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 						break;
 					}
 					for (const tr of ex2.toolResults) {
-						const part = toolResultToFunctionResponsePart(tr.callId, tr.outputText);
+						const part = toolResultToFunctionResponsePart(tr.callId, tr.outputText, tr.images);
 						if (part) {
 							responsesByCallId.set(tr.callId, part);
 						}
@@ -234,7 +300,13 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 						if (found) {
 							respParts.push(found);
 						} else {
-							respParts.push({ functionResponse: { name: c.name, response: { output: "" } } });
+							respParts.push({
+								functionResponse: {
+									...(isGemini3 ? { id: c.callId } : {}),
+									name: c.name,
+									response: { output: "(no output — the tool call was cancelled)" },
+								},
+							});
 						}
 					}
 					out.push({ role: "user", parts: respParts });
@@ -273,26 +345,33 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 			generationConfig.topK = um.top_k;
 		}
 
-		// maxOutputTokens. When thinking is enabled, thought tokens bill
-		// against maxOutputTokens too — a small cap can be consumed entirely
-		// by reasoning (finishReason=MAX_TOKENS, empty answer). Raise the
-		// ceiling to the API maximum in that case (ported from hermes-agent
-		// `_effective_gemini_max_output_tokens`).
+		// Thinking preference (hermes `_build_gemini_thinking_config`).
+		// Bare id: strip "models/" and relay/vendor prefixes ("google/gemini-…").
+		const lowerModelId = parsedModelIdForThinking.toLowerCase().replace(/^models\//, "");
+		const normalizedModelId = lowerModelId.slice(lowerModelId.lastIndexOf("/") + 1);
+		const isGeminiModel = normalizedModelId.startsWith("gemini");
+		const thinkingEnabled = resolveThinkingEnabled(um);
+		const effort = normalizeStringEffort(um?.reasoning_effort);
+		const geminiThinkingActive =
+			thinkingEnabled === true || (thinkingEnabled === undefined && effort !== "" && effort !== "none");
+
+		// maxOutputTokens. Thought tokens bill against maxOutputTokens too —
+		// a small cap can be consumed entirely by reasoning (finishReason=
+		// MAX_TOKENS, empty answer). The ceiling is raised to 65535 only for
+		// thinking-capable families (2.5+) with thinking on — older models
+		// (2.0 / 1.5, 8192 limit) reject larger values, so an unset cap stays
+		// unset (hermes `_effective_gemini_max_output_tokens`).
 		const maxOutput =
 			um?.max_completion_tokens !== undefined
 				? um.max_completion_tokens
 				: um?.max_tokens !== undefined
 					? um.max_tokens
 					: undefined;
-		const geminiThinkingActive =
-			um?.enable_thinking === true ||
-			um?.thinking?.type === "enabled" ||
-			(typeof um?.reasoning_effort === "string" && um.reasoning_effort.trim() !== "" && um.reasoning_effort !== "none");
-		if (maxOutput !== undefined) {
-			generationConfig.maxOutputTokens =
-				geminiThinkingActive && parsedModelIdForThinking.toLowerCase().startsWith("gemini")
-					? Math.max(maxOutput, GEMINI_THINKING_MAX_OUTPUT_TOKENS)
-					: maxOutput;
+		const thinkingFamily = /^gemini-(2\.5|[3-9])|^gemini-(flash|pro)-latest/.test(normalizedModelId);
+		if (isGeminiModel && thinkingFamily && geminiThinkingActive) {
+			generationConfig.maxOutputTokens = Math.max(maxOutput ?? 0, GEMINI_THINKING_MAX_OUTPUT_TOKENS);
+		} else if (maxOutput !== undefined && maxOutput > 0) {
+			generationConfig.maxOutputTokens = maxOutput;
 		}
 
 		// stop sequences
@@ -318,47 +397,42 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		// - thinkingConfig is a GEMINI-ONLY field — Gemma/PaLM models on the
 		//   same provider 400 on it even as {"includeThoughts": false}, so it
 		//   is omitted entirely for non-gemini model ids (hermes #17426);
-		// - disabling sets thinkingBudget: 0 on families that document it
-		//   (includeThoughts:false alone still bills thought tokens);
-		// - Gemini 3 takes thinkingLevel ("low"/"medium"/"high"), clamped to
-		//   what each family accepts.
-		const normalizedModelId = parsedModelIdForThinking.toLowerCase();
-		const isGeminiModel = normalizedModelId.startsWith("gemini");
-		const zaiThinkingEnabled = um?.thinking?.type === "enabled";
+		// - disabling bounds thinking as low as each family allows
+		//   (includeThoughts:false alone still bills thought tokens):
+		//   2.5 → thinkingBudget 0, 3+ → thinkingLevel "low";
+		// - 2.5 takes only includeThoughts (+ an explicit user budget);
+		// - Gemini 3 takes thinkingLevel — never together with a budget.
 		const thinkingExtraSet =
 			um?.extra?.generationConfig &&
 			typeof um.extra.generationConfig === "object" &&
 			"thinkingConfig" in um.extra.generationConfig;
 		if (isGeminiModel && !thinkingExtraSet) {
-			if (um?.enable_thinking === false || um?.thinking?.type === "disabled") {
+			const isGemini3 = /^gemini-[3-9]/.test(normalizedModelId);
+			if (thinkingEnabled === false || (thinkingEnabled === undefined && effort === "none")) {
 				// Actually disable thinking, not just hide the thoughts.
+				// 2.5 documents thinkingBudget:0 as the off switch; Gemini 3+
+				// deprecated the budget (Gemini 4 always thinks and 400s on it)
+				// in favour of thinkingLevel, whose lowest universal level is
+				// "low" (hermes #91927).
 				const tc: Record<string, unknown> = { includeThoughts: false };
-				if (
-					normalizedModelId === "gemini-flash-latest" ||
-					normalizedModelId.startsWith("gemini-2.5-") ||
-					normalizedModelId.startsWith("gemini-3")
-				) {
+				if (isGemini3) {
+					tc.thinkingLevel = "low";
+				} else if (normalizedModelId === "gemini-flash-latest" || normalizedModelId.startsWith("gemini-2.5-")) {
 					tc.thinkingBudget = 0;
 				}
 				generationConfig.thinkingConfig = tc;
-			} else if (
-				um?.enable_thinking === true ||
-				zaiThinkingEnabled ||
-				(typeof um?.reasoning_effort === "string" && normalizeStringEffort(um.reasoning_effort) !== "" && um.reasoning_effort !== "none")
-			) {
+			} else if (geminiThinkingActive) {
 				const tc: Record<string, unknown> = { includeThoughts: true };
-				if (um?.thinking_budget !== undefined) {
-					tc.thinkingBudget = um.thinking_budget;
-				}
-				// Gemini 3 documents thinkingLevel; 2.5 takes only thinkingBudget.
-				if (normalizedModelId.startsWith("gemini-3")) {
-					const effort = normalizeStringEffort(um?.reasoning_effort);
-					if (normalizedModelId.includes("flash")) {
-						tc.thinkingLevel = effort === "low" || effort === "minimal" ? "low" : effort === "medium" ? "medium" : "high";
-					} else if (normalizedModelId.includes("pro")) {
+				if (isGemini3 && (effort || um?.thinking_budget === undefined)) {
+					const strong = effort === "high" || effort === "xhigh" || effort === "max" || effort === "ultra";
+					if (normalizedModelId.includes("pro")) {
 						// Pro is stricter: low/high only.
-						tc.thinkingLevel = effort === "low" || effort === "minimal" ? "low" : "high";
+						tc.thinkingLevel = strong ? "high" : "low";
+					} else {
+						tc.thinkingLevel = effort === "minimal" || effort === "low" ? "low" : strong ? "high" : "medium";
 					}
+				} else if (um?.thinking_budget !== undefined) {
+					tc.thinkingBudget = um.thinking_budget;
 				}
 				generationConfig.thinkingConfig = tc;
 			}
@@ -401,258 +475,166 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		this.resetRequestState();
 		const modelId = this._modelId;
 		logger.debug("gemini.stream.start", { modelId });
-		const reader = responseBody.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
 
-		let textSoFar = "";
-		const toolCallKeyToId = new Map<string, string>();
-		let pendingThoughtSoFar = "";
-		let pendingThoughtSummarySoFar = "";
+		// streamGenerateContent?alt=sse chunks are INCREMENTAL: every text /
+		// thought part is new content and is emitted as-is. (A previous
+		// "cumulative prefix" heuristic dropped real deltas that happened to
+		// be a prefix of the text so far, e.g. a repeated "*" or "\n".)
+		const seenToolCallKeys = new Set<string>();
 		let pendingThoughtSignature = "";
+		let finishReason: string | undefined;
 
 		try {
-			while (true) {
-				if (token.isCancellationRequested) {
-					break;
+			for await (const line of this.readStreamLines(responseBody, token)) {
+				const data = CommonApi.sseData(line);
+				if (!data || data === "[DONE]") {
+					continue;
+				}
+				logger.debug("gemini.stream.chunk", { modelId, data });
+
+				let payload: GeminiGenerateContentResponse | null = null;
+				try {
+					payload = JSON.parse(data) as GeminiGenerateContentResponse;
+				} catch (e) {
+					console.error("[Gemini Provider] Failed to parse streaming chunk:", e, "data:", data);
+					logger.error("gemini.stream.chunk.error", {
+						modelId,
+						error: e instanceof Error ? e.message : String(e),
+						data,
+					});
+					continue;
+				}
+				if (!payload) {
+					continue;
 				}
 
-				const { done, value } = await reader.read();
-				if (done) {
-					break;
+				// In-stream error / blocked prompt: surface instead of an empty reply.
+				const streamError = (payload as { error?: { message?: string; status?: string } }).error;
+				if (streamError) {
+					throw new Error(`Gemini stream error: ${streamError.message ?? streamError.status ?? JSON.stringify(streamError)}`);
+				}
+				const blockReason = (payload as { promptFeedback?: { blockReason?: string } }).promptFeedback?.blockReason;
+				if (blockReason) {
+					throw new Error(`Gemini blocked the prompt (${blockReason}).`);
 				}
 
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
+				const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+				const cand = candidates.length > 0 ? candidates[0] : null;
+				const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+				const fr = cand?.finishReason ?? cand?.finish_reason;
+				if (typeof fr === "string" && fr) {
+					finishReason = fr;
+				}
 
-				for (const line of lines) {
-					if (!line.startsWith("data:")) {
+				// usageMetadata rides on every chunk; the final one is
+				// authoritative (promptTokenCount + candidatesTokenCount +
+				// thoughtsTokenCount).
+				const um = (payload as { usageMetadata?: Record<string, unknown> }).usageMetadata;
+				if (um) {
+					const thoughts = typeof um.thoughtsTokenCount === "number" ? um.thoughtsTokenCount : 0;
+					this._lastUsage = accumulateUsage(this._lastUsage, {
+						prompt_tokens: typeof um.promptTokenCount === "number" ? um.promptTokenCount : undefined,
+						completion_tokens: (typeof um.candidatesTokenCount === "number" ? um.candidatesTokenCount : 0) + thoughts,
+						total_tokens: typeof um.totalTokenCount === "number" ? um.totalTokenCount : undefined,
+						prompt_tokens_details:
+							typeof um.cachedContentTokenCount === "number" ? { cached_tokens: um.cachedContentTokenCount } : undefined,
+						completion_tokens_details: thoughts > 0 ? { reasoning_tokens: thoughts } : undefined,
+					});
+				}
+
+				for (const p of parts) {
+					if (!p || typeof p !== "object") {
 						continue;
 					}
-					const data = line.slice(5).trim();
-					logger.debug("gemini.stream.chunk", { modelId, data });
-					if (!data || data === "[DONE]") {
-						continue;
-					}
+					const pObj = p as unknown as Record<string, unknown>;
+					const sig =
+						(typeof pObj.thoughtSignature === "string" ? pObj.thoughtSignature : "") ||
+						(typeof pObj.thought_signature === "string" ? pObj.thought_signature : "");
+					const fc = p.functionCall;
 
-					let payload: GeminiGenerateContentResponse | null = null;
-					try {
-						payload = JSON.parse(data) as GeminiGenerateContentResponse;
-					} catch (e) {
-						console.error("[Gemini Provider] Failed to parse streaming chunk:", e, "data:", data);
-						logger.error("gemini.stream.chunk.error", {
-							modelId,
-							error: e instanceof Error ? e.message : String(e),
-							data,
-						});
-						continue;
-					}
-					if (!payload) {
-						continue;
-					}
-
-					const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-					const cand = candidates.length > 0 ? candidates[0] : null;
-					const parts = Array.isArray(cand?.content?.parts) ? cand?.content?.parts : [];
-
-					// usageMetadata rides on every chunk; the final one is
-					// authoritative (promptTokenCount + candidatesTokenCount +
-					// thoughtsTokenCount).
-					const um = (payload as { usageMetadata?: Record<string, unknown> }).usageMetadata;
-					if (um) {
-						this._lastUsage = accumulateUsage(this._lastUsage, {
-							prompt_tokens: typeof um.promptTokenCount === "number" ? um.promptTokenCount : undefined,
-							completion_tokens:
-								(typeof um.candidatesTokenCount === "number" ? um.candidatesTokenCount : 0) +
-								(typeof um.thoughtsTokenCount === "number" ? um.thoughtsTokenCount : 0),
-							total_tokens: typeof um.totalTokenCount === "number" ? um.totalTokenCount : undefined,
-							prompt_tokens_details:
-								typeof um.cachedContentTokenCount === "number" ? { cached_tokens: um.cachedContentTokenCount } : undefined,
-						});
-					}
-
-					for (const p of parts) {
-						const fc = p?.functionCall;
-						if (!fc || typeof fc !== "object") {
-							// Standalone thought (Gemini "thought summaries" or 2025 API: thought comes in separate part)
-							const maybeThought = p && typeof p === "object" ? (p as unknown as Record<string, unknown>) : null;
-							const thoughtSummaryText =
-								maybeThought && maybeThought.thought === true && typeof (p as GeminiPart).text === "string"
-									? String((p as GeminiPart).text)
-									: "";
-							const thought = maybeThought && typeof maybeThought.thought === "string" ? maybeThought.thought : "";
-							const thoughtSigRaw =
-								maybeThought && typeof maybeThought.thoughtSignature === "string"
-									? maybeThought.thoughtSignature
-									: maybeThought && typeof maybeThought.thought_signature === "string"
-										? maybeThought.thought_signature
-										: "";
-							if (thoughtSummaryText) {
-								let delta = "";
-								if (thoughtSummaryText.startsWith(pendingThoughtSummarySoFar)) {
-									delta = thoughtSummaryText.slice(pendingThoughtSummarySoFar.length);
-									pendingThoughtSummarySoFar = thoughtSummaryText;
-								} else if (pendingThoughtSummarySoFar.startsWith(thoughtSummaryText)) {
-									delta = "";
-								} else {
-									delta = thoughtSummaryText;
-									pendingThoughtSummarySoFar += thoughtSummaryText;
-								}
-								if (delta) {
-									this.bufferThinkingContent(delta, progress);
-								}
-							}
-							if (thought) {
-								let delta = "";
-								if (thought.startsWith(pendingThoughtSoFar)) {
-									delta = thought.slice(pendingThoughtSoFar.length);
-									pendingThoughtSoFar = thought;
-								} else if (pendingThoughtSoFar.startsWith(thought)) {
-									delta = "";
-								} else {
-									delta = thought;
-									pendingThoughtSoFar += thought;
-								}
-
-								if (delta) {
-									this.bufferThinkingContent(delta, progress);
-								}
-							}
-							if (thoughtSigRaw) {
-								pendingThoughtSignature = thoughtSigRaw;
-							}
+					if (!fc || typeof fc !== "object") {
+						if (sig) {
+							pendingThoughtSignature = sig;
+						}
+						const text = typeof p.text === "string" ? p.text : "";
+						if (!text) {
 							continue;
 						}
-						const name =
-							typeof (fc as { name?: unknown }).name === "string" ? String((fc as { name: string }).name).trim() : "";
-						if (!name) {
-							continue;
-						}
-						const argsRaw = (fc as { args?: unknown }).args;
-						const argsObj =
-							argsRaw && typeof argsRaw === "object" && !Array.isArray(argsRaw)
-								? (argsRaw as Record<string, unknown>)
-								: {};
-						const key = `${name}\n${JSON.stringify(argsObj)}`;
-
-						const pObj = p && typeof p === "object" ? (p as unknown as Record<string, unknown>) : null;
-						const fcObj = fc && typeof fc === "object" ? (fc as unknown as Record<string, unknown>) : null;
-						const thoughtSigRaw =
-							(pObj && typeof pObj.thoughtSignature === "string" ? pObj.thoughtSignature : "") ||
-							(pObj && typeof pObj.thought_signature === "string" ? pObj.thought_signature : "") ||
-							(fcObj && typeof fcObj.thoughtSignature === "string" ? fcObj.thoughtSignature : "") ||
-							(fcObj && typeof fcObj.thought_signature === "string" ? fcObj.thought_signature : "") ||
-							pendingThoughtSignature;
-						const thoughtRaw =
-							(pObj && typeof pObj.thought === "string" ? pObj.thought : "") ||
-							(fcObj && typeof fcObj.thought === "string" ? fcObj.thought : "") ||
-							pendingThoughtSoFar;
-
-						if (thoughtRaw) {
-							let delta = "";
-							if (thoughtRaw.startsWith(pendingThoughtSoFar)) {
-								delta = thoughtRaw.slice(pendingThoughtSoFar.length);
-								pendingThoughtSoFar = thoughtRaw;
-							} else if (pendingThoughtSoFar.startsWith(thoughtRaw)) {
-								delta = "";
-							} else {
-								delta = thoughtRaw;
-								pendingThoughtSoFar += thoughtRaw;
-							}
-
-							if (delta) {
-								this.bufferThinkingContent(delta, progress);
-							}
-						}
-
-						let id = toolCallKeyToId.get(key);
-						const isNew = !id;
-						if (!id) {
-							id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-							toolCallKeyToId.set(key, id);
-						}
-
-						// Cache thoughtSignature/thought for Gemini thinking models (2025 API requirement)
-						if (this.toolCallMetaByCallId) {
-							this.toolCallMetaByCallId.set(id, {
-								name,
-								thoughtSignature: thoughtSigRaw || undefined,
-								thought: thoughtRaw || undefined,
-								createdAt: Date.now(),
-							});
-							// Basic pruning to avoid unbounded growth.
-							const maxEntries = 2000;
-							const pruneTo = 1500;
-							if (this.toolCallMetaByCallId.size > maxEntries) {
-								while (this.toolCallMetaByCallId.size > pruneTo) {
-									const first = this.toolCallMetaByCallId.keys().next().value as string | undefined;
-									if (!first) {
-										break;
-									}
-									this.toolCallMetaByCallId.delete(first);
-								}
-							}
-						}
-
-						if (isNew) {
-							this.reportEndThinking(progress);
-							pendingThoughtSoFar = "";
-							pendingThoughtSummarySoFar = "";
-							pendingThoughtSignature = "";
-							if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText) {
-								progress.report(new vscode.LanguageModelTextPart(" "));
-								this._emittedBeginToolCallsHint = true;
-							}
-							progress.report(new vscode.LanguageModelToolCallPart(id, name, argsObj));
-						}
-					}
-
-					const textJoined = parts
-						.map((p) => {
-							if (!p || typeof p !== "object") {
-								return "";
-							}
-							const obj = p as unknown as Record<string, unknown>;
-							// Thought summary text comes through as `text` with `thought: true`
-							if (obj.thought === true) {
-								return "";
-							}
-							return typeof (p as GeminiPart).text === "string" ? String((p as GeminiPart).text) : "";
-						})
-						.filter(Boolean)
-						.join("");
-
-					if (textJoined) {
-						let delta = "";
-						if (textJoined.startsWith(textSoFar)) {
-							delta = textJoined.slice(textSoFar.length);
-							textSoFar = textJoined;
-						} else if (textSoFar.startsWith(textJoined)) {
-							delta = "";
+						if (p.thought === true) {
+							// Thought summary part.
+							this.bufferThinkingContent(text, progress);
 						} else {
-							delta = textJoined;
-							textSoFar += textJoined;
-						}
-
-						if (delta) {
 							this.reportEndThinking(progress);
-							pendingThoughtSoFar = "";
-							pendingThoughtSummarySoFar = "";
-							pendingThoughtSignature = "";
-							progress.report(new vscode.LanguageModelTextPart(delta));
+							progress.report(new vscode.LanguageModelTextPart(text));
 							this._hasEmittedAssistantText = true;
 						}
+						continue;
 					}
+
+					const name = typeof fc.name === "string" ? fc.name.trim() : "";
+					if (!name) {
+						continue;
+					}
+					const argsObj =
+						fc.args && typeof fc.args === "object" && !Array.isArray(fc.args) ? (fc.args as Record<string, unknown>) : {};
+					const fcId = typeof fc.id === "string" && fc.id ? fc.id : "";
+					// Some gateways resend a call on later events: dedupe by id
+					// (Gemini 3) or by name+args.
+					const key = fcId || `${name}\n${JSON.stringify(argsObj)}`;
+					if (seenToolCallKeys.has(key)) {
+						continue;
+					}
+					seenToolCallKeys.add(key);
+					const id = fcId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+					// Cache the thoughtSignature (required when replaying calls to
+					// thinking models). Signature may ride on the call part itself
+					// or on a preceding thought part.
+					const thoughtSignature = sig || pendingThoughtSignature;
+					pendingThoughtSignature = "";
+					if (this.toolCallMetaByCallId) {
+						this.toolCallMetaByCallId.set(id, {
+							name,
+							thoughtSignature: thoughtSignature || undefined,
+							createdAt: Date.now(),
+						});
+						// Basic pruning to avoid unbounded growth.
+						if (this.toolCallMetaByCallId.size > 2000) {
+							while (this.toolCallMetaByCallId.size > 1500) {
+								const first = this.toolCallMetaByCallId.keys().next().value as string | undefined;
+								if (!first) {
+									break;
+								}
+								this.toolCallMetaByCallId.delete(first);
+							}
+						}
+					}
+
+					this.reportEndThinking(progress);
+					if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText) {
+						progress.report(new vscode.LanguageModelTextPart(" "));
+						this._emittedBeginToolCallsHint = true;
+					}
+					progress.report(new vscode.LanguageModelToolCallPart(id, name, argsObj));
 				}
 			}
-			logger.debug("gemini.stream.done", { modelId });
+			const reason = (finishReason ?? "").toUpperCase();
+			if (reason === "MALFORMED_FUNCTION_CALL" || reason === "UNEXPECTED_TOOL_CALL") {
+				this.reportEndThinking(progress);
+				progress.report(
+					new vscode.LanguageModelTextPart(
+						`${this._hasEmittedAssistantText ? "\n\n" : ""}⚠️ Gemini produced an invalid tool call (${finishReason}). Please retry.`
+					)
+				);
+			} else {
+				this.reportStopNotice(progress, reason === "MAX_TOKENS" ? "length" : reason.toLowerCase());
+			}
+			logger.debug("gemini.stream.done", { modelId, finishReason: finishReason ?? "" });
 		} catch (e) {
 			console.error("[Gemini Provider] Streaming response error:", e);
 			logger.error("gemini.stream.error", { modelId, error: e instanceof Error ? e.message : String(e) });
 			throw e;
 		} finally {
-			reader.releaseLock();
 			this.reportEndThinking(progress);
 		}
 	}
@@ -662,7 +644,8 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		systemPrompt: string,
 		messages: { role: string; content: string }[],
 		baseUrl: string,
-		apiKey: string
+		apiKey: string,
+		signal?: AbortSignal
 	): AsyncGenerator<{ type: "text"; text: string }> {
 		// Used by the git-commit generator (non-chat consumer). Simple text
 		// generation over the Gemini native wire with proxy support.
@@ -684,6 +667,7 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 
 		const response = await proxyFetch(url, {
 			...networkInit,
+			...(signal ? { signal } : {}),
 			method: "POST",
 			headers,
 			body: JSON.stringify(requestBody),

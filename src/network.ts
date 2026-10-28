@@ -16,6 +16,7 @@ const SAFE_CURL_HEADERS = new Set([
 	"accept-encoding",
 	"accept-language",
 	"anthropic-version",
+	"anthropic-beta",
 	"cache-control",
 	"content-type",
 	"content-length",
@@ -33,6 +34,54 @@ const SAFE_CURL_HEADERS = new Set([
  * no such limit.
  */
 const CONSOLE_BODY_LIMIT = 4000;
+
+/**
+ * Mask the credentials (`user:pass@`) of a proxy URL for display/logging,
+ * e.g. `http://bob:s3cret@proxy:8080` → `http://bob:***@proxy:8080`. Values
+ * that are not URLs (e.g. `direct`) are returned unchanged.
+ */
+export function maskProxyCredentials(proxyUrl: string | undefined): string {
+	const value = (proxyUrl ?? "").trim();
+	if (!value) {
+		return "";
+	}
+	// Regex rather than `new URL()` so unusual schemes (socks5h) and
+	// unparsable values are handled and the rest of the string is untouched.
+	// Userinfo runs to the LAST "@" of the authority (WHATWG URL / undici read
+	// `u:p@ss@host` as password "p@ss"); the authority ends at the first
+	// "/", "?" or "#", so an "@" in the path is never mistaken for userinfo.
+	const m = /^([a-z][a-z0-9+.-]*:\/\/)(.*)$/is.exec(value);
+	if (!m) {
+		return value;
+	}
+	const scheme = m[1];
+	const rest = m[2];
+	const hostEnd = rest.search(/[/?#]/);
+	const authorityAndPath = hostEnd >= 0 ? rest.slice(0, hostEnd) : rest;
+	const at = authorityAndPath.lastIndexOf("@");
+	if (at < 0) {
+		return value;
+	}
+	const userinfo = authorityAndPath.slice(0, at);
+	const sep = userinfo.indexOf(":");
+	const user = sep >= 0 ? userinfo.slice(0, sep) : "";
+	const masked = sep >= 0 && user ? `${user}:***` : "***";
+	return `${scheme}${masked}${rest.slice(at)}`;
+}
+
+/** Mask credential-bearing query parameters (e.g. Gemini `?key=`) and userinfo in a logged URL. */
+export function maskUrlSecrets(url: string): string {
+	return maskProxyCredentials(url).replace(/([?&](?:key|api[_-]?key|access[_-]?token|token)=)[^&#]*/gi, "$1***");
+}
+
+/** Whether the user opted into persisting full message content in logs. */
+function isLogMessageContentEnabled(): boolean {
+	try {
+		return vscode.workspace.getConfiguration().get<boolean>("customcopilot.logMessageContent", false) === true;
+	} catch {
+		return false;
+	}
+}
 
 function normalizeProxyUrl(proxyUrl?: string): string {
 	const value = (proxyUrl || "").trim();
@@ -191,7 +240,7 @@ function buildCurlCommand(
 		parts.push("-X", method);
 	}
 	if (proxyUrl) {
-		parts.push("-x", shellQuote(proxyUrl));
+		parts.push("-x", shellQuote(maskProxyCredentials(proxyUrl)));
 	}
 
 	for (const [name, value] of headerEntries(init?.headers)) {
@@ -206,7 +255,7 @@ function buildCurlCommand(
 		parts.push("--data-raw", shellQuote("<non-string body omitted>"));
 	}
 
-	parts.push(shellQuote(url));
+	parts.push(shellQuote(maskUrlSecrets(url)));
 	return parts.join(" ");
 }
 
@@ -244,10 +293,14 @@ export async function proxyFetch(
 	input: string | URL | Request,
 	init?: RequestInit & { dispatcher?: Dispatcher }
 ): Promise<Response> {
-	const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+	const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+	const url = maskUrlSecrets(rawUrl);
 	const method = (init?.method || (input instanceof Request ? input.method : undefined) || "GET").toUpperCase();
 	const proxyUrl = dispatcherProxyUrls.get(init?.dispatcher as Dispatcher);
 	const debug = isDebugRequestLoggingEnabled();
+	// The request body carries the conversation: only persist it in full when
+	// the user explicitly opted into logging message content.
+	const fileBodyLimit = isLogMessageContentEnabled() ? Infinity : CONSOLE_BODY_LIMIT;
 
 	try {
 		// Cast through unknown: undici's RequestInit/Response types differ slightly
@@ -261,7 +314,7 @@ export async function proxyFetch(
 			// Full body for the file logger; truncated for the console (size-limited).
 			const reqLen = bodyLength(init);
 			const curlConsole = buildCurlCommand(input, init, proxyUrl, CONSOLE_BODY_LIMIT);
-			const curlFull = buildCurlCommand(input, init, proxyUrl, Infinity);
+			const curlFull = buildCurlCommand(input, init, proxyUrl, fileBodyLimit);
 			// Read the error body from a CLONE so the original response stays consumable
 			// by the caller (which typically reads `.text()`/`.json()`/`.body` itself).
 			let responseBody = "";
@@ -282,7 +335,7 @@ export async function proxyFetch(
 				statusText: response.statusText,
 				requestBodyLength: reqLen,
 				curl: curlFull,
-				response: responseBody,
+				response: truncate(responseBody, fileBodyLimit),
 			});
 		}
 
@@ -292,7 +345,7 @@ export async function proxyFetch(
 		if (debug) {
 			const reqLen = bodyLength(init);
 			const curlConsole = buildCurlCommand(input, init, proxyUrl, CONSOLE_BODY_LIMIT);
-			const curlFull = buildCurlCommand(input, init, proxyUrl, Infinity);
+			const curlFull = buildCurlCommand(input, init, proxyUrl, fileBodyLimit);
 			console.error(
 				`[customcopilot] Request error: ${method} ${url} -> ${message}` +
 					` (request body ${reqLen} chars)\n--- curl ---\n${curlConsole}`

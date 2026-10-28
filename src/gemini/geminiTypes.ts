@@ -4,13 +4,18 @@ export interface GeminiInlineData {
 }
 
 export interface GeminiFunctionCall {
+	/** Gemini 3+: call id echoed on the matching functionResponse (2.x rejects it). */
+	id?: string;
 	name: string;
 	args?: Record<string, unknown>;
 }
 
 export interface GeminiFunctionResponse {
+	id?: string;
 	name: string;
 	response: Record<string, unknown>;
+	/** Gemini 3+: multimodal tool output (e.g. screenshots). */
+	parts?: Array<{ inlineData: GeminiInlineData }>;
 }
 
 export interface GeminiPart {

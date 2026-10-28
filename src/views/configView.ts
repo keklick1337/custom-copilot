@@ -1,17 +1,24 @@
 import * as vscode from "vscode";
 import * as crypto from "crypto";
-import { parseWebviewModelKey, filterModelsByIdentifier } from "./modelKeys";
+import {
+	buildRegisteredModelId,
+	filterModelsByIdentifier,
+	filterModelsByIdentifiers,
+	findIndexByWebviewKey,
+} from "./modelKeys";
 import { exportConfig, importConfig } from "./configTransfer";
 import { handleSkillsMessage } from "./skillsController";
 import type { CustomApiMode, CustomModelItem } from "../types";
 import { normalizeUserModels, resolveProxyUrl } from "../utils";
-import { fetchModels, fetchModelsIntersection } from "../provideModel";
+import { fetchModelsIntersection } from "../provideModel";
 import { parseApiKeys, keyBalancer } from "../keyBalancer";
 import { resolveApiKeysFromSource } from "../apiKeySource";
 import { CommonApi } from "../commonApi";
 import { buildFetchNetworkInit, proxyFetch } from "../network";
+import { buildGeminiGenerateContentUrl } from "../gemini/geminiUrls";
+import { vendorForApiMode } from "../vendorModes";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
-import { getCapturedSystemPrompt } from "../promptCapture";
+import { getCapturedSystemPrompt, loadPersistedSystemPrompt } from "../promptCapture";
 import { testPromptOverride, type PromptOverrideMode, type PromptReplacement } from "../promptOverride";
 
 interface InitPayload {
@@ -48,17 +55,6 @@ type IncomingMessage =
 	| { type: "webviewReady" }
 	| { type: "requestInit" }
 	| {
-			type: "saveGlobalConfig";
-			baseUrl: string;
-			proxyUrl: string;
-			userAgent: string;
-			delay: number;
-			readFileLines: number;
-			retry: { enabled?: boolean; max_attempts?: number; interval_ms?: number; status_codes?: number[] };
-			commitModel: string;
-			commitLanguage: string;
-	  }
-	| {
 			type: "fetchModels";
 			baseUrl: string;
 			apiKey: string;
@@ -76,14 +72,6 @@ type IncomingMessage =
 			apiMode?: CustomApiMode | string;
 			modelId: string;
 			headers?: Record<string, string>;
-			proxyUrl?: string;
-			userAgent?: string;
-	  }
-	| {
-			type: "refreshModelsFromApi";
-			baseUrl: string;
-			apiKey: string;
-			apiKeySource?: string;
 			proxyUrl?: string;
 			userAgent?: string;
 	  }
@@ -168,6 +156,41 @@ type OutgoingMessage =
 			diagnostics: Array<{ index: number; find: string; isRegex: boolean; matches: number | null; error?: string }>;
 			hasCapture: boolean;
 	  };
+
+/**
+ * Model fields edited by the webview model form (see collectModelFormData in
+ * assets/configure/configure.js). On update, any of these the form left empty
+ * is removed from the stored entry; every other field is preserved.
+ */
+const FORM_MANAGED_MODEL_FIELDS: ReadonlyArray<keyof CustomModelItem> = [
+	"displayName",
+	"configId",
+	"context_length",
+	"max_tokens",
+	"max_completion_tokens",
+	"vision",
+	"tool_calling",
+	"delay",
+	"temperature",
+	"top_p",
+	"family",
+	"top_k",
+	"min_p",
+	"frequency_penalty",
+	"presence_penalty",
+	"repetition_penalty",
+	"reasoning_effort",
+	"enable_thinking",
+	"thinking_budget",
+	"prompt_cache",
+	"fast_mode",
+	"image_max_dimension",
+	"include_reasoning_in_request",
+	"thinking",
+	"reasoning",
+	"headers",
+	"extra",
+];
 
 export class ConfigViewController {
 	private readonly webview: vscode.Webview;
@@ -271,18 +294,6 @@ export class ConfigViewController {
 			case "requestInit":
 				await this.sendInit();
 				break;
-			case "saveGlobalConfig":
-				await this.saveGlobalConfig(
-					message.baseUrl,
-					message.proxyUrl,
-					message.userAgent,
-					message.delay,
-					message.readFileLines,
-					message.retry,
-					message.commitModel,
-					message.commitLanguage
-				);
-				break;
 			case "fetchModels": {
 				try {
 					const apiKeys = await this.resolveKeysForRequest(message.apiKey, message.apiKeySource, message.proxyUrl);
@@ -304,14 +315,6 @@ export class ConfigViewController {
 				}
 				break;
 			}
-			case "refreshModelsFromApi":
-				await this.refreshModelsFromApi(
-					message.baseUrl,
-					await this.resolveKeyStringForRequest(message.apiKey, message.apiKeySource, message.proxyUrl),
-					message.proxyUrl,
-					message.userAgent
-				);
-				break;
 			case "testModelKeys":
 				await this.testModelKeys(
 					message.baseUrl,
@@ -395,10 +398,10 @@ export class ConfigViewController {
 				await this.savePromptOverride(message.mode, message.text, message.replacements);
 				break;
 			case "requestCapturedPrompt":
-				this.sendCapturedPrompt();
+				await this.sendCapturedPrompt();
 				break;
 			case "testPromptOverride":
-				this.sendPromptOverrideTest(message.mode, message.text, message.replacements);
+				await this.sendPromptOverrideTest(message.mode, message.text, message.replacements);
 				break;
 			case "setChatRetries":
 				await this.setChatRetries(message.value);
@@ -632,9 +635,14 @@ export class ConfigViewController {
 		const networkInit = buildFetchNetworkInit(effectiveProxyUrl);
 
 		const buildRequest = (): { url: string; body: Record<string, unknown> } => {
-			if (mode === "anthropic") {
+			if (mode === "anthropic" || mode === "zai") {
+				// Anthropic-compatible bases are configured either with or without
+				// the trailing /v1 (e.g. https://api.z.ai/api/anthropic).
+				const messagesUrl = /\/v1$/i.test(effectiveBaseUrl)
+					? `${effectiveBaseUrl}/messages`
+					: `${effectiveBaseUrl}/v1/messages`;
 				return {
-					url: `${effectiveBaseUrl}/messages`,
+					url: messagesUrl,
 					// max_tokens is required by the Anthropic API.
 					body: { model: modelId, max_tokens: 64, messages: [{ role: "user", content: "Hello world" }] },
 				};
@@ -647,7 +655,7 @@ export class ConfigViewController {
 			}
 			if (mode === "gemini") {
 				return {
-					url: `${effectiveBaseUrl}/models/${encodeURIComponent(modelId)}:generateContent`,
+					url: buildGeminiGenerateContentUrl(effectiveBaseUrl, modelId, false),
 					body: { contents: [{ role: "user", parts: [{ text: "Hello world" }] }] },
 				};
 			}
@@ -694,197 +702,6 @@ export class ConfigViewController {
 
 		const results = await Promise.all(keys.map((key) => testOne(key)));
 		this.webview.postMessage({ type: "modelKeysTested", modelId, results });
-	}
-
-	private async refreshModelsFromApi(baseUrl: string, apiKey: string, proxyUrl?: string, userAgent?: string) {
-		try {
-			const normalizedBaseUrl = baseUrl.trim();
-			const normalizedApiKey = apiKey.trim();
-			const normalizedProxyUrl = (proxyUrl || "").trim();
-			const normalizedUserAgent = (userAgent || "").trim();
-			const config = vscode.workspace.getConfiguration();
-			const effectiveBaseUrl = normalizedBaseUrl;
-			const effectiveApiKey = normalizedApiKey;
-			const effectiveProxyUrl = resolveProxyUrl(
-				normalizedProxyUrl,
-				config.get<string>("customcopilot.proxyUrl", "").trim()
-			);
-			const effectiveUserAgent =
-				normalizedUserAgent ||
-				config
-					.get<string>(
-						"customcopilot.userAgent",
-						"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
-					)
-					.trim();
-
-			// If no API key was passed — try per-provider refresh instead
-			if (!effectiveApiKey) {
-				await this.refreshModelsFromAllProviders(effectiveProxyUrl, effectiveUserAgent);
-				return;
-			}
-
-			if (!effectiveBaseUrl) {
-				vscode.window.showErrorMessage("Base URL is not set. Please configure it first.");
-				return;
-			}
-
-			const { models: fetchedModels } = await fetchModels(effectiveBaseUrl, effectiveApiKey, undefined, undefined, {
-				proxyUrl: effectiveProxyUrl,
-				userAgent: effectiveUserAgent,
-			});
-			if (fetchedModels.length === 0) {
-				vscode.window.showWarningMessage("No models returned from the API endpoint.");
-				return;
-			}
-
-			// Save fetched models to VS Code configuration
-			await config.update("customcopilot.models", fetchedModels, vscode.ConfigurationTarget.Global);
-
-			vscode.window.showInformationMessage(`Successfully refreshed ${fetchedModels.length} models from API endpoint.`);
-
-			// Refresh the frontend
-			await this.sendInit();
-		} catch (err) {
-			console.error("[customcopilot] refreshModelsFromApi failed", err);
-			const errorMessage = err instanceof Error ? err.message : String(err);
-			vscode.window.showErrorMessage(`Failed to refresh models: ${errorMessage}`);
-		}
-	}
-
-	/**
-	 * Refresh models by fetching from each configured provider that has an API key.
-	 * Used as fallback when no API key is passed directly.
-	 */
-	private async refreshModelsFromAllProviders(globalProxyUrl?: string, globalUserAgent?: string) {
-		const config = vscode.workspace.getConfiguration();
-		const currentModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
-		const providers = Array.from(new Set(currentModels.map((m) => m.owned_by).filter(Boolean)));
-
-		if (providers.length === 0) {
-			vscode.window.showErrorMessage("No API Key configured. Add providers with API keys first.");
-			return;
-		}
-
-		const allFetched: CustomModelItem[] = [];
-		let anySuccess = false;
-
-		for (const provider of providers) {
-			const providerKey = await this.secrets.get(`customcopilot.apiKey.${provider.toLowerCase()}`);
-			if (!providerKey) {
-				console.warn(`[customcopilot] No API key for provider: ${provider}, skipping refresh`);
-				continue;
-			}
-
-			const providerModels = currentModels.filter((m) => m.owned_by === provider);
-			// Prefer the __provider__ placeholder for provider-level settings, then
-			// fall back to whichever model actually defines each field (mirrors the
-			// frontend getProviderInfo) so the proxy is picked up even when the
-			// placeholder has none.
-			const placeholder = providerModels.find((m) => m.id.startsWith("__provider__"));
-			const firstModel = placeholder || providerModels[0];
-			const withProxy = providerModels.find((m) => m.proxyUrl && m.proxyUrl.trim());
-			const withBaseUrl = providerModels.find((m) => m.baseUrl && m.baseUrl.trim());
-			const withUserAgent = providerModels.find((m) => m.userAgent && m.userAgent.trim());
-			const providerBaseUrl = (placeholder?.baseUrl || withBaseUrl?.baseUrl || firstModel?.baseUrl || "").trim();
-			const providerProxyUrl =
-				(placeholder?.proxyUrl || withProxy?.proxyUrl || firstModel?.proxyUrl || "").trim() || globalProxyUrl;
-			const providerUserAgent =
-				(placeholder?.userAgent || withUserAgent?.userAgent || firstModel?.userAgent || "").trim() || globalUserAgent;
-			const providerApiMode = placeholder?.apiMode || firstModel?.apiMode;
-
-			if (!providerBaseUrl || !providerBaseUrl.startsWith("http")) {
-				console.warn(`[customcopilot] No valid base URL for provider: ${provider}, skipping refresh`);
-				continue;
-			}
-
-			try {
-				const { models: fetched } = await fetchModels(providerBaseUrl, providerKey, providerApiMode, undefined, {
-					proxyUrl: providerProxyUrl,
-					userAgent: providerUserAgent,
-				});
-				// Tag models with their provider
-				allFetched.push(...fetched.map((m) => ({ ...m, owned_by: m.owned_by || provider })));
-				anySuccess = true;
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.error(`[customcopilot] Failed to refresh models for provider ${provider}: ${msg}`);
-				vscode.window.showWarningMessage(`Provider ${provider}: ${msg}`);
-			}
-		}
-
-		if (!anySuccess || allFetched.length === 0) {
-			vscode.window.showWarningMessage(
-				"No models returned from any provider endpoint. Check your API keys and base URLs."
-			);
-			return;
-		}
-
-		await config.update("customcopilot.models", allFetched, vscode.ConfigurationTarget.Global);
-		vscode.window.showInformationMessage(
-			`Successfully refreshed ${allFetched.length} models from ${providers.length} provider(s).`
-		);
-		await this.sendInit();
-	}
-
-	private async saveGlobalConfig(
-		_rawBaseUrl: string,
-		rawProxyUrl: string,
-		rawUserAgent: string,
-		delay: number,
-		readFileLines: number,
-		retry: { enabled?: boolean; max_attempts?: number; interval_ms?: number; status_codes?: number[] },
-		commitModel: string,
-		commitLanguage: string
-	) {
-		const proxyUrl = rawProxyUrl.trim();
-		const userAgent = rawUserAgent.trim();
-		const config = vscode.workspace.getConfiguration();
-		await config.update("customcopilot.proxyUrl", proxyUrl, vscode.ConfigurationTarget.Global);
-		await config.update("customcopilot.userAgent", userAgent, vscode.ConfigurationTarget.Global);
-		await config.update("customcopilot.delay", delay, vscode.ConfigurationTarget.Global);
-		await config.update("customcopilot.readFileLines", readFileLines, vscode.ConfigurationTarget.Global);
-		await config.update("customcopilot.retry", retry, vscode.ConfigurationTarget.Global);
-		await config.update("customcopilot.commitLanguage", commitLanguage, vscode.ConfigurationTarget.Global);
-
-		// Update models to set useForCommitGeneration based on selected commitModel.
-		// The commitModel key may include a #index suffix to disambiguate duplicates.
-		if (commitModel) {
-			const parsed = parseWebviewModelKey(commitModel);
-			const models = config.get<CustomModelItem[]>("customcopilot.models", []);
-			// Find the matching model entry, using the #index if present
-			let matchIndex = -1;
-			let dupCounter = 0;
-			for (let i = 0; i < models.length; i++) {
-				const m = models[i];
-				if (
-					m.id === parsed.baseId &&
-					((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
-				) {
-					if (parsed.index < 0 || dupCounter === parsed.index) {
-						matchIndex = i;
-						break;
-					}
-					dupCounter++;
-				}
-			}
-			const updatedModels = models.map((model, i) => {
-				if (i === matchIndex) {
-					return { ...model, useForCommitGeneration: true };
-				} else {
-					const updatedModel = { ...model };
-					delete updatedModel.useForCommitGeneration;
-					return updatedModel;
-				}
-			});
-			await config.update("customcopilot.models", updatedModels, vscode.ConfigurationTarget.Global);
-		}
-
-		vscode.window.showInformationMessage(
-			"Base URL, Proxy, User-Agent, Delay, Retry and API Key have been saved to global settings."
-		);
-		// Send refresh signal to frontend
-		await this.sendInit();
 	}
 
 	private async getHtml(webview: vscode.Webview) {
@@ -1042,6 +859,13 @@ export class ConfigViewController {
 		const config = vscode.workspace.getConfiguration();
 		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
+		// Provider-level headers/delay as they were BEFORE this edit: a model whose
+		// own value still equals them merely inherited it and follows the change;
+		// a model with its own per-model override keeps it.
+		const previousSource = this.getProviderDefaultSource(models, trimmedProvider);
+		const previousHeaders = JSON.stringify(previousSource?.headers ?? null);
+		const previousDelay = previousSource?.delay;
+
 		const updatedModels = models.map((model) => {
 			if (model.owned_by === trimmedProvider) {
 				// Create a new object with updated properties.
@@ -1050,13 +874,19 @@ export class ConfigViewController {
 				// Treat `undefined`/empty as "clear" so the user can actually remove a
 				// value (previously empty === "keep old", so proxyUrl/userAgent could
 				// never be deleted and kept being refilled onto models on save).
+				// Only true provider-level fields are propagated to every model.
 				const updatedModel = { ...model };
 				updatedModel.baseUrl = (baseUrl ?? "").trim() || undefined;
 				updatedModel.apiMode = (apiMode as CustomApiMode | undefined) || undefined;
 				updatedModel.proxyUrl = (proxyUrl ?? "").trim() || undefined;
 				updatedModel.userAgent = (userAgent ?? "").trim() || undefined;
-				updatedModel.headers = headers;
-				updatedModel.delay = delay;
+				const isPlaceholder = model.id.startsWith("__provider__");
+				if (isPlaceholder || model === previousSource || JSON.stringify(model.headers ?? null) === previousHeaders) {
+					updatedModel.headers = headers;
+				}
+				if (isPlaceholder || model === previousSource || model.delay === previousDelay) {
+					updatedModel.delay = delay;
+				}
 				return updatedModel;
 			}
 			return model;
@@ -1119,7 +949,11 @@ export class ConfigViewController {
 		return providerModels.find((m) => m.id.startsWith("__provider__")) || providerModels[0];
 	}
 
-	private fillModelDefaults(model: CustomModelItem, source: CustomModelItem | undefined): CustomModelItem {
+	private fillModelDefaults(
+		model: CustomModelItem,
+		source: CustomModelItem | undefined,
+		opts: { inheritHeaders?: boolean } = {}
+	): CustomModelItem {
 		if (!source) {
 			return model;
 		}
@@ -1136,7 +970,7 @@ export class ConfigViewController {
 		if (merged.userAgent === undefined) {
 			merged.userAgent = source.userAgent;
 		}
-		if (merged.headers === undefined) {
+		if (opts.inheritHeaders !== false && merged.headers === undefined) {
 			merged.headers = source.headers;
 		}
 		return merged;
@@ -1144,7 +978,7 @@ export class ConfigViewController {
 
 	private async addModel(model: CustomModelItem) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
+		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 		// Auto-generate a configId when adding a model whose id already exists,
 		// so VS Code doesn't deduplicate models with the same id within one
@@ -1193,44 +1027,47 @@ export class ConfigViewController {
 
 	private async updateModel(model: CustomModelItem, originalModelId?: string, originalConfigId?: string, originalKey?: string) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
+		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 		// When originalKey is provided (includes a #index suffix), use it to
 		// find the exact model among duplicates that share the same id+configId.
 		// Otherwise fall back to the first match by id+configId.
 		let targetIndex = -1;
 		if (originalKey) {
-			const parsed = parseWebviewModelKey(originalKey);
-			let dupCounter = 0;
-			for (let i = 0; i < models.length; i++) {
-				const m = models[i];
-				if (
-					m.id === parsed.baseId &&
-					((parsed.configId && m.configId === parsed.configId) || (!parsed.configId && !m.configId))
-				) {
-					if (parsed.index < 0 || dupCounter === parsed.index) {
-						targetIndex = i;
-						break;
-					}
-					dupCounter++;
-				}
-			}
+			targetIndex = findIndexByWebviewKey(models, originalKey);
 		} else if (originalModelId) {
-			targetIndex = models.findIndex(
-				(m) =>
-					m.id === originalModelId &&
-					((originalConfigId && m.configId === originalConfigId) || (!originalConfigId && !m.configId))
+			targetIndex = findIndexByWebviewKey(
+				models,
+				originalConfigId ? `${originalModelId}::${originalConfigId}` : originalModelId
 			);
+		}
+		if (targetIndex < 0) {
+			vscode.window.showErrorMessage(
+				`Model ${originalModelId ?? model.id}${originalConfigId ? "::" + originalConfigId : ""} was not found; it may have been removed.`
+			);
+			await this.sendInit();
+			return;
 		}
 
 		const updatedModels = models.map((m, i) => {
 			if (i === targetIndex) {
-				// Update with new values, but keep provider-level settings
-				// (baseUrl, apiMode, ...) that the model form does not carry by
-				// inheriting them from the original model, then provider defaults.
-				let merged = this.fillModelDefaults(model, m);
-				merged = this.fillModelDefaults(merged, this.getProviderDefaultSource(models, model.owned_by));
-				return merged;
+				// Merge the form onto the existing entry so fields the form does not
+				// carry (useForCommitGeneration, baseUrl, apiMode, proxyUrl, ...) are
+				// kept, then drop form-managed fields the user left empty — webview
+				// messages are JSON, so an emptied field arrives as a missing key.
+				const merged: CustomModelItem = { ...m, ...model };
+				const mergedRecord = merged as unknown as Record<string, unknown>;
+				const formRecord = model as unknown as Record<string, unknown>;
+				for (const field of FORM_MANAGED_MODEL_FIELDS) {
+					if (formRecord[field] === undefined || formRecord[field] === null) {
+						delete mergedRecord[field];
+					}
+				}
+				// Only backfill a missing baseUrl/apiMode/proxy from the provider;
+				// headers are form-managed, so a cleared value must stay cleared.
+				return this.fillModelDefaults(merged, this.getProviderDefaultSource(models, merged.owned_by), {
+					inheritHeaders: false,
+				});
 			}
 			return m;
 		});
@@ -1245,7 +1082,7 @@ export class ConfigViewController {
 
 	private async deleteModel(modelId: string) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
+		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
 		// modelId comes from the webview in the format "baseId::configId#index"
 		// or "baseId::configId" or "baseId#index" or "baseId". The #index suffix
@@ -1260,14 +1097,12 @@ export class ConfigViewController {
 
 	private async deleteModels(modelIds: string[]) {
 		const config = vscode.workspace.getConfiguration();
-		const models = config.get<CustomModelItem[]>("customcopilot.models", []);
+		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
 
-		// Apply all deletions in a single pass. Each modelId may include a
-		// #index suffix to target one specific duplicate.
-		let remaining = models;
-		for (const id of modelIds) {
-			remaining = filterModelsByIdentifier(remaining, id);
-		}
+		// Each modelId may include a #index suffix to target one specific
+		// duplicate; all keys are resolved against the ORIGINAL array before
+		// anything is removed so #index positions do not shift mid-way.
+		const remaining = filterModelsByIdentifiers(models, Array.isArray(modelIds) ? modelIds : []);
 
 		await config.update("customcopilot.models", remaining, vscode.ConfigurationTarget.Global);
 		vscode.window.showInformationMessage(`Deleted ${modelIds.length} models.`);
@@ -1335,9 +1170,10 @@ export class ConfigViewController {
 		await config.update("customcopilot.commitLanguage", commitLanguage, vscode.ConfigurationTarget.Global);
 
 		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
-		const updatedModels = models.map((m) => {
-			const fid = m.configId ? `${m.id}::${m.configId}` : m.id;
-			if (fid === commitModel) {
+		// The commitModel key may include a #index suffix to disambiguate duplicates.
+		const matchIndex = commitModel ? findIndexByWebviewKey(models, commitModel) : -1;
+		const updatedModels = models.map((m, i) => {
+			if (i === matchIndex) {
 				return { ...m, useForCommitGeneration: true };
 			}
 			const updated = { ...m };
@@ -1487,7 +1323,8 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private sendCapturedPrompt() {
+	private async sendCapturedPrompt() {
+		await loadPersistedSystemPrompt();
 		// Send the most recent ORIGINAL system prompt Copilot assembled, so the
 		// webview can show it and the user can copy it as a base for their override.
 		const captured = getCapturedSystemPrompt();
@@ -1499,7 +1336,8 @@ export class ConfigViewController {
 		} as OutgoingMessage);
 	}
 
-	private sendPromptOverrideTest(mode: string, text: string, replacements: unknown[]) {
+	private async sendPromptOverrideTest(mode: string, text: string, replacements: unknown[]) {
+		await loadPersistedSystemPrompt();
 		// Dry-run the (possibly unsaved) override against the captured prompt so
 		// the UI can show a before/after diff without sending a real chat request.
 		const captured = getCapturedSystemPrompt();
@@ -1545,22 +1383,24 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
+	/**
+	 * Map a webview model key ("id", "id::configId", optionally "#N") to the
+	 * selector VS Code's chat commands accept. The id must be the one registered
+	 * by provideModel.ts (`providerKey:idx:id[::configId]`) under the vendor that
+	 * serves the model's apiMode, otherwise VS Code silently ignores it.
+	 */
 	private resolveModelSelector(modelFullId?: string): { id: string; vendor: string } | undefined {
 		if (!modelFullId) {
 			return undefined;
 		}
 		const config = vscode.workspace.getConfiguration();
 		const models = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
-		const match = models.find((m) => (m.configId ? `${m.id}::${m.configId}` : m.id) === modelFullId);
-		const apiMode = (match?.apiMode ?? "openai") as CustomApiMode;
-		const vendorByMode: Record<string, string> = {
-			openai: "copilotcustommodelsendpoint",
-			"openai-responses": "copilotcustommodelsendpoint-responses",
-			anthropic: "copilotcustommodelsendpoint-anthropic",
-			gemini: "copilotcustommodelsendpoint-gemini",
-			ollama: "copilotcustommodelsendpoint-ollama",
-		};
-		return { id: modelFullId, vendor: vendorByMode[apiMode] ?? "copilotcustommodelsendpoint" };
+		const index = findIndexByWebviewKey(models, modelFullId);
+		const id = index >= 0 ? buildRegisteredModelId(models, index) : undefined;
+		if (!id) {
+			return undefined;
+		}
+		return { id, vendor: vendorForApiMode(models[index].apiMode) };
 	}
 
 	private normalizeChatMode(mode?: string): string {
@@ -1702,58 +1542,13 @@ export class ConfigViewController {
 
 	private async exportConfig() {
 		await exportConfig(this.secrets);
-	}	private async importConfig() {
+	}
+
+	private async importConfig() {
 		await importConfig(this.secrets, () => this.sendInit());
 	}
 }
 
-export class SettingsPanel {
-	public static currentPanel: SettingsPanel | undefined;
-	private readonly panel: vscode.WebviewPanel;
-	private readonly controller: ConfigViewController;
-
-	public static openPanel(extensionUri: vscode.Uri, secrets: vscode.SecretStorage) {
-		const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
-
-		if (SettingsPanel.currentPanel) {
-			SettingsPanel.currentPanel.panel.reveal(column);
-			return;
-		}
-
-		const panel = vscode.window.createWebviewPanel(
-			"customcopilot.config",
-			"Copilot Custom Models Endpoint Configuration",
-			column || vscode.ViewColumn.One,
-			{
-				enableScripts: true,
-				retainContextWhenHidden: true,
-				localResourceRoots: [vscode.Uri.joinPath(extensionUri, "out"), vscode.Uri.joinPath(extensionUri, "assets")],
-			}
-		);
-
-		SettingsPanel.currentPanel = new SettingsPanel(panel, extensionUri, secrets);
-	}
-
-	private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, secrets: vscode.SecretStorage) {
-		this.panel = panel;
-		this.controller = new ConfigViewController(panel.webview, extensionUri, secrets);
-		this.panel.onDidDispose(() => this.dispose());
-	}
-
-	public dispose() {
-		SettingsPanel.currentPanel = undefined;
-		this.panel.dispose();
-		this.controller.dispose();
-	}
-}
-
-/**
- * Parse a webview model key in the format "baseId::configId#index",
- * "baseId::configId", "baseId#index", or "baseId". The #index suffix
- * disambiguates multiple models that share the same id+configId.
- * Returns the parsed components plus the 0-based index among duplicates
- * (or -1 when no #index suffix is present).
- */
 export class SettingsViewProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = "customcopilot.settingsView";
 	private controller?: ConfigViewController;

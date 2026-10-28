@@ -47,11 +47,27 @@ Copilot Chat model picker, with full support for tools, vision, and reasoning/th
   cached/reasoning tokens, per protocol) feeds Copilot Chat's context‑usage indicator, so
   the circle next to the chat input populates for custom models just like for Copilot's own.
 - **Reasoning‑effort normalization** — `reasoning_effort` is clamped onto each provider's
-  supported vocabulary (never escalating cost): the OpenAI‑compatible wire tops out at
-  `max`, GLM‑5.2 accepts `high`/`max`, GLM‑5.3 `low`–`max`, Groq gets `default`, Gemini 3
-  maps to `thinkingLevel`. Thinking budgets are validated against output ceilings
-  (Anthropic `max_tokens` is raised to `budget + 4096`; Gemini `maxOutputTokens` to 65535
-  when thinking is on) so a model never "thinks past its tokens" and 400s.
+  supported vocabulary (never escalating cost; ported from hermes‑agent): the
+  OpenAI‑compatible wire tops out at `max`; Z.AI GLM‑5.2 accepts `high`/`max`, GLM‑5.3
+  `low`–`max` (`xhigh` → `max`, and "off" becomes `low` because 5.3 can't disable thinking),
+  older GLM only get the `thinking` toggle; DeepSeek, Kimi K2/K3 and Ollama Cloud get their own
+  vocabularies; Groq gets `default`; Gemini 3 maps to `thinkingLevel`; Claude 4.6+ uses
+  adaptive thinking with `output_config.effort`. Thinking budgets are validated against output
+  ceilings (Anthropic `max_tokens` is raised to `budget + 4096`; Gemini `maxOutputTokens` to
+  65535 when thinking is on) so a model never "thinks past its tokens" and 400s.
+- **Multi‑turn thinking that survives tool calls** — Anthropic thinking signatures and
+  redacted blocks, Gemini `thoughtSignature`s, OpenRouter `reasoning_details` and Responses
+  encrypted reasoning are kept with the chat history and replayed to the same model, so
+  agent‑mode tool loops with thinking enabled keep working. Reasoning is echoed back
+  automatically only where the provider requires it (DeepSeek, Kimi, MiMo).
+- **Robust streaming** — in‑stream errors are surfaced instead of silently truncating;
+  output‑limit / content‑filter stops are shown in the answer; an empty response becomes a
+  retryable error; parallel tool calls are assembled correctly even when a server reuses the
+  same index; orphaned tool calls (e.g. after cancelling) are repaired for strict APIs;
+  `Retry‑After` is honored.
+- **Skills manager** — browse and install Copilot skills (SKILL.md folders) from catalogs,
+  import from a URL/file, edit, and delete; every file of a skill is security‑scanned
+  before it is written, with a configurable policy (block / warn / off).
 - **Multi‑provider & multi‑config** — group models by provider with per‑provider API keys,
   and define the same model id multiple times with different settings via `configId`.
   Duplicate ids are auto‑assigned a numeric `configId` (`::1`, `::2`, …) when added
@@ -167,15 +183,86 @@ Set `apiMode` per model to select the protocol adapter:
 
 | `apiMode` | Endpoint | Notes |
 |---|---|---|
-| `openai` *(default)* | `POST {baseUrl}/chat/completions` | Standard OpenAI Chat Completions. Usage stats requested via `stream_options.include_usage`. |
+| `openai` *(default)* | `POST {baseUrl}/chat/completions` | Standard OpenAI Chat Completions. Usage stats requested via `stream_options.include_usage` (automatically dropped for servers that reject it). Z.AI hosts get GLM `thinking` / `reasoning_effort`; OpenAI / GPT‑5 / o‑series get `max_completion_tokens`. |
 | `openai-responses` | `POST {baseUrl}/responses` | OpenAI Responses API; reasoning summaries, stateful `previous_response_id` reuse with automatic fallback for gateways that don't support it. |
-| `ollama` | `POST {baseUrl}/api/chat` | Local Ollama; API key optional. |
-| `anthropic` | `POST {baseUrl}/v1/messages` | Native Anthropic Messages API; strict role alternation enforced, thinking blocks replayed safely. |
-| `gemini` | `POST {baseUrl}/v1beta/models/{model}:streamGenerateContent?alt=sse` | Native Google Gemini API. |
-| `zai` | `POST {baseUrl}/v1/messages` | Z.AI (Anthropic‑compatible, Bearer auth, GLM reasoning_effort mapping). |
+| `ollama` | `POST {baseUrl}/api/chat` | Local Ollama; API key optional. `context_length` is sent as `num_ctx` (otherwise Ollama silently truncates to its small default window); `think` supports gpt‑oss levels. |
+| `anthropic` | `POST {baseUrl}/v1/messages` | Native Anthropic Messages API; strict role alternation and tool_use/tool_result pairing enforced, signed thinking replayed, prompt caching for Claude, `anthropic-beta` interleaved thinking on api.anthropic.com. |
+| `gemini` | `POST {baseUrl}/v1beta/models/{model}:streamGenerateContent?alt=sse` | Native Google Gemini API; tool schemas sanitized to Gemini's Schema subset, thought signatures preserved, Gemini 3 call ids and multimodal tool results. |
+| `zai` | `POST {baseUrl}/v1/messages` | Z.AI / Zhipu Anthropic‑compatible endpoint (Bearer auth); GLM `thinking` enabled/disabled (sent explicitly — server default is on), GLM‑5.2/5.3 effort via `output_config.effort`, per‑model GLM output ceilings, plan‑cap errors (1304/1308–1311/1313) fail fast or rotate keys. |
 
 Each mode converts messages, tools, images, and thinking blocks to the provider's native
 format, and reports token usage back to Copilot Chat.
+
+### ⚡ Anthropic prompt caching
+
+For Claude (and MiniMax‑M2) models on `anthropic` / `zai`, the extension places
+[`cache_control`](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+breakpoints (max 4) on the last tool definition (api.anthropic.com), the system prompt and the
+latest messages, so agent loops re-read the cached prefix (~10% of input price) instead of
+re-sending it. Thinking and empty blocks are never marked; one-shot requests (e.g. commit
+messages) skip caching.
+
+- Global TTL: `customcopilot.promptCacheTtl` — `5m` (default), `1h` (2x write price, better for
+  long pauses) or `off`.
+- Per model: `"prompt_cache": "5m" | "1h" | "off"` (an explicit TTL also enables caching for other
+  Anthropic‑compatible models and the tools breakpoint on third‑party gateways).
+- A top‑level `cache_control` in `extra` switches to Anthropic *automatic* caching and disables
+  the explicit breakpoints.
+- Cache reads/writes are counted in the reported prompt tokens (`cached_tokens`).
+
+### 🚀 Anthropic fast mode
+
+`"fast_mode": true` on an `anthropic` model sends
+[`speed: "fast"`](https://platform.claude.com/docs/en/build-with-claude/fast-mode) — up to 2.5x
+output tokens/s at premium pricing (Claude Opus 5.5; Opus 5 / Opus 4.8 research preview, the
+`fast-mode-2026-02-01` beta header is added automatically). When the fast-mode rate limit or
+capacity is hit (429/529) the request is retried at standard speed immediately. Fast and
+standard requests do not share prompt‑cache prefixes.
+
+### 🎚️ Effort level & context size in the chat model picker
+
+Like Copilot's own models, every custom model exposes **Effort Level** and **Context Size**
+right in the chat model picker — no settings edit needed:
+
+- **Effort Level** — only the levels the model accepts (Claude adaptive low…max / xhigh,
+  GLM‑5.2 off/high/max, GLM‑5.3 low…max, Gemini, OpenAI reasoning models…). "Off" disables
+  thinking where the model allows it. The choice overrides `reasoning_effort` for that chat.
+- **Context Size** — 100 % / 75 % / 50 % / 25 % of the model window (1M → 1M / 750K / 500K /
+  250K). Copilot's agent budgets and compacts the conversation to the chosen size, so smaller
+  sizes keep requests cheaper and faster.
+
+### 🖼️ Smart image downscaling
+
+Screenshots and attachments whose long edge exceeds `customcopilot.imageMaxDimension`
+(default 2048 px) are downscaled (area-average, no aliasing on text) and re-encoded as JPEG
+(PNG kept when it has transparency) before being sent — including images in tool results, which
+Copilot does not resize. A 4K screenshot no longer eats the context window on GLM vision.
+Per model: `image_max_dimension` (`0` = send unchanged). Results are cached per image.
+
+### 🤖 Subagents (`#delegate`)
+
+The `customcopilot_delegateTask` tool (`#delegate`) lets the agent hand a self-contained
+sub-task to a separate model in a **fresh context** and get back only the final report — broad
+codebase exploration, long logs/docs, reviews — so the main chat context stays small.
+Subagents get read-only tools by default (write tools only with `allowWrite` + confirmation),
+run up to `customcopilot.subagent.maxSteps` tool rounds, and use `customcopilot.subagent.model`
+(or a `fast` / `strong` / name hint) — e.g. a cheap GLM‑Flash for scouting.
+
+### 🟦 Z.AI / GLM extras
+
+- **Show Z.AI Coding Plan Quota** command: plan level, 5‑hour / weekly prompt usage and
+  MCP quota with reset times, per stored key.
+- Transient business errors inside a streamed 200 response (1302/1303/1305/1312/1234,
+  `network_error`, overloaded) are retried once before anything is shown.
+- `retry-after-ms` / `retry-after` honoured up to 5 minutes, `x-should-retry: false` respected,
+  local backoff has jitter.
+
+### 📏 Context windows
+
+Anthropic `/v1/models` listing reads `max_input_tokens` (context window, e.g. 1M) and
+`max_tokens` (output cap, e.g. 128K) plus `capabilities.image_input`. When an endpoint omits them
+(compat gateways) — or a configured model has no `context_length` — known family windows are
+used: Claude 4.6+ / 5.x / Fable / Mythos → 1M, older Claude → 200K, GLM per version.
 
 ## 👥 Multi‑Provider
 
@@ -263,7 +350,10 @@ your config are migrated automatically on first launch after updating the extens
 
 Per‑model fields control chain‑of‑thought behaviour across all adapters:
 
-- `enable_thinking` / `thinking: { "type": "enabled" | "disabled" }` — master toggle.
+- `enable_thinking` / `thinking: { "type": "enabled" | "disabled" | "adaptive" }` /
+  `reasoning_effort: "none"` — on/off preference, resolved in that order. Leaving all of
+  them unset keeps the provider default (Z.AI GLM thinks by default — pick **None** in the
+  effort list to turn it off).
 - `thinking_budget` — token budget for reasoning (Anthropic `budget_tokens`, Gemini
   `thinkingBudget`).
 - `reasoning_effort` — effort level, **automatically clamped** to each provider's supported
@@ -275,9 +365,42 @@ Per‑model fields control chain‑of‑thought behaviour across all adapters:
   raised to 65535 (gemini‑family models only; Gemma never receives `thinkingConfig`, which
   its API rejects).
 - `include_reasoning_in_request` — echo reasoning back in assistant history (actual thinking
-  only; nothing is fabricated).
+  only; nothing is fabricated). When unset it is enabled automatically for providers that
+  require it (DeepSeek, Kimi/Moonshot, Xiaomi MiMo) and off everywhere else (Z.AI included).
+
+**GLM / Z.AI quick reference** (OpenAI‑compatible `https://api.z.ai/api/paas/v4`, Coding
+Plan `https://api.z.ai/api/coding/paas/v4`, China `https://open.bigmodel.cn/api/paas/v4`):
+
+| Model | `thinking` | `reasoning_effort` |
+|---|---|---|
+| glm‑4.5 … glm‑5.1 | `enabled` / `disabled` (only when you set a preference) | not sent |
+| glm‑5.2 | `enabled` / `disabled` | `high`, `max` (lower → `high`, `xhigh` → `max`) |
+| glm‑5.3, glm‑5.3‑flash | always `enabled` ("off" → effort `low`) | `low`, `medium`, `high`, `max` |
+
+Context windows for GLM models are filled in automatically (e.g. glm‑4.6 200K, glm‑5.2 1M,
+glm‑5.3 1.28M) when the endpoint doesn't report them.
 - Inline `<think>…</think>` blocks emitted by OpenAI‑compatible models are detected with a
   chunk‑boundary‑safe streaming parser and surfaced as native thinking parts.
+
+## 🧩 Skills
+
+The **Skills** screen in the sidebar manages Copilot Chat skills (folders with a `SKILL.md`)
+in `~/.copilot/skills/`: search the catalogs and install, import from a URL or file, edit,
+and delete. Copilot can also search/install skills itself through the extension's language
+model tools (installs always ask for confirmation).
+
+**Security scan.** Before anything is written, every file of the skill is scanned for data
+exfiltration, prompt injection and destructive commands. The policy is set with the
+🛡️ selector on the Skills screen or `customcopilot.skills.safetyScan`:
+
+| Value | Behaviour |
+|---|---|
+| `block` *(default)* | Critical/high findings block the install or save; other findings ask for confirmation. |
+| `warn` | Nothing is blocked; every finding asks for confirmation. |
+| `off` | No scan at all (not recommended). |
+
+Weakening the policy from the UI asks for confirmation. The setting is application‑scoped,
+so a workspace's `.vscode/settings.json` cannot turn the scan off.
 
 ## 🧷 Custom Headers
 
@@ -367,6 +490,11 @@ Global settings (namespace `customcopilot.*`):
 | `customcopilot.commitLanguage` | `English` | Language for generated commit messages. |
 | `customcopilot.commitMessagePrompt` | `""` | Custom system prompt for commit messages. |
 | `customcopilot.readFileLines` | `0` | Lines to read for the `read_file` tool (0 = model decides). |
+| `customcopilot.skills.safetyScan` | `block` | Skill security scan policy: `block`, `warn` or `off` (see **Skills**). |
+
+Security‑sensitive settings (`models`, `proxyUrl`, `userAgent`, `promptOverride.*`, logging,
+`skills.safetyScan`) are application‑scoped: they can only be set in user settings, never by a
+workspace, so a cloned repository can't redirect your API keys to another server.
 
 ### Per‑model fields (`customcopilot.models[]`)
 
@@ -377,12 +505,12 @@ Global settings (namespace `customcopilot.*`):
 - `family` — model family for behavior hints (default `oai-compatible`).
 - `baseUrl`, `proxyUrl`, `userAgent` — per‑model overrides of the global values.
 - `context_length` *(default 128000)*, `max_tokens` / `max_completion_tokens` *(default 4096)*.
-- `vision` *(default false)* — image input support.
+- `vision` *(default false)* — image input support. `tool_calling` — tool/function calling support.
 - `temperature` *(0–2, default 0)*, `top_p`, `top_k`, `min_p`.
 - `frequency_penalty`, `presence_penalty`, `repetition_penalty`.
-- `reasoning_effort` — `max` | `xhigh` | `high` | `medium` | `low` | `minimal` (auto‑clamped per provider).
+- `reasoning_effort` — `none` | `minimal` | `low` | `medium` | `high` | `xhigh` | `max` | `ultra` (auto‑clamped per provider; `none` disables thinking).
 - `reasoning` — OpenRouter‑style object (`enabled`, `effort`, `exclude`, `max_tokens`).
-- `thinking` — `{ "type": "enabled" | "disabled" }` (Zai‑style).
+- `thinking` — `{ "type": "enabled" | "disabled" | "adaptive" }` (Z.AI / ARK style).
 - `enable_thinking`, `thinking_budget` — toggle/limit chain‑of‑thought output.
 - `include_reasoning_in_request` — echo `reasoning_content` back in assistant messages.
 - `headers` — custom HTTP headers. `extra` — extra request‑body params.
@@ -400,6 +528,8 @@ Global settings (namespace `customcopilot.*`):
 | Open Configuration UI | `customcopilot.openConfig` |
 | Generate Commit Message | `customcopilot.generateGitCommitMessage` |
 | Stop Commit Message Generation | `customcopilot.abortGitCommitMessage` |
+| Toggle Model Capability (tools / vision / thinking) | `customcopilot.toggleModelCapability` |
+| Select Commit Message Model | `customcopilot.setDefaultModel` |
 
 ## 🏗 Development
 

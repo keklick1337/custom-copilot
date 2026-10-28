@@ -20,3 +20,22 @@ tmp/**
 oai-compatible-copilot/**
 **/.git/**
 **/*.vsix
+
+# Local tooling / agent state
+.claude/**
+.worktrees/**
+.prettierrc
+.prettierignore
+**/.DS_Store
+
+# Compiled tests are not shipped
+out/test/**
+
+# Dependency payload that is never loaded at runtime
+node_modules/**/docs/**
+node_modules/**/scripts/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/*.md
+node_modules/**/*.d.ts
+node_modules/**/.github/**

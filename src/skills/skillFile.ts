@@ -35,7 +35,7 @@ export function parseSkillMarkdown(content: string): ParsedSkill | undefined {
 	for (const line of fmText.split("\n")) {
 		const match = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line.trim());
 		if (match) {
-			frontmatter[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
+			frontmatter[match[1]] = parseScalar(match[2].trim());
 		}
 	}
 	if (!frontmatter.name || !frontmatter.description) {
@@ -44,11 +44,47 @@ export function parseSkillMarkdown(content: string): ParsedSkill | undefined {
 	return { frontmatter: frontmatter as SkillFrontmatter, body };
 }
 
+/** Decode a flat YAML scalar: JSON-style double quotes, single quotes, or plain. */
+function parseScalar(raw: string): string {
+	if (raw.length >= 2 && raw.startsWith("\"") && raw.endsWith("\"")) {
+		try {
+			const v: unknown = JSON.parse(raw);
+			if (typeof v === "string") {
+				return v;
+			}
+		} catch {
+			// not valid JSON escaping — fall back to stripping the quotes
+		}
+		return raw.slice(1, -1);
+	}
+	if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+		return raw.slice(1, -1).replace(/''/g, "'");
+	}
+	return raw;
+}
+
+/**
+ * Encode a frontmatter value. Anything that could be misread as YAML
+ * structure (":", "#", newlines, leading indicators / quotes, surrounding
+ * whitespace) is emitted as a double-quoted JSON string, which is also a
+ * valid YAML double-quoted scalar (escapes quotes, backslashes, newlines).
+ */
+function serializeScalar(value: string): string {
+	const needsQuote =
+		value === "" ||
+		/[:#\n\r\t"\\\u2028\u2029\u0085]/.test(value) ||
+		/^[\s'"`[\]{}>|*&!%@,?-]/.test(value) ||
+		/\s$/.test(value);
+	// JSON.stringify leaves U+2028/U+2029/U+0085 raw; they are line breaks to
+	// YAML and to the line-based parser, so escape them explicitly.
+	return needsQuote
+		? JSON.stringify(value).replace(/[\u2028\u2029\u0085]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
+		: value;
+}
+
 /** Serialize frontmatter + body back into SKILL.md format. */
 export function serializeSkillMarkdown(frontmatter: SkillFrontmatter, body: string): string {
-	const lines = Object.entries(frontmatter)
-		.filter(([k]) => k !== "name" || true)
-		.map(([k, v]) => `${k}: ${String(v).includes(":") ? JSON.stringify(String(v)) : String(v)}`);
+	const lines = Object.entries(frontmatter).map(([k, v]) => `${k}: ${serializeScalar(String(v ?? ""))}`);
 	return `---\n${lines.join("\n")}\n---\n\n${body.trim()}\n`;
 }
 

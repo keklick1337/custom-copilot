@@ -58,6 +58,20 @@ export interface CustomModelItem {
 	reasoning_effort?: string;
 	enable_thinking?: boolean;
 	thinking_budget?: number;
+	/**
+	 * Anthropic-wire prompt caching (`cache_control` breakpoints): "5m" / "1h"
+	 * TTL, or "off". Unset → global `customcopilot.promptCacheTtl` for
+	 * Claude / MiniMax-M2 models, off for other Anthropic-compatible models.
+	 */
+	prompt_cache?: "5m" | "1h" | "off";
+	/**
+	 * Anthropic fast mode (`speed: "fast"`, up to 2.5x output tokens/s at
+	 * premium pricing; Opus 5.5 GA, Opus 5 / 4.8 research preview). A fast-mode
+	 * 429/529 falls back to standard speed automatically.
+	 */
+	fast_mode?: boolean;
+	/** Long-edge pixel cap for images sent to this model (0 = never resize). Overrides `customcopilot.imageMaxDimension`. */
+	image_max_dimension?: number;
 	// New thinking configuration for Zai provider
 	thinking?: ThinkingConfig;
 	// Allow null so user can explicitly disable sending this parameter (fall back to provider default)

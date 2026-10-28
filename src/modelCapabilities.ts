@@ -69,6 +69,10 @@ const VISION_ID_PATTERNS: string[] = [
 	"yi-vision",
 	"glm-4v",
 	"glm-4.1v",
+	"glm-4.5v",
+	"glm-4.6v",
+	"glm-5v",
+	"glm-5.3-flash",
 	"deepseek-vl",
 	"cogvlm",
 	"idefics",
@@ -122,6 +126,12 @@ const REASONING_ID_PATTERNS: string[] = [
 	"grok-3-mini",
 	"grok-4",
 	"phi-4-reasoning",
+	"glm-4.5",
+	"glm-4.6",
+	"glm-4.7",
+	"glm-5",
+	"kimi-k2-thinking",
+	"minimax-m",
 ];
 
 function idMatches(id: string, patterns: string[]): boolean {
@@ -304,6 +314,46 @@ function detectReasoningFromFields(m: Record<string, unknown>): boolean | undefi
 }
 
 /**
+ * Known GLM context windows (hermes-agent `agent/model_metadata.py`), most
+ * specific first. Z.AI's `/models` listing carries no context length.
+ */
+const GLM_CONTEXT_LENGTHS: Array<[string, number]> = [
+	// 5.2/5.3: Z.AI's own catalog (ZCode `zcode-builtin.json`) says 1,000,000
+	// — under-reporting is harmless, over-reporting triggers 1261 overflows.
+	["glm-5.3-flashx", 1_000_000],
+	["glm-5.3", 1_000_000],
+	["glm-5.2:free", 256_000],
+	["glm-5.2", 1_000_000],
+	["glm-5-turbo", 202_752],
+	["glm-5v-turbo", 202_752],
+	["glm-4.7-flash", 202_752],
+	["glm-5.1", 204_800],
+	["glm-5", 204_800],
+	["glm-4.7", 204_800],
+	["glm-4.6v", 131_072],
+	["glm-4.6", 204_800],
+	["glm-4.5v", 65_536],
+	["glm-4.5", 131_072],
+];
+
+/** Context window for a model id from known-family tables; undefined when unknown. */
+export function knownContextLength(modelId: string): number | undefined {
+	const id = modelId.toLowerCase();
+	const bare = id.slice(id.lastIndexOf("/") + 1);
+	if (!bare.startsWith("glm")) {
+		return undefined;
+	}
+	for (const [prefix, ctx] of GLM_CONTEXT_LENGTHS) {
+		if (bare.startsWith(prefix)) {
+			return ctx;
+		}
+	}
+	// Unknown GLM (glm-4-9b-chat, glm-4v…): no guess — over-reporting the
+	// window makes Copilot overfill the prompt.
+	return undefined;
+}
+
+/**
  * Infer a model's capabilities from a raw `/v1/models` entry.
  *
  * Precedence (highest first): explicit endpoint-provided fields, then id-based
@@ -337,7 +387,7 @@ export function inferModelCapabilities(model: Record<string, unknown>): Inferred
 		vision,
 		toolCalling,
 		reasoning,
-		contextLength: detectContextLength(model),
+		contextLength: detectContextLength(model) ?? knownContextLength(id),
 		maxOutputTokens: detectMaxOutputTokens(model),
 	};
 }

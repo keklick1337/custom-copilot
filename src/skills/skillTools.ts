@@ -15,10 +15,17 @@
  */
 
 import * as vscode from "vscode";
-import { fetchCatalog, fetchSkillContent, fetchSkillFolder, type CatalogSkill } from "./skillCatalog";
+import {
+	fetchCatalog,
+	fetchSkillBundle,
+	fetchSkillContent,
+	type CatalogSkill,
+	type SkillBundle,
+	type SkillFolderFile,
+} from "./skillCatalog";
 import { findLocalSkillByName, listLocalSkills, readSkill, skillExists, updateSkillFile, writeSkill, writeSkillFolder } from "./localSkills";
-import { parseSkillMarkdown, sanitizeSkillName } from "./skillFile";
-import { scanSkillContent, formatScanReport } from "./skillGuard";
+import { parseSkillMarkdown, sanitizeSkillName, serializeSkillMarkdown } from "./skillFile";
+import { scanSkillContent, scanSkillFiles, applySkillSafetyPolicy } from "./skillGuard";
 
 export interface SearchSkillsInput {
 	query: string;
@@ -35,7 +42,8 @@ export interface InstallSkillInput {
 /** Reuse the GUI's validation severity logic (mirror of skillsController). */
 function validateSkillContent(
 	content: string,
-	fallbackName: string
+	fallbackName: string,
+	files?: SkillFolderFile[]
 ): { status: "ok" | "warning" | "critical"; issues: string[]; warnings: string[]; name: string; parsed?: ReturnType<typeof parseSkillMarkdown> } {
 	const parsed = parseSkillMarkdown(content);
 	const name = sanitizeSkillName(parsed?.frontmatter.name ?? fallbackName);
@@ -55,13 +63,9 @@ function validateSkillContent(
 	if (!body.trim()) {
 		warnings.push("Body is empty.");
 	}
-	// Hermes-style threat scan (exfiltration / injection / destructive).
-	const scan = scanSkillContent(content);
-	if (scan.verdict === "dangerous") {
-		issues.push(formatScanReport(scan));
-	} else if (scan.verdict === "suspicious") {
-		warnings.push(formatScanReport(scan));
-	}
+	// Hermes-style threat scan (exfiltration / injection / destructive) over
+	// EVERY text file that will be written (the folder includes SKILL.md).
+	applySkillSafetyPolicy(() => (files ? scanSkillFiles(files) : scanSkillContent(content)), issues, warnings);
 	const status = issues.length > 0 ? "critical" : warnings.length > 0 ? "warning" : "ok";
 	return { status, issues, warnings, name, parsed };
 }
@@ -86,10 +90,19 @@ function dangerousExcerpts(body: string): string[] {
 	return excerpts;
 }
 
+/** Lowercased GitHub owner of a catalog skill ("" when unknown). */
+function repoOwner(s: CatalogSkill): string {
+	return (s.repo ?? "").split("/")[0].trim().toLowerCase();
+}
+
+function isTrustedOwner(s: CatalogSkill, trustedOwners: string[]): boolean {
+	const owner = repoOwner(s);
+	return !!owner && trustedOwners.some((t) => t.toLowerCase() === owner);
+}
+
 function trustScore(s: CatalogSkill, trustedOwners: string[]): number {
-	const owner = (s.repo ?? "").split("/")[0].toLowerCase();
 	let score = s.installs ?? 0;
-	if (trustedOwners.includes(owner)) {
+	if (isTrustedOwner(s, trustedOwners)) {
 		score += 1_000_000; // first-party owners dominate
 	}
 	return score;
@@ -131,7 +144,7 @@ export class SearchSkillsTool implements vscode.LanguageModelTool<SearchSkillsIn
 		const lines = top.map((s) => {
 			const inst = installed.has(s.name) ? " [INSTALLED]" : "";
 			const downloads = s.installs !== undefined ? ` (${s.installs.toLocaleString()} installs)` : "";
-			const trust = trustedOwners.includes((s.repo ?? "").split("/")[0]) ? " [TRUSTED OWNER]" : "";
+			const trust = isTrustedOwner(s, trustedOwners) ? " [TRUSTED OWNER]" : "";
 			return `- ${s.name}${downloads}${inst}${trust} — ${s.description}${s.repo ? ` [${s.repo}]` : ""}`;
 		});
 		const details = detailed
@@ -149,6 +162,19 @@ export class SearchSkillsTool implements vscode.LanguageModelTool<SearchSkillsIn
 }
 
 // ── customcopilot.installSkill ───────────────────────────────────────────────
+
+/**
+ * Bundle fetched (and scanned) for the confirmation dialog, keyed by skill.
+ * `invoke` installs exactly this bundle, so what the user confirmed is what
+ * gets written — no second download that could differ (or fail on the
+ * GitHub rate limit and silently shrink to SKILL.md only).
+ */
+const confirmedBundles = new Map<string, { bundle: SkillBundle; at: number }>();
+const CONFIRMED_BUNDLE_TTL_MS = 10 * 60 * 1000;
+
+function bundleKey(skill: CatalogSkill): string {
+	return `${skill.source}\u0000${skill.repo ?? ""}\u0000${skill.id ?? skill.name}`;
+}
 
 export class InstallSkillTool implements vscode.LanguageModelTool<InstallSkillInput> {
 	/**
@@ -168,11 +194,18 @@ export class InstallSkillTool implements vscode.LanguageModelTool<InstallSkillIn
 				invocationMessage: `Skill "${name}" not found`,
 			};
 		}
-		const content = await fetchSkillContent(skill);
-		if (!content) {
+		const bundle = await fetchSkillBundle(skill);
+		if (!bundle) {
 			return { invocationMessage: `Could not fetch SKILL.md for "${name}"` };
 		}
-		const v = validateSkillContent(content, skill.name);
+		const now = Date.now();
+		for (const [k, v] of confirmedBundles) {
+			if (now - v.at > CONFIRMED_BUNDLE_TTL_MS) {
+				confirmedBundles.delete(k);
+			}
+		}
+		confirmedBundles.set(bundleKey(skill), { bundle, at: now });
+		const v = validateSkillContent(bundle.content, skill.name, bundle.files);
 		const already = skillExists(v.name);
 		// Always require confirmation for an install (write to disk).
 		const findings = [
@@ -202,11 +235,18 @@ export class InstallSkillTool implements vscode.LanguageModelTool<InstallSkillIn
 		if (!skill) {
 			return textResult(`Skill "${name}" not found for query "${query}". Search first with searchSkills.`);
 		}
-		const content = await fetchSkillContent(skill);
-		if (!content) {
+		// Content, scan and installed files all come from ONE resolved source:
+		// the bundle the user confirmed in prepareInvocation when available.
+		const key = bundleKey(skill);
+		const confirmed = confirmedBundles.get(key);
+		confirmedBundles.delete(key);
+		const bundle =
+			confirmed && Date.now() - confirmed.at <= CONFIRMED_BUNDLE_TTL_MS ? confirmed.bundle : await fetchSkillBundle(skill);
+		if (!bundle) {
 			return textResult(`Could not fetch SKILL.md for "${name}" — the skill may have moved.`);
 		}
-		const v = validateSkillContent(content, skill.name);
+		const { content, files: folderFiles } = bundle;
+		const v = validateSkillContent(content, skill.name, folderFiles);
 		if (v.status === "critical") {
 			// CRITICAL skills are NEVER installed by the tool. Instead the
 			// agent receives a manual-review package: every critical aspect,
@@ -235,7 +275,6 @@ export class InstallSkillTool implements vscode.LanguageModelTool<InstallSkillIn
 		// falls back to the single SKILL.md write.
 		let dir: string;
 		let fileCount = 1;
-		const folderFiles = await fetchSkillFolder(skill);
 		if (folderFiles && folderFiles.length > 1) {
 			dir = await writeSkillFolder(v.name, folderFiles);
 			fileCount = folderFiles.length;
@@ -310,14 +349,16 @@ export class ImproveSkillTool implements vscode.LanguageModelTool<ImproveSkillIn
 		_token: vscode.CancellationToken
 	): vscode.PreparedToolInvocation {
 		const { name, summary } = options.input;
-		const v = quickValidate(options.input.newBody ?? "", options.input.newDescription ?? "");
+		const existing = findLocalSkillByName(name ?? "");
+		const description = options.input.newDescription ?? (existing ? readSkill(existing.dirPath)?.frontmatter.description : undefined) ?? existing?.description ?? "";
+		const v = quickValidate(name ?? "", options.input.newBody ?? "", description);
 		return {
 			invocationMessage: `Improving skill "${name}"`,
 			confirmationMessages: {
 				title: v.status === "critical" ? "Improve skill — CRITICAL REVIEW REQUIRED" : "Improve installed skill",
 				message:
 					`Rewrite installed skill "${name}":\n• ${summary || "(no summary provided)"}\n` +
-					(v.warnings.length ? v.warnings.map((w) => `• warning: ${w}`).join("\n") : "• No issues found in the new content."),
+					formatFindings(v, "• No issues found in the new content."),
 			},
 		};
 	}
@@ -332,7 +373,7 @@ export class ImproveSkillTool implements vscode.LanguageModelTool<ImproveSkillIn
 			return textResult(`Skill "${name}" is not installed — nothing to improve. Use readSkill to list installed skills, or createSkill for a new one.`);
 		}
 		const parsed = readSkill(skill.dirPath);
-		const v = quickValidate(newBody, newDescription ?? parsed?.frontmatter.description ?? "");
+		const v = quickValidate(parsed?.frontmatter.name ?? skill.name, newBody, newDescription ?? parsed?.frontmatter.description ?? "");
 		if (v.status === "critical") {
 			return textResult(
 				`Refused to update "${name}": critical issues:\n${v.issues.map((i) => `- ${i}`).join("\n")}\nShow these to the user; fix the content and retry.`
@@ -362,8 +403,8 @@ export class CreateSkillTool implements vscode.LanguageModelTool<CreateSkillInpu
 		_token: vscode.CancellationToken
 	): vscode.PreparedToolInvocation {
 		const { name, description } = options.input;
-		const v = quickValidate(options.input.body, description);
-		const exists = !!findLocalSkillByName(name);
+		const v = quickValidate(name ?? "", options.input.body ?? "", description ?? "");
+		const exists = !!findLocalSkillByName(name ?? "");
 		return {
 			invocationMessage: `Creating skill "${name}"`,
 			confirmationMessages: {
@@ -371,7 +412,7 @@ export class CreateSkillTool implements vscode.LanguageModelTool<CreateSkillInpu
 				message:
 					`Create skill "${name}" in ~/.copilot/skills?\n• ${description || "(no description)"}\n` +
 					(exists ? `• note: a skill with this name already exists and will be OVERWRITTEN.\n` : "") +
-					(v.warnings.length ? v.warnings.map((w) => `• warning: ${w}`).join("\n") : "• No issues found."),
+					formatFindings(v, "• No issues found."),
 			},
 		};
 	}
@@ -385,7 +426,7 @@ export class CreateSkillTool implements vscode.LanguageModelTool<CreateSkillInpu
 		if (!safe) {
 			return textResult("A valid skill name (lowercase letters, digits, hyphens) is required.");
 		}
-		const v = quickValidate(body, description);
+		const v = quickValidate(safe, body, description);
 		if (v.status === "critical") {
 			return textResult(
 				`Refused to create "${name}": critical issues:\n${v.issues.map((i) => `- ${i}`).join("\n")}`
@@ -396,8 +437,17 @@ export class CreateSkillTool implements vscode.LanguageModelTool<CreateSkillInpu
 	}
 }
 
+/** Confirmation-message bullets: CRITICAL issues first, then warnings. */
+function formatFindings(v: { issues: string[]; warnings: string[] }, emptyText: string): string {
+	const lines = [
+		...v.issues.map((i) => `• CRITICAL: ${i}`),
+		...v.warnings.map((w) => `• warning: ${w}`),
+	];
+	return lines.length ? lines.join("\n") : emptyText;
+}
+
 /** Shared light validation for the self-improve tools. */
-function quickValidate(body: string, description: string): { status: "ok" | "warning" | "critical"; issues: string[]; warnings: string[] } {
+function quickValidate(name: string, body: string, description: string): { status: "ok" | "warning" | "critical"; issues: string[]; warnings: string[] } {
 	const issues: string[] = [];
 	const warnings: string[] = [];
 	if (!(body ?? "").trim()) {
@@ -406,13 +456,16 @@ function quickValidate(body: string, description: string): { status: "ok" | "war
 	if (!(description ?? "").trim()) {
 		warnings.push("Description is empty — Copilot uses it to decide when to load the skill.");
 	}
-	// Hermes-style threat scan (exfiltration / injection / destructive).
-	const scan = scanSkillContent(body ?? "");
-	if (scan.verdict === "dangerous") {
-		issues.push(formatScanReport(scan));
-	} else if (scan.verdict === "suspicious") {
-		warnings.push(formatScanReport(scan));
-	}
+	// Hermes-style threat scan (exfiltration / injection / destructive) over
+	// the exact SKILL.md that would be written (frontmatter + body).
+	applySkillSafetyPolicy(
+		() =>
+			scanSkillContent(
+				serializeSkillMarkdown({ name: sanitizeSkillName(name ?? ""), description: description ?? "" }, body ?? "")
+			),
+		issues,
+		warnings
+	);
 	const status = issues.length > 0 ? "critical" : warnings.length > 0 ? "warning" : "ok";
 	return { status, issues, warnings };
 }

@@ -29,18 +29,19 @@ npm run download-api   # refresh the proposed-API .d.ts files
 The extension registers one `LanguageModelChatProvider` **per `apiMode`** (vendor ids
 `copilotcustommodelsendpoint`, `…-responses`, `…-anthropic`, `…-gemini`, `…-ollama`, `…-zai`;
 see `package.json` → `contributes.languageModelChatProviders` and the single `VENDOR_MODES`
-constant in `src/extension.ts`). Each vendor lists only the models whose `apiMode` matches,
+constant in `src/vendorModes.ts`). Each vendor lists only the models whose `apiMode` matches,
 so every protocol shows up as a separate group in the model picker. Each request is dispatched
 to the adapter matching the model's `apiMode`.
 
 | Layer | Files |
 |---|---|
-| Extension entry | `src/extension.ts` — registers one provider per vendor/`apiMode` (`VENDOR_MODES`), status bar, commit commands, the webview configuration view, and the one-time telemetry-privacy default. |
+| Extension entry | `src/extension.ts` — registers one provider per vendor/`apiMode` (`VENDOR_MODES` from `src/vendorModes.ts`), status bar, commit commands, the webview configuration view, and the one-time telemetry-privacy default. |
 | Chat provider | `src/provider.ts` — `CustomEndpointChatProvider` implements `vscode.LanguageModelChatProvider`; an optional `vendorApiMode` filters the listed models, and requests route per `apiMode` through ONE shared `sendWithRetry` dispatcher (fetch + retry + key rotation + error formatting exist once; each apiMode branch only builds URL/body/stream-processor). After streaming it reports token usage as a `LanguageModelDataPart` with mimeType `"usage"` — the internal contract Copilot Chat's context-usage circle reads (same as Copilot's own BYOK providers). |
 | Shared adapter base | `src/commonApi.ts` — `CommonApi` base class: streamed tool-call assembly (per-index flush), thinking parts, XML `<think>` streaming state machine, `ApiUsage` accumulation, `resetRequestState()` (adapters are REUSED across turns — every `convertMessages`/`processStreamingResponse` MUST start with it), JSON helpers, header preparation. |
 | API adapters | `src/openai/openaiApi.ts`, `src/openai/openaiResponsesApi.ts`, `src/ollama/ollamaApi.ts`, `src/anthropic/anthropicApi.ts`, `src/gemini/geminiApi.ts` (+ matching `*Types.ts`). |
 | Gemini split | `src/gemini/geminiUrls.ts` (URL building / id normalization), `src/gemini/geminiTools.ts` (OpenAI tool-schema → Gemini function declarations + JSON-Schema sanitization), `src/gemini/geminiModels.ts` (model listing). |
-| Reasoning efforts | `src/reasoningEffort.ts` — effort ladder + `clampEffort` (ported from hermes-agent's reasoning-effort module): clamps to the nearest WEAKER supported level, never escalates cost, never clamps to `none`. GLM-5.2/5.3 vocabularies. |
+| Reasoning efforts | `src/reasoningEffort.ts` — effort ladder + `clampEffort` (ported from hermes-agent's reasoning-effort module): overrides first (e.g. GLM `xhigh→max`), else the nearest WEAKER supported level, never escalates cost, never clamps to `none`. GLM-5.2/5.3, DeepSeek, Kimi, Ollama profiles; Anthropic-compat thinking budgets. |
+| Anthropic model policy | `src/anthropic/anthropicModels.ts` — adaptive vs legacy budget thinking, disable rules, sampling-param bans, output ceilings (hermes `anthropic_adapter.py`). |
 | Model discovery | `src/provideModel.ts` — `prepareLanguageModelChatInformation` + `fetchModels` (`/v1/models` and per-protocol fetchers). |
 | Capability inference | `src/modelCapabilities.ts` — infers vision / tool-calling / context / reasoning from `/v1/models` fields, falling back to model-id heuristics and safe defaults (mirrors VS Code BYOK). |
 | Token counting | `src/provideToken.ts` + `src/tokenizer/` — local `o200k_base` tokenizer (`assets/model/o200k_base.tiktoken`) and image-token estimation. |
@@ -77,7 +78,17 @@ to the adapter matching the model's `apiMode`.
   `convertMessages`/`processStreamingResponse` implementation must still call
   `this.resetRequestState()` first — the base class documents why.
 - **Reasoning efforts**: never forward a user effort verbatim; clamp through
-  `clampEffort`/`glmReasoningEffort` (`src/reasoningEffort.ts`).
+  `clampEffort`/`glmThinkingParams`/`compatThinkingParams` (`src/reasoningEffort.ts`).
+  GLM (Z.AI hosts): `thinking` only on an explicit preference, `reasoning_effort` only for
+  5.2 (high/max) and 5.3 (low..max), GLM-5.3 "off" = enabled+low. The thinking on/off
+  preference is read ONLY via `resolveThinkingEnabled` (`src/utils.ts`).
+- **Thinking replay state**: opaque state (Anthropic signature / redacted thinking, OpenRouter
+  `reasoning_details`, Responses `encrypted_content`) is attached as `metadata` to the closing
+  `LanguageModelThinkingPart` (`reportThinkingMetadata`), tagged with the model id, and replayed
+  only to the same model. Never fabricate ids or unsigned thinking for native Anthropic.
+- **Conversion config**: `convertMessages` takes a `MessageConversionConfig` (`src/commonApi.ts`):
+  reasoning echo (auto for DeepSeek/Kimi/MiMo), OpenRouter `reasoning_details` replay, native
+  Anthropic. Stream loops use `readStreamLines` (handles CRLF and a final line without `\n`).
 - **Thinking budgets**: output ceilings must exceed the thinking budget (Anthropic:
   `max_tokens ≥ budget + 4096`; Gemini: raise `maxOutputTokens` to 65535 when thinking is on,
   gemini-family models only — Gemma rejects `thinkingConfig`).
@@ -89,7 +100,7 @@ to the adapter matching the model's `apiMode`.
   breaking proxies). Per-model `proxyUrl` overrides the global `customcopilot.proxyUrl`;
   `direct`/`none` forces a direct connection.
 - **Vendor list**: the vendor id ↔ apiMode ↔ display name ↔ default base URL table lives
-  ONLY in `VENDOR_MODES` (`src/extension.ts`) and must mirror
+  ONLY in `VENDOR_MODES` (`src/vendorModes.ts`) and must mirror
   `package.json` → `contributes.languageModelChatProviders`.
 
 ## Configuration UI (webview)

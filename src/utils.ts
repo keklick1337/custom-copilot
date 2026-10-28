@@ -8,9 +8,13 @@ const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_INTERVAL_MS = 1000;
 const RETRY_BACKOFF_FACTOR = 2;
 const RETRY_MAX_INTERVAL_MS = 60000;
+/** Server-provided Retry-After may exceed the local backoff cap (Anthropic buckets reset in ~3 min). */
+const RETRY_AFTER_CAP_MS = 300000;
 
 // HTTP status codes that should trigger a retry
-const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+// (hermes error_classifier: 408 timeout, 5xx server errors incl. the
+// Cloudflare 520-524 family, 529 overloaded; 501 Not Implemented is permanent)
+const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529];
 
 // HTTP status codes that are PERMANENT for this request body and must NEVER be
 // retried or key-rotated: the payload itself is the problem, so re-sending it
@@ -31,6 +35,11 @@ export function isNonRetryableError(error: unknown, token?: vscode.CancellationT
 		return true;
 	}
 	if (error instanceof vscode.CancellationError) {
+		return true;
+	}
+	// Explicitly flagged terminal failures (e.g. a Z.AI daily/weekly quota
+	// cap behind a 429) — waiting cannot fix them.
+	if ((error as { nonRetryable?: boolean } | null)?.nonRetryable === true) {
 		return true;
 	}
 	const message = error instanceof Error ? error.message : String(error ?? "");
@@ -176,6 +185,29 @@ export function resolveUserModelById(
 }
 
 /**
+ * The model config with provider-level fields filled in: a model added via
+ * the model form may not carry `baseUrl`/`apiMode`/`proxyUrl`/`userAgent`
+ * itself — they live on a sibling of the same provider (incl. the hidden
+ * `__provider__<id>` placeholder). Adapters detect hosts (Z.AI, DeepSeek,
+ * Groq, OpenAI…) from `baseUrl`, so they must receive this effective view.
+ */
+export function withProviderDefaults(um: CustomModelItem, userModels: CustomModelItem[]): CustomModelItem {
+	const sibling = um.owned_by
+		? userModels.find((m) => m !== um && m.owned_by === um.owned_by && !!m.baseUrl)
+		: undefined;
+	if (!sibling) {
+		return um;
+	}
+	return {
+		...um,
+		baseUrl: um.baseUrl || sibling.baseUrl,
+		apiMode: um.apiMode ?? sibling.apiMode,
+		proxyUrl: um.proxyUrl ?? sibling.proxyUrl,
+		userAgent: um.userAgent ?? sibling.userAgent,
+	};
+}
+
+/**
  * Map VS Code message role to OpenAI message role string.
  * @param message The message whose role is mapped.
  */
@@ -303,6 +335,72 @@ export function safeUrlHost(url: string | null | undefined): string {
 	}
 }
 
+/** True for Z.AI / Zhipu (BigModel) hosts. */
+export function isZaiHost(url: string | null | undefined): boolean {
+	const host = safeUrlHost(url);
+	return host === "api.z.ai" || host.endsWith(".z.ai") || host === "open.bigmodel.cn" || host.endsWith(".bigmodel.cn");
+}
+
+/**
+ * The user's explicit thinking on/off preference, from whichever field they
+ * set: `enable_thinking`, the Z.AI-style `thinking.type`, or a
+ * `reasoning_effort` of "none". Undefined = no preference (server default).
+ */
+export function resolveThinkingEnabled(um: CustomModelItem | undefined): boolean | undefined {
+	if (typeof um?.enable_thinking === "boolean") {
+		return um.enable_thinking;
+	}
+	const type = typeof um?.thinking?.type === "string" ? um.thinking.type.trim().toLowerCase() : "";
+	if (type === "enabled" || type === "adaptive") {
+		return true;
+	}
+	if (type === "disabled") {
+		return false;
+	}
+	if (typeof um?.reasoning_effort === "string" && um.reasoning_effort.trim().toLowerCase() === "none") {
+		return false;
+	}
+	return undefined;
+}
+
+/**
+ * Models whose providers REQUIRE `reasoning_content` echoed back on
+ * assistant turns in thinking mode (hermes `_needs_thinking_reasoning_pad`:
+ * DeepSeek, Kimi/Moonshot, MiMo) — they 400 with "missing reasoning_content"
+ * on tool-call turns otherwise. Z.AI explicitly does NOT (hermes strips it).
+ */
+export function modelNeedsReasoningEcho(um: CustomModelItem | undefined): boolean {
+	if (!um) {
+		return false;
+	}
+	if (um.include_reasoning_in_request === true) {
+		return true;
+	}
+	if (um.include_reasoning_in_request === false) {
+		return false;
+	}
+	const id = (um.id ?? "").toLowerCase();
+	const host = safeUrlHost(um.baseUrl);
+	// The legacy R1 reasoner rejects reasoning_content in its input.
+	if (/deepseek-reasoner|deepseek-r1/.test(id)) {
+		return false;
+	}
+	if (
+		host.endsWith("deepseek.com") ||
+		host.endsWith("moonshot.ai") ||
+		host.endsWith("moonshot.cn") ||
+		host === "api.kimi.com" ||
+		host.endsWith("xiaomimimo.com")
+	) {
+		return true;
+	}
+	// Model-id match only for DeepSeek / MiMo (hermes echo rules). Kimi is
+	// matched by HOST only: aggregators re-exporting Kimi reject the field.
+	// Never on strict OpenAI-compat hosts that 400/422 on unknown fields.
+	const strictHost = /(^|\.)(groq\.com|cerebras\.ai|mistral\.ai|openai\.com|azure\.com)$/.test(host);
+	return !strictHost && /deepseek|mimo/.test(id);
+}
+
 /**
  * 创建图片的data URL
  */
@@ -336,8 +434,16 @@ export function collectToolResultText(pr: { content?: ReadonlyArray<unknown> }):
 			text += c.value;
 		} else if (typeof c === "string") {
 			text += c;
-		} else if (c instanceof vscode.LanguageModelDataPart && c.mimeType === "cache_control") {
-			/* ignore */
+		} else if (c instanceof vscode.LanguageModelDataPart) {
+			// Never JSON.stringify a DataPart: its Uint8Array serializes as a
+			// giant {"0":..,"1":..} object that floods the context window.
+			// Textual payloads are decoded; images are delivered separately
+			// (see collectToolResultImages); other binary/internal parts
+			// (cache_control, usage, stateful markers) are dropped.
+			const mime = c.mimeType.toLowerCase();
+			if (mime.startsWith("text/") || mime.includes("json") || mime.includes("xml")) {
+				text += new TextDecoder().decode(c.data);
+			}
 		} else {
 			try {
 				text += JSON.stringify(c);
@@ -347,6 +453,21 @@ export function collectToolResultText(pr: { content?: ReadonlyArray<unknown> }):
 		}
 	}
 	return text;
+}
+
+/**
+ * Collect the image data parts of a tool result (e.g. screenshots), so
+ * adapters whose wire supports images can forward them instead of dropping.
+ * @param pr Tool result-like object with content array.
+ */
+export function collectToolResultImages(pr: { content?: ReadonlyArray<unknown> }): vscode.LanguageModelDataPart[] {
+	const images: vscode.LanguageModelDataPart[] = [];
+	for (const c of pr.content ?? []) {
+		if (c instanceof vscode.LanguageModelDataPart && isImageMimeType(c.mimeType)) {
+			images.push(c);
+		}
+	}
+	return images;
 }
 
 /**
@@ -451,10 +572,19 @@ export async function executeWithRetry<T>(
 			// immediately — no point waiting out an exponential backoff when the
 			// next key is ready to serve. Transient errors still back off.
 			const switchKeyNow = (lastError as { retryImmediately?: boolean }).retryImmediately === true;
+			// A server-provided Retry-After (429/503) wins over the local
+			// backoff schedule — retrying earlier just burns another attempt.
+			const retryAfterMs = (lastError as { retryAfterMs?: number }).retryAfterMs;
 			// Exponential backoff: interval doubles each attempt, capped at 60s
 			const delayMs = switchKeyNow
 				? 0
-				: Math.min(baseIntervalMs * Math.pow(RETRY_BACKOFF_FACTOR, attempt), RETRY_MAX_INTERVAL_MS);
+				: typeof retryAfterMs === "number" && retryAfterMs >= 0
+					? Math.min(retryAfterMs, RETRY_AFTER_CAP_MS)
+					: // 50–100% jitter so parallel chats that failed together don't retry in lockstep.
+						Math.round(
+							Math.min(baseIntervalMs * Math.pow(RETRY_BACKOFF_FACTOR, attempt), RETRY_MAX_INTERVAL_MS) *
+								(0.5 + Math.random() * 0.5)
+						);
 
 			logger.warn("retry.attempt", {
 				attempt: attempt + 1,
@@ -484,6 +614,25 @@ export async function executeWithRetry<T>(
 		lastError: lastError ? { name: lastError.name, message: lastError.message } : String(lastError),
 	});
 	throw lastError || new Error("Retry failed");
+}
+
+/**
+ * Parse an HTTP `Retry-After` header (delta-seconds or HTTP-date) into
+ * milliseconds; undefined when absent/unparseable.
+ */
+export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+	const raw = (value ?? "").trim();
+	if (!raw) {
+		return undefined;
+	}
+	if (/^\d+(\.\d+)?$/.test(raw)) {
+		return Math.round(parseFloat(raw) * 1000);
+	}
+	const date = Date.parse(raw);
+	if (!Number.isNaN(date)) {
+		return Math.max(0, date - Date.now());
+	}
+	return undefined;
 }
 
 /**

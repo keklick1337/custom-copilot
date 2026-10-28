@@ -16,10 +16,10 @@
  * browsing/searching works offline and does not hammer the sources.
  */
 
+import * as crypto from "crypto";
 import * as path from "path";
 import * as vscode from "vscode";
 import { proxyFetch } from "../network";
-import { sanitizeSkillName } from "./skillFile";
 
 export interface CatalogSkill {
 	/** Unique id within the source ("skills.sh/<owner>/<repo>/<skill>" / "hermes/<path>"). */
@@ -110,16 +110,20 @@ async function ghTree(owner: string, repo: string): Promise<GithubTreeItem[]> {
 	}
 }
 
+/** First SKILL.md path in a tree matching `<anything>/<skillId>/SKILL.md`. */
+function contentPathInTree(tree: GithubTreeItem[], skillId: string): string | undefined {
+	const wanted = `/${skillId}/SKILL.md`;
+	const hit = tree.find((t) => t.type === "blob" && (t.path.endsWith(wanted) || t.path === wanted.slice(1)));
+	return hit?.path;
+}
+
 /** First SKILL.md path in the repo matching `<anything>/<skillId>/SKILL.md`. */
 async function contentPathFor(repo: string, skillId: string): Promise<string | undefined> {
 	const [owner, repoName] = repo.split("/");
 	if (!owner || !repoName) {
 		return undefined;
 	}
-	const tree = await ghTree(owner, repoName);
-	const wanted = `/${skillId}/SKILL.md`;
-	const hit = tree.find((t) => t.type === "blob" && t.path.endsWith(wanted));
-	return hit?.path;
+	return contentPathInTree(await ghTree(owner, repoName), skillId);
 }
 
 // ── skills.sh ────────────────────────────────────────────────────────────────
@@ -219,7 +223,10 @@ export async function fetchCatalog(
 	forceRefresh = false,
 	source: SkillSource = "skills.sh"
 ): Promise<CatalogResult> {
-	const key = `catalog-${source}-${sanitizeSkillName(query.trim() || "all")}`;
+	// sha1 of the exact query: distinct queries never collide on one cache file
+	// (sanitizing would map "c++" and "c" to the same key) and the key is
+	// always a safe file name.
+	const key = `catalog-${source}-${crypto.createHash("sha1").update(query.trim()).digest("hex")}`;
 	if (context && !forceRefresh) {
 		const cached = await readCache(context, key);
 		if (cached) {
@@ -343,18 +350,24 @@ export async function fetchSkillFolder(skill: CatalogSkill): Promise<SkillFolder
 	if (!owner || !repoName) {
 		return undefined;
 	}
-	const folder = await skillRepoFolder(skill);
-	if (!folder) {
+	// ONE tree snapshot drives both the SKILL.md path resolution and the
+	// file listing, so the folder downloaded is the folder that was resolved.
+	const tree = await ghTree(owner, repoName);
+	const repoPath = skill.repoPath && tree.some((t) => t.type === "blob" && t.path === skill.repoPath)
+		? skill.repoPath
+		: contentPathInTree(tree, skill.name);
+	if (!repoPath || !repoPath.endsWith("/SKILL.md")) {
 		return undefined;
 	}
-	const tree = await ghTree(owner, repoName);
+	skill.repoPath = repoPath;
+	const folder = repoPath.slice(0, repoPath.length - "/SKILL.md".length);
 	const prefix = `${folder}/`;
 	const blobs = tree.filter((t) => t.type === "blob" && t.path.startsWith(prefix));
 	let total = 0;
 	const files: SkillFolderFile[] = [];
 	for (const blob of blobs) {
 		const relPath = blob.path.slice(prefix.length);
-		if (!relPath || relPath.includes("..")) {
+		if (!relPath || relPath.split("/").includes("..")) {
 			continue;
 		}
 		const base = relPath.split("/").pop() ?? relPath;
@@ -370,6 +383,9 @@ export async function fetchSkillFolder(skill: CatalogSkill): Promise<SkillFolder
 				headers: { Accept: "application/octet-stream, text/plain, */*" },
 			});
 			if (!res.ok) {
+				if (relPath === "SKILL.md") {
+					return undefined;
+				}
 				continue;
 			}
 			const buf = Buffer.from(await res.arrayBuffer());
@@ -383,8 +399,29 @@ export async function fetchSkillFolder(skill: CatalogSkill): Promise<SkillFolder
 		}
 	}
 	if (!files.some((f) => f.relPath === "SKILL.md")) {
-		// cannot happen when folder was resolved from a SKILL.md path, but guard anyway
+		// SKILL.md missing (download failed / truncated) — no folder install
 		return undefined;
 	}
 	return files;
+}
+
+/**
+ * Everything an install needs, derived from ONE resolved source: when the
+ * full folder can be fetched, `content` IS that folder's SKILL.md (so what
+ * gets scanned/validated is exactly what gets written); otherwise `files`
+ * is undefined and `content` is the single SKILL.md from fetchSkillContent.
+ */
+export interface SkillBundle {
+	content: string;
+	files?: SkillFolderFile[];
+}
+
+export async function fetchSkillBundle(skill: CatalogSkill): Promise<SkillBundle | undefined> {
+	const files = await fetchSkillFolder(skill);
+	const md = files?.find((f) => f.relPath === "SKILL.md");
+	if (files && md) {
+		return { content: md.content.toString("utf8"), files };
+	}
+	const content = await fetchSkillContent(skill);
+	return content ? { content } : undefined;
 }

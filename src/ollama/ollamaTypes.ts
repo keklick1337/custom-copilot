@@ -39,6 +39,9 @@ export interface OllamaModelOptions {
 	stop?: string | string[];
 	num_ctx?: number;
 	num_predict?: number;
+	repeat_penalty?: number;
+	presence_penalty?: number;
+	frequency_penalty?: number;
 }
 
 /**

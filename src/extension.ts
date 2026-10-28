@@ -1,37 +1,29 @@
 import * as vscode from "vscode";
 import { CustomEndpointChatProvider } from "./provider";
-import type { CustomApiMode, CustomModelItem } from "./types";
+import type { CustomModelItem } from "./types";
 import { initStatusBar } from "./statusBar";
 import { SettingsViewProvider } from "./views/configView";
 import { setSkillsContext } from "./views/skillsController";
 import { SearchSkillsTool, InstallSkillTool, ReadSkillTool, ImproveSkillTool, CreateSkillTool } from "./skills/skillTools";
+import { DelegateTaskTool } from "./subagent/delegateTool";
+import { showZaiQuota } from "./zaiQuota";
 import { logger } from "./logger";
-import { normalizeUserModels } from "./utils";
+import { normalizeUserModels, resolveThinkingEnabled } from "./utils";
+import { VENDOR_MODES } from "./vendorModes";
+import { cleanupPersistedPromptOnActivation } from "./promptCapture";
 import { abortCommitGeneration, generateCommitMsg } from "./gitCommit/commitMessageGenerator";
 import { TokenizerManager } from "./tokenizer/tokenizerManager";
 import { keyBalancer } from "./keyBalancer";
 
-/**
- * Single source of truth for the vendor list: vendor id (must match
- * package.json → contributes.languageModelChatProviders), its apiMode, the
- * picker display name and the default base URL advertised to VS Code's BYOK
- * group UI. Previously maintained as two hand-copied arrays that could drift.
- */
-const VENDOR_MODES: ReadonlyArray<{
-	vendor: string;
-	mode: CustomApiMode;
-	displayName: string;
-	defaultBaseUrl: string;
-}> = [
-	{ vendor: "copilotcustommodelsendpoint", mode: "openai", displayName: "Custom OpenAI", defaultBaseUrl: "https://api.openai.com/v1" },
-	{ vendor: "copilotcustommodelsendpoint-responses", mode: "openai-responses", displayName: "Custom OpenAI Responses", defaultBaseUrl: "https://api.openai.com/v1" },
-	{ vendor: "copilotcustommodelsendpoint-anthropic", mode: "anthropic", displayName: "Custom Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
-	{ vendor: "copilotcustommodelsendpoint-gemini", mode: "gemini", displayName: "Custom Gemini", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta" },
-	{ vendor: "copilotcustommodelsendpoint-ollama", mode: "ollama", displayName: "Custom Ollama", defaultBaseUrl: "http://localhost:11434" },
-	{ vendor: "copilotcustommodelsendpoint-zai", mode: "zai", displayName: "Z.AI (Anthropic-compat)", defaultBaseUrl: "https://api.z.ai/api/anthropic" },
-];
-
 export function activate(context: vscode.ExtensionContext) {
+	// Privacy: drop a system-prompt capture left on disk when persistence is off.
+	cleanupPersistedPromptOnActivation();
+
+	// Security-sensitive settings are application-scoped; values a workspace
+	// still carries are ignored by VS Code. Tell the user instead of silently
+	// dropping them — never auto-copy them (a cloned repo could plant them).
+	warnAboutIgnoredWorkspaceSettings();
+
 	// Share the extension context with the skills screen (catalog cache storage).
 	setSkillsContext(context);
 
@@ -48,7 +40,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.lm.registerTool("customcopilot_readSkill", new ReadSkillTool()),
 		vscode.lm.registerTool("customcopilot_improveSkill", new ImproveSkillTool()),
-		vscode.lm.registerTool("customcopilot_createSkill", new CreateSkillTool())
+		vscode.lm.registerTool("customcopilot_createSkill", new CreateSkillTool()),
+		vscode.lm.registerTool("customcopilot_delegateTask", new DelegateTaskTool())
 	);
 	// Initialize logger
 	logger.init();
@@ -70,6 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const provider = new CustomEndpointChatProvider(context.secrets, tokenCountStatusBarItem, mode);
 		context.subscriptions.push(vscode.lm.registerLanguageModelChatProvider(vendor, provider));
 	}
+
 
 	// Privacy default (anonymity): on first activation, disable VS Code telemetry so the
 	// selected model id is not reported via the core "interactiveSessionProviderInvoked"
@@ -98,6 +92,10 @@ export function activate(context: vscode.ExtensionContext) {
 	// `chat.agentHost.byokModels.enabled` is on.  Enable it once (respecting an
 	// explicit user choice of "off") so models work out of the box.
 	void enableAgentHostByokOnce(context);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("customcopilot.showZaiQuota", () => showZaiQuota(context.secrets))
+	);
 
 	// Management command to configure provider-specific API keys
 	context.subscriptions.push(
@@ -232,11 +230,20 @@ export function activate(context: vscode.ExtensionContext) {
 				} else if (cap.id === "vision") {
 					next.vision = !next.vision;
 				} else {
-					const cur = !!(next.enable_thinking ?? next.reasoning?.enabled ?? next.thinking?.type === "enabled");
+					// Same precedence the adapters use (resolveThinkingEnabled), and
+					// every thinking field is flipped together — otherwise e.g. a
+					// leftover thinking.type "enabled" kept Anthropic/Z.AI thinking on.
+					const cur = resolveThinkingEnabled(next) ?? next.reasoning?.enabled === true;
 					next.enable_thinking = !cur;
-					if (!cur) {
+					if (next.thinking) {
+						next.thinking = { ...next.thinking, type: cur ? "disabled" : "enabled" };
+					}
+					if (next.reasoning) {
+						next.reasoning = { ...next.reasoning, enabled: !cur };
+					}
+					if (!cur && (!next.reasoning_effort || next.reasoning_effort === "none")) {
 						// Turning thinking on: give Responses models a sensible default effort.
-						next.reasoning_effort = next.reasoning_effort ?? "medium";
+						next.reasoning_effort = "medium";
 					}
 				}
 				return next;
@@ -532,4 +539,40 @@ async function enableAgentHostByokOnce(_context: vscode.ExtensionContext): Promi
 		// Older VS Code versions don't have this setting registered — non-fatal.
 		logger.debug("agentHost.byok.enableSkipped", { error: String(err) });
 	}
+}
+
+/** Settings declared with `"scope": "application"` in package.json. */
+const APPLICATION_SCOPED_SETTINGS = [
+	"customcopilot.models",
+	"customcopilot.proxyUrl",
+	"customcopilot.userAgent",
+	"customcopilot.promptOverride.enabled",
+	"customcopilot.promptOverride.mode",
+	"customcopilot.promptOverride.text",
+	"customcopilot.promptOverride.replacements",
+	"customcopilot.debugRequestLogging",
+	"customcopilot.logLevel",
+	"customcopilot.logMessageContent",
+	"customcopilot.skills.safetyScan",
+];
+
+function warnAboutIgnoredWorkspaceSettings(): void {
+	const config = vscode.workspace.getConfiguration();
+	const ignored = APPLICATION_SCOPED_SETTINGS.filter((key) => {
+		const info = config.inspect(key);
+		return info?.workspaceValue !== undefined || info?.workspaceFolderValue !== undefined;
+	});
+	if (ignored.length === 0) {
+		return;
+	}
+	void vscode.window
+		.showWarningMessage(
+			`Custom Copilot: ${ignored.join(", ")} ${ignored.length === 1 ? "is" : "are"} set in this workspace's settings, but ${ignored.length === 1 ? "it is" : "they are"} user-level only for security (a repository must not be able to redirect your API keys). Move ${ignored.length === 1 ? "it" : "them"} to your User settings if you trust ${ignored.length === 1 ? "this value" : "these values"}.`,
+			"Open Workspace Settings"
+		)
+		.then((choice) => {
+			if (choice) {
+				void vscode.commands.executeCommand("workbench.action.openWorkspaceSettingsFile");
+			}
+		});
 }

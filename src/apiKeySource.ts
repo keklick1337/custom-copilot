@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import { fileURLToPath } from "url";
-import { buildFetchNetworkInit, proxyFetch } from "./network";
+import { buildFetchNetworkInit, maskUrlSecrets, proxyFetch } from "./network";
 import { parseApiKeys } from "./keyBalancer";
 import { logger } from "./logger";
 
@@ -95,7 +95,7 @@ export async function resolveApiKeysFromSource(source: string, opts?: { proxyUrl
 	} catch (err) {
 		const fallback = lastGood.get(src);
 		logger.warn("apiKeySource.fetchFailed", {
-			source: src,
+			source: maskUrlSecrets(src),
 			error: err instanceof Error ? err.message : String(err),
 			usedFallback: !!fallback,
 		});

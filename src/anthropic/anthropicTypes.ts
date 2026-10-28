@@ -5,9 +5,15 @@
 
 export type AnthropicRole = "user" | "assistant";
 
+export interface AnthropicCacheControl {
+	type: "ephemeral";
+	ttl?: "5m" | "1h";
+}
+
 export interface AnthropicTextBlock {
 	type: "text";
 	text: string;
+	cache_control?: AnthropicCacheControl;
 }
 
 export interface AnthropicImageBlock {
@@ -17,6 +23,7 @@ export interface AnthropicImageBlock {
 		media_type: string;
 		data: string;
 	};
+	cache_control?: AnthropicCacheControl;
 }
 
 export interface AnthropicThinkingBlock {
@@ -25,24 +32,32 @@ export interface AnthropicThinkingBlock {
 	signature?: string;
 }
 
+export interface AnthropicRedactedThinkingBlock {
+	type: "redacted_thinking";
+	data: string;
+}
+
 export interface AnthropicToolUseBlock {
 	type: "tool_use";
 	id: string;
 	name: string;
 	input: Record<string, unknown>;
+	cache_control?: AnthropicCacheControl;
 }
 
 export interface AnthropicToolResultBlock {
 	type: "tool_result";
 	tool_use_id: string;
-	content: string | AnthropicTextBlock[];
+	content: string | Array<AnthropicTextBlock | AnthropicImageBlock>;
 	is_error?: boolean;
+	cache_control?: AnthropicCacheControl;
 }
 
 export type AnthropicContentBlock =
 	| AnthropicTextBlock
 	| AnthropicImageBlock
 	| AnthropicThinkingBlock
+	| AnthropicRedactedThinkingBlock
 	| AnthropicToolUseBlock
 	| AnthropicToolResultBlock;
 
@@ -65,18 +80,21 @@ export interface AnthropicRequestBody {
 		user_id?: string;
 	};
 	service_tier?: "auto" | "standard_only";
-	thinking?: {
-		type: "enabled";
-		budget_tokens: number;
-	};
+	thinking?: { type: "enabled"; budget_tokens: number } | Record<string, unknown>;
+	output_config?: { effort?: string };
 	tools?: AnthropicToolDefinition[];
 	tool_choice?: AnthropicToolChoice;
+	/** Fast mode (premium-priced faster inference on supported Opus models). */
+	speed?: "fast" | "standard";
+	/** Automatic caching (top-level breakpoint, moves with the conversation). */
+	cache_control?: AnthropicCacheControl;
 }
 
 export interface AnthropicToolDefinition {
 	name: string;
 	description?: string;
 	input_schema?: object;
+	cache_control?: AnthropicCacheControl;
 }
 
 export type AnthropicToolChoice =
@@ -106,23 +124,28 @@ export interface AnthropicStreamChunk {
 		stop_sequence?: string;
 	};
 	content_block?: {
-		type: "text" | "thinking" | "tool_use";
+		type: "text" | "thinking" | "redacted_thinking" | "tool_use";
 		text?: string;
 		thinking?: string;
+		signature?: string;
+		data?: string;
 		id?: string;
 		name?: string;
 		input?: Record<string, unknown>;
 	};
 	delta?: {
 		type: "text_delta" | "thinking_delta" | "input_json_delta" | "signature_delta";
+		stop_reason?: string;
 		text?: string;
 		thinking?: string;
 		partial_json?: string;
 		signature?: string;
 	};
 	usage?: {
-		input_tokens: number;
-		output_tokens: number;
+		input_tokens?: number;
+		output_tokens?: number;
+		cache_read_input_tokens?: number;
+		cache_creation_input_tokens?: number;
 	};
 	error?: {
 		type: string;

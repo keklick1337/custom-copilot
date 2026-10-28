@@ -8,12 +8,14 @@ import * as vscode from "vscode";
 import {
 	fetchCatalog,
 	type SkillSource,
-	fetchSkillContent,
+	fetchSkillBundle,
 	type CatalogSkill,
-	fetchSkillFolder,
+	type SkillFolderFile,
 } from "../skills/skillCatalog";
 import {
 	deleteSkill,
+	findLocalSkillByDir,
+	findLocalSkillByFile,
 	listLocalSkills,
 	openSkillInEditor,
 	readSkill,
@@ -22,7 +24,16 @@ import {
 	writeSkill,
 	writeSkillFolder,
 } from "../skills/localSkills";
-import { isValidSkillName, parseSkillMarkdown, sanitizeSkillName } from "../skills/skillFile";
+import { isValidSkillName, parseSkillMarkdown, sanitizeSkillName, serializeSkillMarkdown } from "../skills/skillFile";
+import {
+	applySkillSafetyPolicy,
+	getSkillSafetyMode,
+	scanSkillContent,
+	scanSkillFiles,
+	setSkillSafetyMode,
+	type GuardScanResult,
+	type SkillSafetyMode,
+} from "../skills/skillGuard";
 import { proxyFetch } from "../network";
 
 export interface SkillValidation {
@@ -34,13 +45,25 @@ export interface SkillValidation {
 	status: "ok" | "warning" | "critical";
 	sizeChars: number;
 	lineCount: number;
+	/** Hermes-style threat-scan verdict over everything that will be written. */
+	scanVerdict: GuardScanResult["verdict"];
 }
 
 /**
  * Validate a parsed skill before install/save. Issues block the write;
  * warnings are surfaced but do not.
+ *
+ * The threat scan (skillGuard) runs over `scanTarget`: the full folder when
+ * one will be installed (every text file), otherwise the exact SKILL.md that
+ * will be written. A "dangerous" verdict (critical/high findings) is an
+ * issue and blocks; "suspicious" is a warning.
  */
-function validateSkill(name: string, description: string, body: string): SkillValidation {
+function validateSkill(
+	name: string,
+	description: string,
+	body: string,
+	scanTarget?: { content?: string; files?: SkillFolderFile[] }
+): SkillValidation {
 	const issues: string[] = [];
 	const warnings: string[] = [];
 	const safe = sanitizeSkillName(name);
@@ -58,9 +81,16 @@ function validateSkill(name: string, description: string, body: string): SkillVa
 	if (body.length > 100_000) {
 		warnings.push("Body is very large (>100k chars); consider splitting the skill.");
 	}
-	if (/\b(rm\s+-rf\s+\/|curl[^\n]*\|\s*(ba)?sh|eval\([^)]*\bfetch|powershell[^\n]*-enc)\b/i.test(body)) {
-		warnings.push("Body contains potentially dangerous shell patterns (rm -rf /, curl | sh, …) — review before installing.");
-	}
+	const scan = applySkillSafetyPolicy(
+		() =>
+			scanTarget?.files
+				? scanSkillFiles(scanTarget.files)
+				: scanSkillContent(
+						scanTarget?.content ?? serializeSkillMarkdown({ name: sanitizeSkillName(name), description }, body)
+					),
+		issues,
+		warnings
+	);
 	const status: "ok" | "warning" | "critical" = issues.length > 0 ? "critical" : warnings.length > 0 ? "warning" : "ok";
 	return {
 		ok: issues.length === 0,
@@ -69,7 +99,25 @@ function validateSkill(name: string, description: string, body: string): SkillVa
 		status,
 		sizeChars: body.length,
 		lineCount: body ? body.split("\n").length : 0,
+		scanVerdict: scan.verdict,
 	};
+}
+
+/**
+ * Non-blocking scan findings (suspicious, or dangerous in "warn" mode) are
+ * never installed silently: ask with a modal, like the delete confirmation.
+ * Returns true to proceed.
+ */
+async function confirmSuspicious(name: string, validation: SkillValidation): Promise<boolean> {
+	if (validation.scanVerdict === "clean" || !validation.ok) {
+		return true;
+	}
+	const pick = await vscode.window.showWarningMessage(
+		`Skill "${name}" has security-scan warnings. Install anyway?`,
+		{ modal: true, detail: validation.warnings.join("\n\n") },
+		"Install Anyway"
+	);
+	return pick === "Install Anyway";
 }
 
 export async function handleSkillsMessage(
@@ -82,6 +130,36 @@ export async function handleSkillsMessage(
 	}
 	try {
 		switch (type) {
+			case "skills.getSafety": {
+				await webview.postMessage({ type: "skills.safety", mode: getSkillSafetyMode() });
+				break;
+			}
+			case "skills.setSafety": {
+				const requested = String(message.mode ?? "");
+				const mode: SkillSafetyMode = requested === "warn" || requested === "off" ? requested : "block";
+				if (mode !== "block") {
+					// Weakening the scan is a deliberate choice — confirm it.
+					const choice = await vscode.window.showWarningMessage(
+						mode === "off"
+							? "Turn OFF the skill security scan? Skills (and every file in their folders) will be installed without checking for exfiltration, prompt injection or destructive commands."
+							: "Switch the skill security scan to warn-only? Dangerous findings will no longer block installs.",
+						{ modal: true },
+						"Confirm"
+					);
+					if (choice !== "Confirm") {
+						await webview.postMessage({ type: "skills.safety", mode: getSkillSafetyMode() });
+						break;
+					}
+				}
+				try {
+					await setSkillSafetyMode(mode);
+				} finally {
+					// Always re-sync the select with the EFFECTIVE mode (a failed
+					// update must not leave the UI showing an unapplied value).
+					await webview.postMessage({ type: "skills.safety", mode: getSkillSafetyMode() });
+				}
+				break;
+			}
 			case "skills.listLocal": {
 				const skills = listLocalSkills();
 				await webview.postMessage({ type: "skills.localList", skills });
@@ -116,8 +194,9 @@ export async function handleSkillsMessage(
 				if (!skill?.id) {
 					break;
 				}
-				const content = await fetchSkillContent(skill);
-				if (!content) {
+				// Same resolved source as install: folder SKILL.md + every file scanned.
+				const bundle = await fetchSkillBundle(skill);
+				if (!bundle) {
 					await webview.postMessage({
 						type: "skills.installError",
 						id: skill.id,
@@ -125,11 +204,12 @@ export async function handleSkillsMessage(
 					});
 					break;
 				}
+				const content = bundle.content;
 				const parsed = parseSkillMarkdown(content);
 				const name = sanitizeSkillName(parsed?.frontmatter.name ?? skill.name);
 				const description = parsed?.frontmatter.description ?? skill.description ?? "";
 				const body = parsed?.body ?? content;
-				const validation = validateSkill(name, description, body);
+				const validation = validateSkill(name, description, body, { content, files: bundle.files });
 				await webview.postMessage({
 					type: "skills.previewContent",
 					id: skill.id,
@@ -148,8 +228,9 @@ export async function handleSkillsMessage(
 				if (!skill?.id) {
 					break;
 				}
-				const content = await fetchSkillContent(skill);
-				if (!content) {
+				// ONE resolved source: the scanned SKILL.md/files ARE what gets written.
+				const bundle = await fetchSkillBundle(skill);
+				if (!bundle) {
 					await webview.postMessage({
 						type: "skills.installError",
 						id: skill.id,
@@ -157,13 +238,14 @@ export async function handleSkillsMessage(
 					});
 					break;
 				}
+				const { content, files: folderFiles } = bundle;
 				const parsed = parseSkillMarkdown(content);
 				const name = sanitizeSkillName(parsed?.frontmatter.name ?? skill.name);
 				const description = parsed?.frontmatter.description ?? skill.description ?? "";
 				const body = parsed?.body ?? content;
-				const validation = validateSkill(name, description, body);
+				const validation = validateSkill(name, description, body, { content, files: folderFiles });
 				if (!validation.ok) {
-					await webview.postMessage({ type: "skills.installError", id: skill.id, error: validation.issues.join(" ") });
+					await webview.postMessage({ type: "skills.installError", id: skill.id, error: `Install blocked: ${validation.issues.join(" ")}` });
 					break;
 				}
 				if (!overwrite && skillExists(name)) {
@@ -171,11 +253,14 @@ export async function handleSkillsMessage(
 					await webview.postMessage({ type: "skills.alreadyInstalled", id: skill.id, name });
 					break;
 				}
+				if (!(await confirmSuspicious(name, validation))) {
+					await webview.postMessage({ type: "skills.installError", id: skill.id, error: "Install cancelled." });
+					break;
+				}
 				const frontmatter = parsed?.frontmatter ?? { name, description };
 				// Full-folder install when possible (SKILL.md + references/ etc.);
 				// falls back to the single SKILL.md write.
 				let dir: string;
-				const folderFiles = await fetchSkillFolder(skill);
 				if (folderFiles && folderFiles.length > 1) {
 					dir = await writeSkillFolder(name, folderFiles);
 				} else {
@@ -211,13 +296,19 @@ export async function handleSkillsMessage(
 					break;
 				}
 				const name = sanitizeSkillName(parsed.frontmatter.name);
-				const validation = validateSkill(name, parsed.frontmatter.description ?? "", parsed.body);
+				const validation = validateSkill(name, parsed.frontmatter.description ?? "", parsed.body, {
+					content: serializeSkillMarkdown(parsed.frontmatter, parsed.body),
+				});
 				if (!validation.ok) {
-					await webview.postMessage({ type: "skills.error", error: validation.issues.join(" ") });
+					await webview.postMessage({ type: "skills.error", error: `Import blocked: ${validation.issues.join(" ")}` });
 					break;
 				}
 				if (!message.overwrite && skillExists(name)) {
 					await webview.postMessage({ type: "skills.alreadyInstalled", id: `url:${url}`, name });
+					break;
+				}
+				if (!(await confirmSuspicious(name, validation))) {
+					await webview.postMessage({ type: "skills.error", error: "Import cancelled." });
 					break;
 				}
 				const dir = await writeSkill(name, parsed.frontmatter, parsed.body);
@@ -243,13 +334,19 @@ export async function handleSkillsMessage(
 					break;
 				}
 				const name = sanitizeSkillName(parsed.frontmatter.name);
-				const validation = validateSkill(name, parsed.frontmatter.description ?? "", parsed.body);
+				const validation = validateSkill(name, parsed.frontmatter.description ?? "", parsed.body, {
+					content: serializeSkillMarkdown(parsed.frontmatter, parsed.body),
+				});
 				if (!validation.ok) {
-					await webview.postMessage({ type: "skills.error", error: validation.issues.join(" ") });
+					await webview.postMessage({ type: "skills.error", error: `Import blocked: ${validation.issues.join(" ")}` });
 					break;
 				}
 				if (skillExists(name)) {
 					await webview.postMessage({ type: "skills.alreadyInstalled", id: `file:${uris[0]}`, name });
+					break;
+				}
+				if (!(await confirmSuspicious(name, validation))) {
+					await webview.postMessage({ type: "skills.error", error: "Import cancelled." });
 					break;
 				}
 				const dir = await writeSkill(name, parsed.frontmatter, parsed.body);
@@ -258,7 +355,13 @@ export async function handleSkillsMessage(
 			}
 			case "skills.read": {
 				const dirPath = String(message.dirPath ?? "");
-				const parsed = dirPath ? readSkill(dirPath) : undefined;
+				// Only real local skill folders may be read (no arbitrary paths).
+				const local = findLocalSkillByDir(dirPath);
+				if (dirPath && !local) {
+					await webview.postMessage({ type: "skills.error", error: "Not a local skill folder." });
+					break;
+				}
+				const parsed = local ? readSkill(local.dirPath) : undefined;
 				await webview.postMessage({
 					type: "skills.content",
 					dirPath,
@@ -272,15 +375,30 @@ export async function handleSkillsMessage(
 				const name = String(message.name ?? "");
 				const description = String(message.description ?? "");
 				const body = String(message.body ?? "");
-				const validation = validateSkill(name, description, body);
-				if (!validation.ok) {
-					await webview.postMessage({ type: "skills.error", error: validation.issues.join(" ") });
+				// Updating requires an existing local skill folder — never an
+				// arbitrary path supplied by the webview.
+				const local = dirPath ? findLocalSkillByDir(dirPath) : undefined;
+				if (dirPath && !local) {
+					await webview.postMessage({ type: "skills.error", error: "Not a local skill folder — refusing to write." });
 					break;
 				}
-				if (!dirPath) {
-					await writeSkill(name, { name: sanitizeSkillName(name), description }, body);
+				const validation = validateSkill(name, description, body);
+				if (!validation.ok) {
+					await webview.postMessage({ type: "skills.error", error: `Save blocked: ${validation.issues.join(" ")}` });
+					break;
+				}
+				// Non-blocking findings (suspicious, or anything in "warn" mode)
+				// still need an explicit OK — same contract as install.
+				if (!(await confirmSuspicious(name, validation))) {
+					await webview.postMessage({ type: "skills.error", error: "Save cancelled." });
+					break;
+				}
+				// Write exactly what was scanned: the SANITIZED name.
+				const frontmatter = { name: sanitizeSkillName(name), description };
+				if (!local) {
+					await writeSkill(name, frontmatter, body);
 				} else {
-					await updateSkillFile(dirPath, { name, description }, body);
+					await updateSkillFile(local.dirPath, frontmatter, body);
 				}
 				await webview.postMessage({
 					type: "skills.saved",
@@ -292,17 +410,21 @@ export async function handleSkillsMessage(
 			case "skills.delete": {
 				const dirPath = String(message.dirPath ?? "");
 				if (dirPath) {
-					const local = listLocalSkills();
-					const target = local.find((s) => s.dirPath === dirPath);
+					// Only delete folders that are actual scanned local skills.
+					const target = findLocalSkillByDir(dirPath);
+					if (!target) {
+						await webview.postMessage({ type: "skills.error", error: "Not a local skill folder — refusing to delete." });
+						break;
+					}
 					const pick = await vscode.window.showWarningMessage(
-						`Delete skill "${target?.name ?? dirPath}"? This removes the folder permanently.`,
-						{ modal: true },
+						`Delete skill "${target.name}"? This removes the folder permanently.`,
+						{ modal: true, detail: target.dirPath },
 						"Delete"
 					);
 					if (pick !== "Delete") {
 						break;
 					}
-					await deleteSkill(dirPath);
+					await deleteSkill(target.dirPath);
 				}
 				await webview.postMessage({ type: "skills.deleted", dirPath });
 				break;
@@ -310,7 +432,12 @@ export async function handleSkillsMessage(
 			case "skills.openInEditor": {
 				const fileName = String(message.fileName ?? "");
 				if (fileName) {
-					await openSkillInEditor(fileName);
+					const target = findLocalSkillByFile(fileName);
+					if (!target) {
+						await webview.postMessage({ type: "skills.error", error: "Not a local skill file." });
+						break;
+					}
+					await openSkillInEditor(target.fileName);
 				}
 				break;
 			}

@@ -1,7 +1,9 @@
+import type { MessageConversionConfig } from "./commonApi";
 import * as vscode from "vscode";
 import { LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { countMessageTokens, countToolTokens } from "./provideToken";
 import { normalizeUserModels, resolveUserModelById, resolveProxyUrl } from "./utils";
+import { maskProxyCredentials } from "./network";
 import type { CustomApiMode, CustomModelItem } from "./types";
 
 // Persistent state for diagnostics
@@ -142,7 +144,7 @@ export async function updateContextStatusBar(
 	tools: readonly LanguageModelChatTool[] | undefined,
 	model: LanguageModelChatInformation,
 	statusBarItem: vscode.StatusBarItem,
-	modelConfig: { includeReasoningInRequest: boolean },
+	modelConfig: MessageConversionConfig,
 	vendorApiMode?: CustomApiMode
 ): Promise<void> {
 	// ── Phase 1: immediate (synchronous) update ───────────────────────────
@@ -171,7 +173,8 @@ export async function updateContextStatusBar(
 	lastStats.provider = model.family ?? "customcopilot";
 	lastStats.maxTokens = maxTokens;
 	if (activeProxy) {
-		lastStats.proxyUrl = activeProxy;
+		// Never surface proxy credentials (user:pass@) in tooltips / QuickPick.
+		lastStats.proxyUrl = maskProxyCredentials(activeProxy);
 		lastStats.isProxyUsed = true;
 	} else {
 		lastStats.proxyUrl = "Direct";

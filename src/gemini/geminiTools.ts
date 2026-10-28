@@ -41,6 +41,26 @@ function stripUnsupportedGeminiSchemaKeys(value: unknown): number {
 	return removed;
 }
 
+/** Gemini Schema keys copied through verbatim (others are dropped). */
+const GEMINI_SCHEMA_PASSTHROUGH_KEYS = new Set([
+	"format",
+	"description",
+	"nullable",
+	"enum",
+	"maxItems",
+	"minItems",
+	"required",
+	"minProperties",
+	"maxProperties",
+	"minLength",
+	"maxLength",
+	"pattern",
+	"example",
+	"propertyOrdering",
+	"minimum",
+	"maximum",
+]);
+
 function jsonSchemaToGeminiSchema(
 	jsonSchema: unknown,
 	rootSchema: unknown = jsonSchema,
@@ -160,12 +180,39 @@ function jsonSchemaToGeminiSchema(
 	if (Array.isArray(input.type)) {
 		const list = (input.type as unknown[]).filter((t) => typeof t === "string");
 		if (list.length) {
-			out.anyOf = list
-				.filter((t) => t !== "null")
-				.map((t) => jsonSchemaToGeminiSchema({ ...input, type: t, anyOf: undefined, oneOf: undefined }, root, stack));
+			// Each branch keeps only the structural keys its type owns
+			// (an "object" branch keeps properties, an "array" branch items…).
+			const branchFor = (t: string): Record<string, unknown> => {
+				const b: Record<string, unknown> = { ...input, type: t, anyOf: undefined, oneOf: undefined };
+				if (t !== "object") {
+					delete b.properties;
+					delete b.required;
+					delete b.additionalProperties;
+					delete b.minProperties;
+					delete b.maxProperties;
+				}
+				if (t !== "array") {
+					delete b.items;
+					delete b.minItems;
+					delete b.maxItems;
+				}
+				if (t !== "string") {
+					delete b.pattern;
+					delete b.minLength;
+					delete b.maxLength;
+					delete b.format;
+				}
+				return b;
+			};
+			const types = list.filter((t) => t !== "null");
 			if (list.includes("null")) {
 				out.nullable = true;
 			}
+			if (types.length === 1) {
+				// ["string","null"] → a plain nullable STRING, not a 1-item anyOf.
+				return { ...jsonSchemaToGeminiSchema(branchFor(types[0] as string), root, stack), ...out };
+			}
+			out.anyOf = types.map((t) => jsonSchemaToGeminiSchema(branchFor(t as string), root, stack));
 			return out;
 		}
 	}
@@ -257,12 +304,55 @@ function jsonSchemaToGeminiSchema(
 			continue;
 		}
 
-		(out as Record<string, unknown>)[k] = v;
+		// Only keys of Gemini's OpenAPI-subset Schema pass through (hermes
+		// gemini_schema allowlist). Anything else — patternProperties, not,
+		// if/then/else, propertyNames, deprecated, readOnly… common in MCP
+		// tool schemas — 400s with "Unknown name".
+		if (GEMINI_SCHEMA_PASSTHROUGH_KEYS.has(k)) {
+			(out as Record<string, unknown>)[k] = v;
+		}
 	}
 
 	// Gemini Schema types are enum-like uppercase strings; if absent but properties exist, treat as OBJECT.
 	if (!out.type && out.properties && typeof out.properties === "object") {
 		out.type = "OBJECT";
+	}
+
+	// Gemini enums are string lists: stringify + dedupe the values, but keep
+	// an INTEGER/NUMBER/BOOLEAN type (hermes gemini_schema) so the model still
+	// returns a number — forcing STRING made tools receive "2" instead of 2.
+	if (Array.isArray(out.enum)) {
+		const values = (out.enum as unknown[]).filter((e) => e !== null && e !== undefined);
+		if (values.length === 0) {
+			delete out.enum;
+		} else {
+			out.enum = [...new Set(values.map((e) => (typeof e === "string" ? e : JSON.stringify(e))))];
+			if (!["INTEGER", "NUMBER", "BOOLEAN"].includes(String(out.type))) {
+				out.type = "STRING";
+			}
+		}
+	}
+
+	// format: STRING supports only enum/date-time; numbers int32/int64/float/double.
+	if (typeof out.format === "string") {
+		const fmt = out.format;
+		const ok =
+			(out.type === "STRING" && (fmt === "enum" || fmt === "date-time")) ||
+			((out.type === "INTEGER" || out.type === "NUMBER") && ["int32", "int64", "float", "double"].includes(fmt));
+		if (!ok) {
+			delete out.format;
+		}
+	}
+
+	// required may only name declared properties.
+	if (Array.isArray(out.required)) {
+		const props = out.properties && typeof out.properties === "object" ? (out.properties as Record<string, unknown>) : {};
+		const req = (out.required as unknown[]).filter((r): r is string => typeof r === "string" && r in props);
+		if (req.length > 0) {
+			out.required = req;
+		} else {
+			delete out.required;
+		}
 	}
 
 	return out;
@@ -288,9 +378,12 @@ export function openaiToolsToGeminiFunctionDeclarations(
 		if (typeof fn.description === "string" && fn.description.trim()) {
 			decl.description = fn.description;
 		}
-		if (fn.parameters && typeof fn.parameters === "object") {
+		if (fn.parameters && typeof fn.parameters === "object" && Object.keys(fn.parameters).length > 0) {
 			decl.parameters = jsonSchemaToGeminiSchema(fn.parameters);
 			stripUnsupportedGeminiSchemaKeys(decl.parameters);
+		} else {
+			// `{}` / missing → an explicit empty object schema (hermes).
+			decl.parameters = { type: "OBJECT", properties: {} };
 		}
 		out.push(decl);
 	}

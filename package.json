@@ -10,7 +10,11 @@
 		"copilot",
 		"github-copilot",
 		"language-model",
+		"language-models",
 		"llm",
+		"byok",
+		"glm",
+		"zai",
 		"openai",
 		"ollama",
 		"anthropic",
@@ -25,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.0.32",
+	"version": "1.1.0",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -180,6 +184,11 @@
 				"title": "Set API Key For Source"
 			},
 			{
+				"command": "customcopilot.showZaiQuota",
+				"category": "Copilot Custom Models Endpoint",
+				"title": "Show Z.AI Coding Plan Quota"
+			},
+			{
 				"command": "customcopilot.openConfig",
 				"category": "Copilot Custom Models Endpoint",
 				"title": "Open Configuration UI"
@@ -203,7 +212,7 @@
 			},
 			{
 				"command": "customcopilot.setDefaultModel",
-				"title": "Quick Toggle Model On/Off",
+				"title": "Select Commit Message Model",
 				"category": "Copilot Custom Models Endpoint"
 			}
 		],
@@ -244,27 +253,48 @@
 						"warn",
 						"error"
 					],
-					"description": "Debug log level. Logs are written to ~/.copilot/customcopilot/logs/ as JSON lines. Default is 'off' (no logging)."
+					"description": "Debug log level. Logs are written to ~/.copilot/customcopilot/logs/ as JSON lines. Default is 'off' (no logging).",
+					"scope": "application"
+				},
+				"customcopilot.skills.safetyScan": {
+					"type": "string",
+					"scope": "application",
+					"enum": [
+						"block",
+						"warn",
+						"off"
+					],
+					"enumDescriptions": [
+						"Scan skills before install/save; critical/high findings block, others ask for confirmation.",
+						"Scan skills but never block — every finding only asks for confirmation.",
+						"Do not scan skills at all (not recommended)."
+					],
+					"default": "block",
+					"description": "Security scan for skills (exfiltration, prompt injection, destructive commands) applied to every file of a skill before it is installed or saved — from the Skills screen and from Copilot's skill tools."
 				},
 				"customcopilot.logMessageContent": {
 					"type": "boolean",
 					"default": false,
-					"description": "Privacy opt-in: when enabled AND logLevel is 'debug', full chat message content is written to the log file. Keep disabled unless you explicitly want conversation content (potentially including your code) persisted to disk."
+					"description": "Privacy opt-in: when enabled AND logLevel is 'debug', full chat message content is written to the log file. Keep disabled unless you explicitly want conversation content (potentially including your code) persisted to disk.",
+					"scope": "application"
 				},
 				"customcopilot.proxyUrl": {
 					"type": "string",
 					"default": "",
-					"description": "Optional global proxy URL for API requests (supports socks5://, socks5h://, http://, https://)."
+					"description": "Optional global proxy URL for API requests (supports socks5://, socks5h://, http://, https://).",
+					"scope": "application"
 				},
 				"customcopilot.debugRequestLogging": {
 					"type": "boolean",
 					"default": false,
-					"description": "When enabled, failed API requests are printed to the console (Help > Toggle Developer Tools) as a reproducible curl command plus the server response body. Sensitive headers (API keys, tokens) are masked. Useful for debugging request/response issues."
+					"description": "When enabled, failed API requests are printed to the console (Help > Toggle Developer Tools) as a reproducible curl command plus the server response body. Sensitive headers (API keys, tokens) are masked. Useful for debugging request/response issues.",
+					"scope": "application"
 				},
 				"customcopilot.promptOverride.enabled": {
 					"type": "boolean",
 					"default": false,
-					"description": "Override the system prompt that Copilot Chat sends for ALL models served by this extension. When enabled, the system prompt is rewritten (per the settings below) before being forwarded to your endpoint. Lets you replace or extend the default prompt and its parts (e.g. safety rules) with your own."
+					"description": "Override the system prompt that Copilot Chat sends for ALL models served by this extension. When enabled, the system prompt is rewritten (per the settings below) before being forwarded to your endpoint. Lets you replace or extend the default prompt and its parts (e.g. safety rules) with your own.",
+					"scope": "application"
 				},
 				"customcopilot.promptOverride.mode": {
 					"type": "string",
@@ -281,13 +311,15 @@
 						"Add your text before Copilot's system prompt.",
 						"Discard Copilot's system prompt entirely and use only your text."
 					],
-					"description": "How 'customcopilot.promptOverride.text' is combined with the system prompt Copilot assembled. Only applies when 'customcopilot.promptOverride.enabled' is true."
+					"description": "How 'customcopilot.promptOverride.text' is combined with the system prompt Copilot assembled. Only applies when 'customcopilot.promptOverride.enabled' is true.",
+					"scope": "application"
 				},
 				"customcopilot.promptOverride.text": {
 					"type": "string",
 					"default": "",
 					"editPresentation": "multilineText",
-					"description": "Your custom system prompt text. Combined with the original system prompt per 'customcopilot.promptOverride.mode'. Use this to add stricter rules, change the assistant's identity, or fully replace the default prompt."
+					"description": "Your custom system prompt text. Combined with the original system prompt per 'customcopilot.promptOverride.mode'. Use this to add stricter rules, change the assistant's identity, or fully replace the default prompt.",
+					"scope": "application"
 				},
 				"customcopilot.promptOverride.replacements": {
 					"type": "array",
@@ -318,7 +350,8 @@
 								"description": "Regular expression flags (default 'g'). Only used when 'isRegex' is true."
 							}
 						}
-					}
+					},
+					"scope": "application"
 				},
 				"customcopilot.models": {
 					"type": "array",
@@ -378,6 +411,11 @@
 								"default": false,
 								"description": "Model support vision. Default is false."
 							},
+							"tool_calling": {
+								"type": "boolean",
+								"default": true,
+								"description": "Whether the model supports tool/function calling. When omitted it is inferred from the endpoint metadata or model id."
+							},
 							"max_tokens": {
 								"type": "number",
 								"default": 4096,
@@ -396,26 +434,29 @@
 								"type": "string",
 								"default": "medium",
 								"enum": [
-									"max",
-									"xhigh",
-									"high",
-									"medium",
+									"none",
+									"minimal",
 									"low",
-									"minimal"
+									"medium",
+									"high",
+									"xhigh",
+									"max",
+									"ultra"
 								],
-								"description": "Reasoning effort level (OpenAI reasoning configuration)"
+								"description": "Reasoning effort level (OpenAI reasoning configuration). Clamped to the nearest weaker level the model supports; \"none\" disables thinking where supported."
 							},
 							"thinking": {
 								"type": "object",
-								"description": "Thinking configuration for Zai provider",
+								"description": "Thinking configuration for Anthropic / Z.AI providers",
 								"properties": {
 									"type": {
 										"type": "string",
 										"enum": [
 											"enabled",
-											"disabled"
+											"disabled",
+											"adaptive"
 										],
-										"description": "Set to 'enabled' to enable thinking, 'disabled' to disable thinking"
+										"description": "Set to \"enabled\" to enable thinking, \"disabled\" to disable thinking, or \"adaptive\" to let the model decide (Anthropic adaptive thinking)."
 									}
 								}
 							},
@@ -430,6 +471,26 @@
 								"minimum": 128,
 								"maximum": 10000000,
 								"description": "Maximum number of tokens for chain-of-thought output. Not required."
+							},
+							"prompt_cache": {
+								"type": "string",
+								"enum": [
+									"5m",
+									"1h",
+									"off"
+								],
+								"description": "Anthropic prompt caching (cache_control breakpoints on tools, system and the latest messages). \"5m\"/\"1h\" = cache TTL (1h costs 2x on writes), \"off\" = disabled. Unset: uses customcopilot.promptCacheTtl for Claude and MiniMax-M2 models, off for other Anthropic-compatible models. Only affects apiMode anthropic/zai."
+							},
+							"image_max_dimension": {
+								"type": "number",
+								"minimum": 0,
+								"maximum": 8192,
+								"description": "Long-edge pixel cap for images sent to this model (0 = never resize). Overrides customcopilot.imageMaxDimension."
+							},
+							"fast_mode": {
+								"type": "boolean",
+								"default": false,
+								"description": "Anthropic fast mode: sends speed \"fast\" (up to 2.5x output tokens/s at premium pricing). Claude Opus 5.5 (GA), Opus 5 / Opus 4.8 (research preview, beta header added automatically). A fast-mode 429/529 falls back to standard speed. Only affects apiMode anthropic."
 							},
 							"temperature": {
 								"type": "number",
@@ -489,12 +550,14 @@
 										"type": "string",
 										"default": "medium",
 										"enum": [
-											"max",
-											"xhigh",
-											"high",
-											"medium",
-											"low",
+											"none",
 											"minimal",
+											"low",
+											"medium",
+											"high",
+											"xhigh",
+											"max",
+											"ultra",
 											"auto"
 										],
 										"description": "Reasoning effort level for OpenRouter/xAI (high, medium, low, minimal, auto)"
@@ -550,7 +613,7 @@
 							"useForCommitGeneration": {
 								"type": "boolean",
 								"default": false,
-								"description": "Whether to be used for Git commit message generation. Not supports gemini apiMode."
+								"description": "Whether this model is used for Git commit message generation. Supported for all apiModes."
 							},
 							"delay": {
 								"type": "number",
@@ -580,7 +643,8 @@
 							}
 						]
 					},
-					"description": "A list of preferred models to use. If provided, these models will be used directly instead of fetching from the API."
+					"description": "A list of preferred models to use. If provided, these models will be used directly instead of fetching from the API.",
+					"scope": "application"
 				},
 				"customcopilot.retry": {
 					"type": "object",
@@ -642,6 +706,40 @@
 					"minimum": 0,
 					"description": "Fixed delay in milliseconds between consecutive requests. Default is 0 (no delay)."
 				},
+				"customcopilot.subagent.model": {
+					"type": "string",
+					"default": "",
+					"markdownDescription": "Model used by the `#delegate` subagent tool when the caller gives no hint: an id or name substring (e.g. `glm-4.7-flash`, `claude-haiku`). Empty = the largest-context model of this extension."
+				},
+				"customcopilot.subagent.maxSteps": {
+					"type": "number",
+					"default": 15,
+					"minimum": 1,
+					"maximum": 40,
+					"markdownDescription": "Default maximum tool-calling rounds for a `#delegate` subagent before it must write its report."
+				},
+				"customcopilot.imageMaxDimension": {
+					"type": "number",
+					"default": 2048,
+					"minimum": 0,
+					"maximum": 8192,
+					"markdownDescription": "Images (attachments, screenshots, tool results) whose long edge exceeds this many pixels are downscaled and re-encoded as JPEG before being sent, so a 4K screenshot does not eat the context window (GLM vision bills raw pixels). Use `1024`–`1568` for maximum savings, `0` to send images unchanged. Per-model `image_max_dimension` overrides this."
+				},
+				"customcopilot.promptCacheTtl": {
+					"type": "string",
+					"default": "5m",
+					"enum": [
+						"5m",
+						"1h",
+						"off"
+					],
+					"enumDescriptions": [
+						"5-minute cache (writes 1.25x input price, refreshed free on every hit).",
+						"1-hour cache (writes 2x input price) — better when you often pause longer than 5 minutes.",
+						"Disable prompt caching."
+					],
+					"markdownDescription": "Default Anthropic prompt-cache TTL for Claude (and MiniMax-M2) models on `apiMode` `anthropic`/`zai`. The extension places `cache_control` breakpoints on the tool list, the system prompt and the latest messages (max 4) so agent loops reuse the cached prefix (cache reads cost ~10% of input). Per-model `prompt_cache` overrides this."
+				},
 				"customcopilot.commitLanguage": {
 					"type": "string",
 					"default": "English",
@@ -678,11 +776,49 @@
 				"customcopilot.userAgent": {
 					"type": "string",
 					"default": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-					"description": "Custom User-Agent string to use for API requests. Default is a Chrome-based User-Agent."
+					"description": "Custom User-Agent string to use for API requests. Default is a Chrome-based User-Agent.",
+					"scope": "application"
 				}
 			}
 		},
 		"languageModelTools": [
+			{
+				"name": "customcopilot_delegateTask",
+				"toolReferenceName": "delegate",
+				"displayName": "Delegate to Subagent",
+				"icon": "$(organization)",
+				"modelDescription": "Run a focused sub-task on a separate model in a FRESH context and get back only its final report. Use it to keep the main conversation's context small: broad codebase exploration ('find where X is implemented and how it is wired'), multi-file research, reading long logs/docs, comparing implementations, or reviewing a diff. The subagent has read-only workspace tools (search/read/list/diagnostics) by default and cannot see this conversation, so `task` must be self-contained: include file paths, symbols, constraints and what you already know. Say exactly what the report must contain in `expectedOutput`. Independent sub-tasks can be delegated in parallel. Do NOT delegate trivial single lookups (do them directly) or work that needs the user's input. Set allowWrite=true only when the sub-task must edit files or run commands (the user is asked to confirm).",
+				"userDescription": "Hand a self-contained sub-task to a subagent with its own context; only its report comes back.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"task": {
+							"type": "string",
+							"description": "Self-contained task: goal, relevant paths/symbols, constraints, what is already known."
+						},
+						"expectedOutput": {
+							"type": "string",
+							"description": "What the final report must contain (format, detail level, e.g. 'list of file:line with one-line explanation')."
+						},
+						"model": {
+							"type": "string",
+							"description": "Optional model hint: an id/name substring (e.g. 'glm-4.7-flash'), or 'fast' / 'strong'. Default: customcopilot.subagent.model or the largest-context model."
+						},
+						"allowWrite": {
+							"type": "boolean",
+							"description": "Give the subagent tools that modify the workspace (edits/terminal). Default false (read-only)."
+						},
+						"maxSteps": {
+							"type": "number",
+							"description": "Max tool-calling rounds (default customcopilot.subagent.maxSteps, cap 40)."
+						}
+					},
+					"required": [
+						"task"
+					]
+				}
+			},
 			{
 				"name": "customcopilot_searchSkills",
 				"toolReferenceName": "searchSkills",
@@ -849,6 +985,8 @@
 	},
 	"dependencies": {
 		"@microsoft/tiktokenizer": "^1.0.10",
+		"jpeg-js": "^0.4.4",
+		"pngjs": "^7.0.0",
 		"undici": "^8.2.0"
 	},
 	"devDependencies": {
@@ -856,6 +994,7 @@
 		"@stylistic/eslint-plugin": "^2.9.0",
 		"@types/mocha": "^10.0.10",
 		"@types/node": "^22.19.17",
+		"@types/pngjs": "^6.0.5",
 		"@types/vscode": "^1.134.0",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/test-cli": "^0.0.11",

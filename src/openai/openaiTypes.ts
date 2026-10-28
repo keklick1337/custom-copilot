@@ -29,6 +29,8 @@ export interface OpenAIChatMessage {
 	tool_calls?: OpenAIToolCall[];
 	tool_call_id?: string;
 	reasoning_content?: string;
+	/** OpenRouter reasoning blocks (signatures / encrypted data) echoed back verbatim. */
+	reasoning_details?: unknown[];
 }
 
 /**

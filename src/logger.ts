@@ -14,7 +14,24 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 };
 
 const LOG_RETENTION_DAYS = 7;
-const SENSITIVE_HEADER_KEYS = ["Authorization", "x-api-key", "x-goog-api-key"];
+/**
+ * Header names (lowercase) whose values are logged verbatim. Denylist-by-default:
+ * EVERY other header is masked, case-insensitively, so user-defined custom auth
+ * headers (e.g. `X-Auth-Token`, `Helix-Key`) can never leak into the log file.
+ */
+const SAFE_HEADER_KEYS = new Set([
+	"accept",
+	"accept-encoding",
+	"accept-language",
+	"anthropic-beta",
+	"anthropic-version",
+	"cache-control",
+	"connection",
+	"content-length",
+	"content-type",
+	"host",
+	"user-agent",
+]);
 
 class Logger {
 	private _level: LogLevel = "off";
@@ -68,15 +85,17 @@ class Logger {
 	}
 
 	/**
-	 * Sanitize sensitive headers: show only first 4 chars + "***" for auth-related keys.
+	 * Sanitize headers: every header not on the known-safe list (compared
+	 * case-insensitively) shows only its first 4 chars + "***".
 	 */
 	sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
 		const sanitized: Record<string, string> = {};
-		for (const [key, value] of Object.entries(headers)) {
-			if (SENSITIVE_HEADER_KEYS.includes(key)) {
+		for (const [key, rawValue] of Object.entries(headers)) {
+			const value = typeof rawValue === "string" ? rawValue : String(rawValue);
+			if (!SAFE_HEADER_KEYS.has(key.toLowerCase())) {
 				// Extract the token part after "Bearer " if present
-				const tokenPrefix = value.startsWith("Bearer ") ? "Bearer " : "";
-				const token = value.startsWith("Bearer ") ? value.slice(7) : value;
+				const tokenPrefix = /^bearer /i.test(value) ? value.slice(0, 7) : "";
+				const token = tokenPrefix ? value.slice(7) : value;
 				if (token.length <= 4) {
 					sanitized[key] = tokenPrefix + "***";
 				} else {
@@ -96,7 +115,7 @@ class Logger {
 	sanitizeData(data: Record<string, unknown>): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
 		for (const [key, value] of Object.entries(data)) {
-			if (key === "headers" && value && typeof value === "object" && !Array.isArray(value)) {
+			if (key.toLowerCase() === "headers" && value && typeof value === "object" && !Array.isArray(value)) {
 				result[key] = this.sanitizeHeaders(value as Record<string, string>);
 			} else if (value && typeof value === "object" && !Array.isArray(value)) {
 				result[key] = this.sanitizeData(value as Record<string, unknown>);

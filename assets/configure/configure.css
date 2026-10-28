@@ -1078,6 +1078,43 @@ tr:hover td {
 
 /* ── Responsive tweaks ──────────────────────────────────────────── */
 
+/* Size the form grid by the panel's own width, not the viewport (sidebar vs editor). */
+.main-panel,
+.form-container {
+	container-type: inline-size;
+}
+
+.mode-hint {
+	margin: 2px 0 10px;
+	opacity: 0.75;
+	font-style: italic;
+}
+
+@container (min-width: 900px) {
+	.form-container .row {
+		grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+	}
+}
+
+@container (max-width: 640px) {
+	.form-container .row {
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+		gap: 8px;
+	}
+}
+
+@container (max-width: 340px) {
+	.form-container .row {
+		grid-template-columns: 1fr;
+	}
+	.form-actions {
+		flex-wrap: wrap;
+	}
+	.form-actions button {
+		flex: 1 1 auto;
+	}
+}
+
 @media (max-width: 600px) {
 	.row {
 		grid-template-columns: 1fr;

@@ -127,13 +127,25 @@ export async function getCommitInfo(hash: string, cwd: string): Promise<string> 
 			return "Repository has no commits yet";
 		}
 
+		// The revision must precede "--" (anything after it is a pathspec), and a
+		// leading "-" would be parsed as an option, so reject it outright.
+		const rev = (hash || "").trim();
+		if (!rev || rev.startsWith("-") || /\s/.test(rev)) {
+			return `Invalid commit reference: ${hash}`;
+		}
+		try {
+			await git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd);
+		} catch {
+			return `Commit not found: ${rev}`;
+		}
+
 		// Get commit info, stats, and diff separately
-		const { stdout: info } = await git(["show", "--format=%H%n%h%n%s%n%an%n%ad%n%b", "--no-patch", "--", hash], cwd);
+		const { stdout: info } = await git(["show", "--format=%H%n%h%n%s%n%an%n%ad%n%b", "--no-patch", rev, "--"], cwd);
 		const [fullHash, shortHash, subject, author, date, body] = info.trim().split("\n");
 
-		const { stdout: stats } = await git(["show", "--stat", "--format=", "--", hash], cwd);
+		const { stdout: stats } = await git(["show", "--stat", "--format=", rev, "--"], cwd);
 
-		const { stdout: diff } = await git(["show", "--format=", "--", hash], cwd);
+		const { stdout: diff } = await git(["show", "--format=", rev, "--"], cwd);
 
 		const summary = [
 			`Commit: ${shortHash} (${fullHash})`,
@@ -191,39 +203,40 @@ export async function getWorkingState(cwd: string): Promise<string> {
 }
 
 export async function getGitDiff(cwd: string, stagedOnly = false): Promise<string> {
-	try {
-		const isInstalled = await checkGitInstalled();
-		if (!isInstalled) {
-			throw new Error("Git is not installed");
-		}
+	const isInstalled = await checkGitInstalled();
+	if (!isInstalled) {
+		throw new Error("Git is not installed");
+	}
 
-		const isRepo = await checkGitRepo(cwd);
-		if (!isRepo) {
-			throw new Error("Not a git repository");
-		}
+	const isRepo = await checkGitRepo(cwd);
+	if (!isRepo) {
+		throw new Error("Not a git repository");
+	}
 
-		let diff = "";
-		let command = "git --no-pager diff --staged --diff-filter=d";
+	// `diff --cached` works in a repository with no commits yet (it diffs the
+	// index against the empty tree), so staged changes are always considered.
+	let command = "git --no-pager diff --cached --diff-filter=d";
+	const { stdout: staged } = await git(["--no-pager", "diff", "--cached", "--diff-filter=d"], cwd);
+	let diff = staged.trim();
+
+	if (!stagedOnly && !diff) {
 		if (await checkGitRepoHasCommits(cwd)) {
-			// Only run git diff if there are commits
-			const { stdout: staged } = await git(["--no-pager", "diff", "--staged", "--diff-filter=d"], cwd);
-			diff = staged.trim();
-		}
-
-		if (!stagedOnly && !diff) {
 			command = "git --no-pager diff HEAD --diff-filter=d";
 			const { stdout: unstaged } = await git(["--no-pager", "diff", "HEAD", "--diff-filter=d"], cwd);
 			diff = unstaged.trim();
+		} else {
+			// No HEAD yet: fall back to working tree vs index.
+			command = "git --no-pager diff --diff-filter=d";
+			const { stdout: unstaged } = await git(["--no-pager", "diff", "--diff-filter=d"], cwd);
+			diff = unstaged.trim();
 		}
-
-		if (!diff) {
-			throw new Error("No changes in workspace for commit message");
-		}
-
-		return truncateOutput(`'${command}' Output:\n\n${diff}`.trim());
-	} catch (error) {
-		throw error;
 	}
+
+	if (!diff) {
+		throw new Error("No changes in workspace for commit message");
+	}
+
+	return truncateOutput(`'${command}' Output:\n\n${diff}`.trim());
 }
 
 export async function getGitRemoteUrls(cwd: string): Promise<string[]> {

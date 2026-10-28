@@ -310,17 +310,29 @@ export const keyBalancer = new KeyBalancer();
 
 /**
  * Parse a stored secret value into a list of distinct API keys.
- * Keys may be separated by newlines (preferred), or commas. A single key
- * (the legacy format) yields a one-element array, preserving backward
- * compatibility.
+ * Accepts a JSON array of strings (`["k1","k2"]`), or keys separated by
+ * newlines (preferred) or commas. A single key (the legacy format) yields a
+ * one-element array, preserving backward compatibility.
  */
 export function parseApiKeys(secretValue: string | undefined | null): string[] {
 	if (!secretValue) {
 		return [];
 	}
+	let parts: string[] | undefined;
+	const trimmed = secretValue.trim();
+	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+		try {
+			const parsed: unknown = JSON.parse(trimmed);
+			if (Array.isArray(parsed)) {
+				parts = parsed.filter((v): v is string => typeof v === "string");
+			}
+		} catch {
+			// Not valid JSON: fall back to delimiter splitting below.
+		}
+	}
 	const seen = new Set<string>();
 	const keys: string[] = [];
-	for (const raw of secretValue.split(/[\r\n,]+/)) {
+	for (const raw of parts ?? secretValue.split(/[\r\n,]+/)) {
 		const key = raw.trim();
 		if (key && !seen.has(key)) {
 			seen.add(key);
