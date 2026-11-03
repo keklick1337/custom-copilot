@@ -19,7 +19,6 @@ import {
 	resolveUserModelById,
 	createRetryConfig,
 	executeWithRetry,
-	normalizeUserModels,
 	resolveProxyUrl,
 	isNonRetryableError,
 	delayOrCancel,
@@ -28,6 +27,7 @@ import {
 	safeUrlHost,
 	withProviderDefaults,
 	isToolResultPart,
+	getUserModels,
 } from "./utils";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
@@ -143,7 +143,8 @@ function calibrateImageTokenCost(
 	}
 }
 import { updateContextStatusBar } from "./statusBar";
-import { beginMainActivity, endMainActivity, noteMainResponse, notifyChatRequestStart } from "./chatActivity";
+import { beginMainActivity, endMainActivity, noteMainResponse, noteMainTurn, notifyChatRequestStart } from "./chatActivity";
+import { AUTO_RESUME_HEADER } from "./subagent/agentNames";
 import { EXTENSION_ID, withAgentNotice } from "./subagent/agentManager";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
@@ -256,9 +257,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 	): Promise<number> {
 		// Match the model's actual replay setting — reasoning tokens only
 		// count against the context when they are actually re-sent.
-		const userModels = normalizeUserModels(
-			vscode.workspace.getConfiguration().get<unknown>("customcopilot.models", [])
-		);
+		const userModels = getUserModels();
 		const um = resolveUserModelById(model.id, userModels, this.vendorApiMode);
 		return countMessageTokens(text, {
 			includeReasoningInRequest: modelNeedsReasoningEcho(um ? withProviderDefaults(um, userModels) : um),
@@ -290,6 +289,22 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 		const isOwnRequest = options.requestInitiator === EXTENSION_ID;
 		// Agent-loop requests offer tools (utility requests like titles don't).
 		const isAgentLoopRequest = !isOwnRequest && (options.tools?.length ?? 0) > 0;
+		if (isAgentLoopRequest) {
+			// The turn's user message = the last user message with text and no
+			// tool results (later rounds only add tool-result messages).
+			const userMsg = [...messages]
+				.reverse()
+				.find(
+					(m) =>
+						m.role === vscode.LanguageModelChatMessageRole.User &&
+						!m.content.some((p) => p instanceof vscode.LanguageModelToolResultPart) &&
+						m.content.some((p) => p instanceof vscode.LanguageModelTextPart)
+				);
+			const userText = (userMsg?.content ?? [])
+				.map((p) => (p instanceof vscode.LanguageModelTextPart ? p.value : ""))
+				.join("");
+			noteMainTurn(userText, userText.includes(AUTO_RESUME_HEADER));
+		}
 		let calledTools = false;
 		const watchedProgress: Progress<LanguageModelResponsePart2> = isAgentLoopRequest
 			? {
@@ -419,7 +434,7 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 
 			// get model config from user settings
 			const config = vscode.workspace.getConfiguration();
-			const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
+			const userModels = getUserModels();
 
 			// Parse model ID to handle config ID
 			const parsedModelId = parseModelId(model.id);
@@ -1064,11 +1079,9 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				}
 		}
 		} catch (err) {
-			console.error("[customcopilot] Chat request failed", {
-				modelId: model.id,
-				messageCount: messages.length,
-				error: err instanceof Error ? { name: err.name, message: err.message } : String(err),
-			});
+			console.error(
+				`[customcopilot] Chat request failed (${model.id}, ${messages.length} messages): ${err instanceof Error ? `${err.name}: ${err.message.split("\n")[0].slice(0, 300)}` : String(err)}`
+			);
 			logger.error("request.error", {
 				modelId: model.id,
 				messageCount: messages.length,

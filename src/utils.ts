@@ -86,6 +86,30 @@ export function getModelProviderId(model: unknown): string {
 	);
 }
 
+let cachedUserModels: CustomModelItem[] | undefined;
+let cacheListener: vscode.Disposable | undefined;
+
+/**
+ * `customcopilot.models`, normalized and cached until the setting changes.
+ * Hot paths (token counting runs many times per request, status bar, every
+ * chat request) must use this: `config.get` deep-copies the whole model list
+ * on every call, which blocked the extension host with large lists.
+ * Callers must not mutate the returned objects.
+ */
+export function getUserModels(): CustomModelItem[] {
+	if (!cacheListener) {
+		cacheListener = vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("customcopilot.models")) {
+				cachedUserModels = undefined;
+			}
+		});
+	}
+	if (!cachedUserModels) {
+		cachedUserModels = normalizeUserModels(vscode.workspace.getConfiguration().get<unknown>("customcopilot.models", []));
+	}
+	return cachedUserModels;
+}
+
 export function normalizeUserModels(models: unknown): CustomModelItem[] {
 	const list = Array.isArray(models) ? models : [];
 	const out: CustomModelItem[] = [];
@@ -594,9 +618,10 @@ export async function executeWithRetry<T>(
 				errorMessage: lastError.message,
 			});
 
+			// A plain string: an object argument shows up as "Object" in the
+			// Developer Tools console and hides the reason.
 			console.error(
-				`[customcopilot] Retryable error detected, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts}). Error:`,
-				lastError instanceof Error ? { name: lastError.name, message: lastError.message } : String(lastError)
+				`[customcopilot] Retryable error, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts}): ${lastError.name}: ${lastError.message.split("\n")[0].slice(0, 300)}`
 			);
 
 			// Wait for the calculated interval before retrying, but wake up early

@@ -352,6 +352,48 @@ export async function proxyFetch(
 			);
 			logger.error("request.error", { method, url, error: message, requestBodyLength: reqLen, curl: curlFull });
 		}
+		// undici's "fetch failed" hides the real reason in `cause` (DNS,
+		// connection reset/refused, TLS, proxy, timeout): surface it in the
+		// message so logs and the chat error say WHY. The text still starts
+		// with "fetch failed", so the network-retry classification is unchanged.
+		if (e instanceof Error && e.message === "fetch failed" && !(init?.signal as AbortSignal | undefined)?.aborted) {
+			const reason = describeErrorCause(e.cause);
+			if (reason) {
+				const wrapped = new Error(`fetch failed: ${reason} (${method} ${safeHostForLog(rawUrl)}${proxyUrl ? " via proxy" : ""})`, {
+					cause: e.cause,
+				});
+				wrapped.name = e.name;
+				throw wrapped;
+			}
+		}
 		throw e;
 	}
+}
+
+/** Host part of a URL for error messages (no path / query secrets). */
+function safeHostForLog(url: string): string {
+	try {
+		return new URL(url).host;
+	} catch {
+		return "?";
+	}
+}
+
+/** "ECONNRESET: socket hang up" style summary of an undici error cause chain. */
+export function describeErrorCause(cause: unknown, depth = 0): string {
+	if (!cause || depth > 3) {
+		return "";
+	}
+	if (cause instanceof AggregateError && cause.errors?.length) {
+		return cause.errors.map((c) => describeErrorCause(c, depth + 1)).filter(Boolean).join("; ");
+	}
+	if (typeof cause === "object") {
+		const c = cause as { code?: unknown; message?: unknown; cause?: unknown };
+		const own = [typeof c.code === "string" ? c.code : "", typeof c.message === "string" ? c.message : ""]
+			.filter(Boolean)
+			.join(": ");
+		const inner = describeErrorCause(c.cause, depth + 1);
+		return [own, inner].filter(Boolean).join(" ← ");
+	}
+	return String(cause);
 }

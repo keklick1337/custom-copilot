@@ -11,3 +11,6 @@ export const AGENT_TOOL_NAMES = {
 	createFile: "customcopilot_agent_createFile",
 	runCommand: "customcopilot_agent_runCommand",
 } as const;
+
+/** First line of an auto-resume chat message (also used to recognise such turns). */
+export const AUTO_RESUME_HEADER = "🤖 Background agent update";

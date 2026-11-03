@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -797,6 +797,13 @@
 					"maximum": 16,
 					"markdownDescription": "Maximum number of subagents (all nesting levels) running at the same time."
 				},
+				"customcopilot.subagent.maxStartsPerTurn": {
+					"type": "number",
+					"default": 6,
+					"minimum": 1,
+					"maximum": 50,
+					"markdownDescription": "Maximum number of agents the main chat may start within one turn (one user message and its tool rounds). Protects against a model that keeps spawning agents in a loop."
+				},
 				"customcopilot.subagent.maxDepth": {
 					"type": "number",
 					"default": 3,
@@ -814,7 +821,7 @@
 				"customcopilot.subagent.autoResume": {
 					"type": "boolean",
 					"default": true,
-					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead."
+					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead. Agents started in a turn that was itself triggered by such a post never auto-post again (their reports stay readable via `waitForAgents`), so agents → report → agents loops cannot form."
 				},
 				"customcopilot.subagent.autoResumeIdleMs": {
 					"type": "number",
@@ -891,7 +898,7 @@
 				"toolReferenceName": "delegate",
 				"displayName": "Run Subagent",
 				"icon": "$(organization)",
-				"modelDescription": "Start a subagent: a separate agent loop on the SAME model as this chat, in a FRESH context, that returns only its final report. By default it runs in the BACKGROUND: this call returns immediately with the agent id and you keep working (or talking to the user) in parallel; several independent agents can run at once. Its report is delivered automatically — customcopilot_waitForAgents returns it (call it when you have nothing else to do; it wakes you as soon as an agent finishes), and if your turn has ended the report is posted to the chat. Use it to keep the main context small: broad codebase exploration, multi-file research, reading long logs/docs, comparing implementations, reviewing a diff, or independent implementation chunks. The subagent cannot see this conversation, so `task` must be self-contained (paths, symbols, constraints, what is known); say what the report must contain in `expectedOutput`. It has read-only workspace tools by default; allowWrite=true gives edit/terminal tools (the user confirms). Agents can message you and each other (customcopilot_sendAgentMessage), see each other (customcopilot_listAgents) and start their own sub-agents for independent parts (reports go to their parent). Set background=false only when you cannot do anything until the report arrives. Do NOT delegate trivial single lookups.",
+				"modelDescription": "Start a SUBAGENT: an independent agent loop that runs on the same model as this chat, in a FRESH context (it cannot see this conversation), with its own tools, and returns ONE final report.\n\nWHEN TO USE — only for substantial, self-contained work that would otherwise flood your context or that can run in parallel:\n- broad codebase exploration (\"find every place X is configured and how it is wired\");\n- multi-file research or reading long logs/docs/specs and summarizing them;\n- comparing implementations, reviewing a diff, auditing a module;\n- independent implementation chunks (with allowWrite) while you work on something else.\n\nWHEN NOT TO USE:\n- trivial work: a single file read, one search, a one-line answer — do it yourself;\n- tests or demos of this tool (never start an agent just to see that it works, e.g. 'reply ok');\n- acknowledging, verifying or reacting to a background-agent report or update message — read it and continue the user's task yourself;\n- anything that needs the user's input or a decision;\n- duplicating work an agent is already doing (check customcopilot_listAgents first).\n\nHOW IT RUNS: by default in the BACKGROUND — this call returns immediately with the agent id; keep working in parallel (several independent agents may run at once). Its report is delivered automatically: customcopilot_waitForAgents returns it (call it when you have nothing else to do — it wakes you as soon as an agent finishes); if your turn has ended first, the report is posted into this chat. Use background=false only when you cannot do anything else until the report arrives.\n\nWRITING `task`: make it self-contained — goal, exact paths/symbols, constraints, what you already know, what NOT to do. Put the required report format in `expectedOutput` (e.g. 'bullet list of file:line + one-line explanation'). Give a short `name` to address the agent later.\n\nTools: read-only workspace tools by default; allowWrite=true adds file edit/create and confirmed shell commands (the user confirms the start). Agents can message you and each other (customcopilot_sendAgentMessage), list each other (customcopilot_listAgents) and start their own sub-agents for independent parts. Limits: customcopilot.subagent.maxConcurrent running, maxStartsPerTurn per turn.",
 				"userDescription": "Run a self-contained sub-task in a background agent on the same model; its report comes back when it finishes.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -899,15 +906,15 @@
 					"properties": {
 						"task": {
 							"type": "string",
-							"description": "Self-contained task: goal, relevant paths/symbols, constraints, what is already known."
+							"description": "Self-contained task: the goal, exact paths/symbols, constraints, what is already known and what must NOT be done. The agent cannot see this conversation."
 						},
 						"name": {
 							"type": "string",
-							"description": "Short unique label for the agent (e.g. 'auth-research'), used to address it in messages."
+							"description": "Short unique label (e.g. 'auth-research') used to address the agent in messages, waits and stops."
 						},
 						"expectedOutput": {
 							"type": "string",
-							"description": "What the final report must contain (format, detail level, e.g. 'list of file:line with one-line explanation')."
+							"description": "Exact content/format of the final report (e.g. 'bullet list of file:line with a one-line explanation each', 'unified diff summary', 'yes/no + evidence')."
 						},
 						"background": {
 							"type": "boolean",
@@ -936,7 +943,7 @@
 				"toolReferenceName": "agents",
 				"displayName": "List Background Agents",
 				"icon": "$(organization)",
-				"modelDescription": "List the background subagents as a tree (who started whom) with status, current activity, context usage (tokens / window), rounds and unread messages. With `id`, return that agent's full details including its report and sub-agents.",
+				"modelDescription": "List the background agents as a tree (who started whom): id, name, status (running/done/failed/stopped), current activity, context usage (tokens / window), rounds used, unread messages. With `id` (agent id or name) returns that agent's full details: task, status, error, its sub-agents and its full report. Use it before starting a new agent (avoid duplicates), to check progress, or to read a report again. It never waits — to wait for completion use customcopilot_waitForAgents.",
 				"userDescription": "List running/finished background agents.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -954,7 +961,7 @@
 				"toolReferenceName": "agentMessage",
 				"displayName": "Message Background Agent",
 				"icon": "$(comment)",
-				"modelDescription": "Send a message to a running background agent (by id or name), to every running agent (to: \"all\"), or — when called by a subagent — to the main agent (to: \"main\"). The recipient reads it at the start of its next round. Use it to steer, give new information or answer an agent's question.",
+				"modelDescription": "Send a message to a RUNNING background agent: by id or name, or to every running agent with to: \"all\". The recipient reads it at the start of its next round (it is not interrupted mid-tool). Use it to steer an agent (new information, changed requirements, narrower scope), answer a question an agent asked you, or tell it to wrap up. Subagents use to: \"main\" to message the main agent, or another agent's id to coordinate. Finished agents cannot receive messages — use customcopilot_resumeAgent to continue one.",
 				"userDescription": "Send a message to a background agent.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -980,7 +987,7 @@
 				"toolReferenceName": "waitAgents",
 				"displayName": "Wait for Background Agents",
 				"icon": "$(watch)",
-				"modelDescription": "Wait until a background agent finishes or sends you a message, then return all pending agent reports/messages and the agent list. Wakes up immediately when something arrives. Use it when you have nothing else useful to do while agents run. `timeoutSeconds: 0` just reads pending notifications without waiting. With `ids`, waits until those agents have all finished (or a message arrives).",
+				"modelDescription": "Block until a background agent finishes or sends you a message, then return ALL pending agent reports/messages for this chat plus the agent list. Wakes up immediately when something arrives. Use it when you have nothing else useful to do while agents run, instead of polling customcopilot_listAgents. `ids`: wait until all of these agents have finished (a message also wakes you). `timeoutSeconds`: maximum wait (default 600, max 3600); 0 = only read pending notifications without waiting. After it returns, continue the user's task with the reports — do not start new agents merely to confirm them.",
 				"userDescription": "Wait for background agents' reports.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -1005,7 +1012,7 @@
 				"toolReferenceName": "stopAgent",
 				"displayName": "Stop Background Agent",
 				"icon": "$(debug-stop)",
-				"modelDescription": "Stop a running background agent by id or name (or \"all\"), together with its sub-agents. Its partial state is reported as stopped.",
+				"modelDescription": "Stop a running background agent (by id or name) together with all its sub-agents, or every agent with id \"all\". Use it when an agent is no longer needed, went off track, or duplicates other work. A stopped agent keeps its conversation and can be continued with customcopilot_resumeAgent.",
 				"userDescription": "Stop a background agent.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -1026,7 +1033,7 @@
 				"toolReferenceName": "resumeAgent",
 				"displayName": "Resume Background Agent",
 				"icon": "$(debug-restart)",
-				"modelDescription": "Resume a finished, stopped or failed background agent (by id or name) with a new instruction. It continues from its FULL previous conversation (no need to repeat context) with a fresh step budget and reports again when done — cheaper and better than starting a new agent for follow-up work on the same topic. Subagents can resume only their own sub-agents.",
+				"modelDescription": "Continue a finished, stopped or failed background agent with a new instruction. It resumes from its FULL previous conversation (no need to repeat context), gets a fresh step budget and reports again when done — cheaper and better than starting a new agent for follow-up work on the same topic. `message`: the follow-up instruction. `background` (default true): false waits here for the new report. For a RUNNING agent use customcopilot_sendAgentMessage instead. Subagents can resume only their own sub-agents.",
 				"userDescription": "Continue a finished background agent with its previous context.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {

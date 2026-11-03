@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { logger } from "../logger";
-import { isMainChatIdle } from "../chatActivity";
-import { AGENT_TOOL_NAMES } from "./agentNames";
+import { currentMainTurn, isAutoResumeTurn, isMainChatIdle } from "../chatActivity";
+import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER } from "./agentNames";
 import { HARD_MAX_STEPS, pickTools, selectModel } from "./agentSetup";
 import { agentCreateFile, agentEditFile, agentRunCommand } from "./agentWriteTools";
 
@@ -89,6 +89,11 @@ export interface AgentRecord {
 	awaited: boolean;
 	/** Stopped by the user from the UI: report is kept, chat is not resumed. */
 	stoppedByUser?: boolean;
+	/**
+	 * Started during a turn that an auto-resume message triggered: its report
+	 * never auto-resumes the chat again (prevents agent → report → agent loops).
+	 */
+	noAutoResume?: boolean;
 	/** Current context size in tokens (provider usage, else an estimate). */
 	contextTokens: number;
 	/** The model's input window. */
@@ -262,6 +267,9 @@ class AgentManager {
 	private autoResumeTimer: NodeJS.Timeout | undefined;
 	/** Last chat session our tools were invoked from (≈ the focused chat). */
 	private lastActiveSession: string | undefined;
+	/** Main-chat turn the start counter belongs to. */
+	private startsTurn = -1;
+	private startsInTurn = 0;
 
 	/** Record the chat session a main-chat tool call came from. */
 	noteActiveSession(session: string | undefined): void {
@@ -351,6 +359,20 @@ class AgentManager {
 				return `Error: nesting limit reached (customcopilot.subagent.maxDepth = ${maxDepth}). Do the work yourself.`;
 			}
 		}
+		if (caller === MAIN_AGENT) {
+			// Runaway guard: a model that keeps spawning agents within one turn
+			// (e.g. re-delegating after every agent update) is stopped here.
+			const turn = currentMainTurn();
+			if (turn !== this.startsTurn) {
+				this.startsTurn = turn;
+				this.startsInTurn = 0;
+			}
+			const maxPerTurn = Math.max(1, setting("maxStartsPerTurn", 6));
+			if (this.startsInTurn >= maxPerTurn) {
+				return `Error: ${maxPerTurn} agents were already started in this turn (customcopilot.subagent.maxStartsPerTurn). Do the remaining work yourself or wait for the running agents (customcopilot_waitForAgents).`;
+			}
+			this.startsInTurn++;
+		}
 		const defaultSteps = Math.max(1, setting("maxSteps", 15));
 		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? defaultSteps)));
 		// A read-only parent can never grant write tools to its children.
@@ -374,6 +396,11 @@ class AgentManager {
 		});
 		if (typeof started === "string") {
 			return `${started}\n\n${this.describe(caller)}`;
+		}
+		if (caller === MAIN_AGENT && isAutoResumeTurn()) {
+			started.noAutoResume = true;
+		} else if (parentRecord?.noAutoResume) {
+			started.noAutoResume = true;
 		}
 		if (!background) {
 			const done = await this.waitFor(started.id, ctx.token);
@@ -624,7 +651,15 @@ class AgentManager {
 			if (from === MAIN_AGENT) {
 				return "Error: cannot message yourself.";
 			}
-			this.notify({ kind: "message", agentId: from, agentName: fromName, text: body, at: Date.now(), session: fromRecord?.session });
+			this.notify({
+				kind: "message",
+				agentId: from,
+				agentName: fromName,
+				text: body,
+				at: Date.now(),
+				session: fromRecord?.session,
+				quiet: fromRecord?.noAutoResume === true,
+			});
 			return "Message delivered to the main agent.";
 		}
 		const recipients =
@@ -774,7 +809,7 @@ class AgentManager {
 			text,
 			at: Date.now(),
 			session: r.session,
-			quiet: r.stoppedByUser === true,
+			quiet: r.stoppedByUser === true || r.noAutoResume === true,
 		});
 	}
 
@@ -878,7 +913,7 @@ class AgentManager {
 				.replace(
 					"{SPAWN}",
 					canSpawn
-						? "You may start your own sub-agents with `customcopilot_delegateTask` for independent parts of your task (they run on your model; their reports arrive in your inbox) and stop them with `customcopilot_stopAgent`."
+						? "You may start your own sub-agents with `customcopilot_delegateTask`, but ONLY for large, independent parts of your task that can run in parallel (they run on your model; their reports arrive in your inbox) — never for trivial lookups, tests, or to acknowledge a message; do small things yourself. Stop them with `customcopilot_stopAgent`."
 						: "You cannot start further sub-agents (nesting limit)."
 				)}`,
 			`# Task\n${r.task}`,
@@ -1359,7 +1394,7 @@ export function formatNotifications(items: AgentNotification[], maxReportChars: 
 			: `### Message from agent ${n.agentId} "${n.agentName}"\n${n.text}`
 	);
 	const header = forChat
-		? `🤖 Background agent update (${items.length}). Continue the task using the results below; reply to agents with #agentMessage if needed.`
+		? `${AUTO_RESUME_HEADER} (${items.length}). These are reports of background agents YOU started earlier in this chat — continue the user's original task using them. Do not start new agents just to acknowledge or test this update.`
 		: `${items.length} notification(s):`;
 	return `${header}\n\n${blocks.join("\n\n")}`;
 }

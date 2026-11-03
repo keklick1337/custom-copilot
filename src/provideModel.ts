@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { CancellationToken, LanguageModelChatInformation } from "vscode";
 
 import type { CustomApiMode, CustomModelItem, OpenAIModelsResponse } from "./types";
-import { normalizeUserModels, resolveThinkingEnabled } from "./utils";
+import { getUserModels, resolveThinkingEnabled } from "./utils";
 import { VersionManager } from "./versionManager";
 import { fetchGeminiModels } from "./gemini/geminiModels";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
@@ -57,8 +57,7 @@ export async function prepareLanguageModelChatInformation(
 	_secrets: vscode.SecretStorage
 ): Promise<LanguageModelChatInformation[]> {
 	// Check for user-configured models first
-	const config = vscode.workspace.getConfiguration();
-	const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
+	const userModels = getUserModels();
 
 	// When this provider instance is bound to a specific vendor (apiMode), only
 	// surface models for that protocol so each vendor renders as its own group in

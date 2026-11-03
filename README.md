@@ -298,6 +298,12 @@ usage and rounds, plus inline **Stop / Resume / Details** buttons. A status-bar 
 agents and unread reports; **hover it** for the same tree with **Stop / Resume / Details** links, or
 click it / run **Show Background Agents**. Limits: `customcopilot.subagent.maxSteps` rounds per agent, `customcopilot.subagent.maxConcurrent`
 agents at once. `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
+**Loop protection.** The main chat can start at most `customcopilot.subagent.maxStartsPerTurn`
+agents per turn (default 6), and agents started in a turn that an auto-posted report triggered
+never auto-post again (their reports stay readable with `#waitAgents`) — so a model can't fall into
+an *agent → report → new agent* loop. The tool descriptions tell the model when **not** to delegate
+(trivial lookups, tests of the tool, reacting to an agent update).
+
 Agents live in memory: reloading the window stops them.
 
 ### 🟦 Z.AI / GLM extras

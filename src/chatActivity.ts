@@ -113,3 +113,34 @@ export function noteMainResponse(calledTools: boolean): void {
 	lastMainResponseCalledTools = calledTools;
 	lastMainActivity = Date.now();
 }
+
+// ---------------------------------------------------------------------------
+// Main-chat turn identity (spawn limits / auto-resume loop guard).
+// ---------------------------------------------------------------------------
+
+let mainTurnKey = "";
+let mainTurnIsAutoResume = false;
+let mainTurnSeq = 0;
+
+/**
+ * Record the user message of the current main-chat turn (called for every
+ * agent-loop request; the same message across rounds = the same turn).
+ */
+export function noteMainTurn(userText: string, isAutoResume: boolean): void {
+	const key = `${userText.length}:${userText.slice(0, 200)}:${userText.slice(-200)}`;
+	if (key !== mainTurnKey) {
+		mainTurnKey = key;
+		mainTurnSeq++;
+	}
+	mainTurnIsAutoResume = isAutoResume;
+}
+
+/** Monotonic id of the current main-chat turn. */
+export function currentMainTurn(): number {
+	return mainTurnSeq;
+}
+
+/** True when the current main turn was started by an auto-resume message. */
+export function isAutoResumeTurn(): boolean {
+	return mainTurnIsAutoResume;
+}

@@ -2,7 +2,7 @@ import type { MessageConversionConfig } from "./commonApi";
 import * as vscode from "vscode";
 import { LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelChatTool } from "vscode";
 import { countMessageTokens, countToolTokens } from "./provideToken";
-import { normalizeUserModels, resolveUserModelById, resolveProxyUrl } from "./utils";
+import { getUserModels, resolveUserModelById, resolveProxyUrl } from "./utils";
 import { maskProxyCredentials } from "./network";
 import type { CustomApiMode, CustomModelItem } from "./types";
 
@@ -160,7 +160,7 @@ export async function updateContextStatusBar(
 	// Resolve proxy synchronously so it's available immediately too.
 	const config = vscode.workspace.getConfiguration();
 	const globalProxyUrl = config.get<string>("customcopilot.proxyUrl", "").trim();
-	const userModels = normalizeUserModels(config.get<unknown>("customcopilot.models", []));
+	const userModels = getUserModels();
 	// Resolve the exact config entry behind this (possibly prefixed) id via
 	// the shared resolver (single source of truth with provider.ts).
 	const um: CustomModelItem | undefined = resolveUserModelById(model.id, userModels, vendorApiMode);
