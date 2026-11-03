@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.1",
+	"version": "1.2.6",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -250,6 +250,12 @@
 				"title": "Resume Background Agent",
 				"category": "Copilot Custom Models Endpoint",
 				"icon": "$(debug-restart)"
+			},
+			{
+				"command": "customcopilot.showAgentMap",
+				"title": "Show Agent Map",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(type-hierarchy)"
 			}
 		],
 		"menus": {
@@ -305,6 +311,11 @@
 				}
 			],
 			"view/title": [
+				{
+					"command": "customcopilot.showAgentMap",
+					"when": "view == customcopilot.agentsView",
+					"group": "navigation"
+				},
 				{
 					"command": "customcopilot.stopAllAgents",
 					"when": "view == customcopilot.agentsView",
@@ -818,10 +829,35 @@
 					"maximum": 0.95,
 					"markdownDescription": "Auto-compact a subagent's context when it reaches this share of the model's input window (`0.8` = 80%): the same model summarizes the work so far and the history is replaced by the task + summary. A context-overflow error also triggers one compaction and a retry."
 				},
+				"customcopilot.subagent.autoApproveCommands": {
+					"type": "string",
+					"default": "autopilot",
+					"enum": [
+						"autopilot",
+						"always",
+						"never"
+					],
+					"enumDescriptions": [
+						"Ask, except when the main chat runs in Autopilot or VS Code's global tool auto-approve (`chat.tools.global.autoApprove`) is on.",
+						"Never ask — agents run shell commands without confirmation.",
+						"Always ask (even in Autopilot)."
+					],
+					"markdownDescription": "Whether shell commands of write-enabled background agents need your approval. The approval is a non-modal notification; the agent waits until you answer."
+				},
+				"customcopilot.subagent.commandsInTerminal": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Run agents' shell commands in a visible VS Code terminal per agent (\"Agent a7 …\", via shell integration) so you can watch them. Falls back to a hidden process when shell integration is unavailable."
+				},
 				"customcopilot.subagent.autoResume": {
 					"type": "boolean",
 					"default": true,
-					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead. Agents started in a turn that was itself triggered by such a post never auto-post again (their reports stay readable via `waitForAgents`), so agents → report → agents loops cannot form."
+					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead. After 3 consecutive turns started by such posts (no user message in between), newly started agents no longer auto-post (their reports stay readable via `wait`), so agents → report → agents loops cannot run forever. If you pressed **Stop** in the chat, reports are not posted automatically (VS Code would ask about your queued messages) — a notification offers to post them instead."
+				},
+				"customcopilot.subagent.pauseChat": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Pause the main chat while the background agents it started are working: in the turn that started them, calls that only wait for / poll the agents (`wait`/`status`, `sleep` commands, todo updates) are not executed — the turn ends with a *Chat paused* note instead, and every agent report is posted into the chat as a new message that continues the work. Real work and starting more agents still go through. Needs `#customcopilot.subagent.autoResume#`. Disable to let the main agent block in `wait`."
 				},
 				"customcopilot.subagent.autoResumeIdleMs": {
 					"type": "number",
@@ -896,25 +932,56 @@
 			{
 				"name": "customcopilot_delegateTask",
 				"toolReferenceName": "delegate",
-				"displayName": "Run Subagent",
+				"displayName": "Run / Manage Subagents",
 				"icon": "$(organization)",
-				"modelDescription": "Start a SUBAGENT: an independent agent loop that runs on the same model as this chat, in a FRESH context (it cannot see this conversation), with its own tools, and returns ONE final report.\n\nWHEN TO USE — only for substantial, self-contained work that would otherwise flood your context or that can run in parallel:\n- broad codebase exploration (\"find every place X is configured and how it is wired\");\n- multi-file research or reading long logs/docs/specs and summarizing them;\n- comparing implementations, reviewing a diff, auditing a module;\n- independent implementation chunks (with allowWrite) while you work on something else.\n\nWHEN NOT TO USE:\n- trivial work: a single file read, one search, a one-line answer — do it yourself;\n- tests or demos of this tool (never start an agent just to see that it works, e.g. 'reply ok');\n- acknowledging, verifying or reacting to a background-agent report or update message — read it and continue the user's task yourself;\n- anything that needs the user's input or a decision;\n- duplicating work an agent is already doing (check customcopilot_listAgents first).\n\nHOW IT RUNS: by default in the BACKGROUND — this call returns immediately with the agent id; keep working in parallel (several independent agents may run at once). Its report is delivered automatically: customcopilot_waitForAgents returns it (call it when you have nothing else to do — it wakes you as soon as an agent finishes); if your turn has ended first, the report is posted into this chat. Use background=false only when you cannot do anything else until the report arrives.\n\nWRITING `task`: make it self-contained — goal, exact paths/symbols, constraints, what you already know, what NOT to do. Put the required report format in `expectedOutput` (e.g. 'bullet list of file:line + one-line explanation'). Give a short `name` to address the agent later.\n\nTools: read-only workspace tools by default; allowWrite=true adds file edit/create and confirmed shell commands (the user confirms the start). Agents can message you and each other (customcopilot_sendAgentMessage), list each other (customcopilot_listAgents) and start their own sub-agents for independent parts. Limits: customcopilot.subagent.maxConcurrent running, maxStartsPerTurn per turn.",
+				"modelDescription": "Start and manage SUBAGENTS — independent agent loops on the same model as this chat, each in a FRESH context (they cannot see this conversation), with their own tools and their own terminal; each returns ONE final report.\n\n`action` selects the operation (this one tool does everything — you never need any other agent tool). Shortcut: {\"task\": \"wait\"} or {\"task\": \"status\"} without `action` work too:\n- \"start\" (default): start an agent. Requires `task` (self-contained: goal, exact paths/symbols, constraints, what is known, what NOT to do), `name` (3-7 word title) and `expectedOutput` (report format). Runs in the BACKGROUND and returns immediately with the agent id.\n- \"wait\": return pending reports. While the chat is paused for its agents (the default) it does NOT block — end your turn instead; for agents that do not post to the chat it BLOCKS until one finishes or messages you. Never poll with no-op commands or placeholder agents. `ids` limits it to specific agents; `timeoutSeconds` (default 600; 0 = just read what is ready).\n- \"status\": list agents as a tree (status, activity, context, rounds); with `id` the full details and report of one agent.\n- \"message\": send `message` to the running agent `id` (read at its next round) — steer it, answer its question.\n- \"stop\": stop agent `id` (or \"all\") with its sub-agents.\n- \"resume\": continue a finished/stopped agent `id` with a follow-up `message`; it keeps its full previous context.\n\nWHEN TO START AGENTS: substantial, self-contained work that would flood your context or can run in parallel — broad codebase exploration, multi-file research, reading long logs/docs, reviewing/auditing, independent implementation chunks (allowWrite=true).\nNEVER start an agent for: trivial work (one read/search/answer — do it yourself), tests or demos of this tool, placeholders, acknowledging or reacting to an agent report, waiting (use action \"wait\"), work needing the user's input, or work an agent already does (check action \"status\").\n\nWHILE AGENTS RUN the chat PAUSES: start all agents you need, then END YOUR TURN with a short status message to the user — waiting, polling, sleep and todo updates are not executed in that turn. Each report is posted into this chat as a message when its agent finishes and you continue the user's task then (this is the normal flow). Never poll with shell commands, sleep, todo updates or placeholder calls. Agents get read-only workspace tools plus a terminal; allowWrite=true adds file edit/create (the user confirms the start). Limits: customcopilot.subagent.maxConcurrent running, maxStartsPerTurn per turn.",
 				"userDescription": "Run a self-contained sub-task in a background agent on the same model; its report comes back when it finishes.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
 					"type": "object",
 					"properties": {
+						"action": {
+							"type": "string",
+							"enum": [
+								"start",
+								"wait",
+								"status",
+								"message",
+								"stop",
+								"resume"
+							],
+							"description": "Operation (default \"start\"). Use \"wait\" to wait for running agents' reports."
+						},
 						"task": {
 							"type": "string",
 							"description": "Self-contained task: the goal, exact paths/symbols, constraints, what is already known and what must NOT be done. The agent cannot see this conversation."
 						},
 						"name": {
 							"type": "string",
-							"description": "Short unique label (e.g. 'auth-research') used to address the agent in messages, waits and stops."
+							"description": "Short descriptive title of the sub-task, 3-7 words (e.g. 'Map auth token refresh flow'). Shown in the agent map and used to address the agent."
 						},
 						"expectedOutput": {
 							"type": "string",
 							"description": "Exact content/format of the final report (e.g. 'bullet list of file:line with a one-line explanation each', 'unified diff summary', 'yes/no + evidence')."
+						},
+						"id": {
+							"type": "string",
+							"description": "Agent id or name (for status details, message, stop, resume; \"all\" for stop)."
+						},
+						"ids": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"description": "Agents to wait for (action \"wait\"); default: any."
+						},
+						"message": {
+							"type": "string",
+							"description": "Text for action \"message\" or the follow-up instruction for \"resume\"."
+						},
+						"timeoutSeconds": {
+							"type": "number",
+							"description": "Max wait for action \"wait\" (default 600, max 3600; 0 = only read pending reports)."
 						},
 						"background": {
 							"type": "boolean",
@@ -933,9 +1000,7 @@
 							"description": "Max tool-calling rounds (default customcopilot.subagent.maxSteps, cap 60)."
 						}
 					},
-					"required": [
-						"task"
-					]
+					"required": []
 				}
 			},
 			{
@@ -987,7 +1052,7 @@
 				"toolReferenceName": "waitAgents",
 				"displayName": "Wait for Background Agents",
 				"icon": "$(watch)",
-				"modelDescription": "Block until a background agent finishes or sends you a message, then return ALL pending agent reports/messages for this chat plus the agent list. Wakes up immediately when something arrives. Use it when you have nothing else useful to do while agents run, instead of polling customcopilot_listAgents. `ids`: wait until all of these agents have finished (a message also wakes you). `timeoutSeconds`: maximum wait (default 600, max 3600); 0 = only read pending notifications without waiting. After it returns, continue the user's task with the reports — do not start new agents merely to confirm them.",
+				"modelDescription": "Block until a background agent finishes or sends you a message, then return ALL pending agent reports/messages for this chat plus the agent list. Wakes up immediately when something arrives. Use it when you have nothing else useful to do while agents run, instead of polling customcopilot_listAgents. `ids`: wait until all of these agents have finished (a message also wakes you). `timeoutSeconds`: maximum wait (default 600, max 3600); 0 = only read pending notifications without waiting. After it returns, continue the user's task with the reports — do not start new agents merely to confirm them. If you have nothing else to do while agents run, you may instead simply end your turn: reports are posted into the chat automatically.",
 				"userDescription": "Wait for background agents' reports.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {

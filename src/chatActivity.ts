@@ -119,20 +119,25 @@ export function noteMainResponse(calledTools: boolean): void {
 // ---------------------------------------------------------------------------
 
 let mainTurnKey = "";
-let mainTurnIsAutoResume = false;
+let mainTurnIsAutopilot = false;
+let mainTurnText = "";
 let mainTurnSeq = 0;
 
 /**
  * Record the user message of the current main-chat turn (called for every
  * agent-loop request; the same message across rounds = the same turn).
  */
-export function noteMainTurn(userText: string, isAutoResume: boolean): void {
+export function noteMainTurn(userText: string, isAutoResume: boolean, isAutopilot = false): void {
+	mainTurnIsAutopilot = isAutopilot;
+	if (!isAutoResume) {
+		mainTurnText = userText;
+	}
 	const key = `${userText.length}:${userText.slice(0, 200)}:${userText.slice(-200)}`;
 	if (key !== mainTurnKey) {
 		mainTurnKey = key;
 		mainTurnSeq++;
+		autoResumeChain = isAutoResume ? autoResumeChain + 1 : 0;
 	}
-	mainTurnIsAutoResume = isAutoResume;
 }
 
 /** Monotonic id of the current main-chat turn. */
@@ -140,7 +145,51 @@ export function currentMainTurn(): number {
 	return mainTurnSeq;
 }
 
-/** True when the current main turn was started by an auto-resume message. */
-export function isAutoResumeTurn(): boolean {
-	return mainTurnIsAutoResume;
+let autoResumeChain = 0;
+
+/**
+ * How many consecutive main turns (this one included) were started by
+ * auto-posted agent reports, with no user message in between.
+ */
+export function autoResumeDepth(): number {
+	return autoResumeChain;
+}
+
+
+/**
+ * True when the main chat runs in Autopilot: Copilot offers the
+ * `task_complete` tool ONLY at the "autopilot" permission level.
+ */
+export function isAutopilotTurn(): boolean {
+	return mainTurnIsAutopilot;
+}
+
+/**
+ * Short title of the current main-chat turn: the user's request (Copilot
+ * wraps it in <userRequest> along with context) — first line, ≤ 60 chars.
+ */
+export function currentTurnTitle(): string {
+	const m =
+		/<userRequest>\s*([\s\S]*?)\s*<\/userRequest>/i.exec(mainTurnText) ??
+		/<user_query>\s*([\s\S]*?)\s*<\/user_query>/i.exec(mainTurnText);
+	const raw = (m ? m[1] : mainTurnText).replace(/<[^>]+>/g, " ").trim();
+	const line = raw.split(/\r?\n/).find((l) => l.trim()) ?? "";
+	const t = line.trim().replace(/\s+/g, " ");
+	return t.length > 60 ? `${t.slice(0, 57)}…` : t || "Chat";
+}
+
+let mainTurnCancelled = false;
+
+/**
+ * Record that a main-chat agent-loop request was cancelled by the user
+ * (Stop). VS Code then pauses its request queue: posting a report into the
+ * chat would raise the "You already have pending requests" dialog, so
+ * auto-resume falls back to a notification until the user chats again.
+ */
+export function noteMainCancelled(cancelled: boolean): void {
+	mainTurnCancelled = cancelled;
+}
+
+export function wasMainTurnCancelled(): boolean {
+	return mainTurnCancelled;
 }

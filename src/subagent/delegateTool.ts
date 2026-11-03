@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { beginMainActivity, endMainActivity } from "../chatActivity";
-import { MAIN_AGENT, agentManager, contextLabel, formatNotifications, type DelegateTaskInput } from "./agentManager";
+import { beginMainActivity, currentTurnTitle, endMainActivity } from "../chatActivity";
+import { AgentDetailsPanel } from "./agentMap";
+import { MAIN_AGENT, agentManager, contextLabel, formatNotifications, resolveAgentAction, type DelegateTaskInput } from "./agentManager";
 
 /**
  * Subagent language-model tools (see `agentManager.ts`):
@@ -47,6 +48,18 @@ export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskIn
 	async prepareInvocation(
 		options: vscode.LanguageModelToolInvocationPrepareOptions<DelegateTaskInput>
 	): Promise<vscode.PreparedToolInvocation> {
+		const action = resolveAgentAction(options.input, agentManager.runningCount() > 0 || agentManager.unreadNotifications() > 0);
+		if (action !== "start") {
+			const target = options.input.id ? ` ${options.input.id}` : "";
+			const msg: Record<string, string> = {
+				wait: "Waiting for background agents…",
+				status: "Checking background agents",
+				message: `Message to agent${target}`,
+				stop: `Stopping agent${target}`,
+				resume: `Resuming agent${target}`,
+			};
+			return { invocationMessage: msg[action] ?? `Agents: ${action}` };
+		}
 		const task = (options.input.task ?? "").trim();
 		const label = (options.input.name ?? "").trim();
 		const short = task.length > 120 ? `${task.slice(0, 117)}…` : task;
@@ -73,8 +86,10 @@ export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskIn
 		return asMainActivity(async () => {
 			const session = chatSession(options);
 			agentManager.noteActiveSession(session);
+			const chatModel = mainChatModel(options);
+			agentManager.noteSession(session, currentTurnTitle(), chatModel?.name);
 			return text(
-				await agentManager.delegate(MAIN_AGENT, options.input, mainChatModel(options), {
+				await agentManager.control(MAIN_AGENT, options.input, chatModel, {
 					toolInvocationToken: options.toolInvocationToken,
 					session,
 					token,
@@ -259,8 +274,7 @@ export async function showAgentsQuickPick(): Promise<void> {
 	} else if (action === "Stop agent") {
 		agentManager.stop(picked.id, true);
 	} else if (action === "Show details") {
-		const doc = await vscode.workspace.openTextDocument({ content: agentManager.details(picked.id) ?? "", language: "markdown" });
-		await vscode.window.showTextDocument(doc, { preview: true });
+		AgentDetailsPanel.show(picked.id);
 	}
 }
 
@@ -273,6 +287,7 @@ export function agentsTooltip(): vscode.MarkdownString {
 			"customcopilot.resumeAgentById",
 			"customcopilot.showAgentDetails",
 			"customcopilot.stopAllAgents",
+			"customcopilot.showAgentMap",
 		],
 	};
 	md.supportThemeIcons = true;
@@ -295,20 +310,15 @@ export function agentsTooltip(): vscode.MarkdownString {
 	if (unread) {
 		md.appendMarkdown(`_${unread} unread report(s)/message(s) for the main agent_\n\n`);
 	}
+	md.appendMarkdown(`[$(type-hierarchy) Open agent map](command:customcopilot.showAgentMap)`);
 	if (agentManager.runningCount() > 1) {
-		md.appendMarkdown(`[$(debug-stop) Stop all](command:customcopilot.stopAllAgents)`);
+		md.appendMarkdown(` · [$(debug-stop) Stop all](command:customcopilot.stopAllAgents)`);
 	}
 	return md;
 }
 
-/** Open an agent's details (task, status, report) in a read-only document. */
+/** Open an agent's details tab (status, metrics, task, report, work log). */
 export async function showAgentDetails(id: string): Promise<void> {
-	const details = agentManager.details(id);
-	if (!details) {
-		vscode.window.showWarningMessage(`No agent "${id}".`);
-		return;
-	}
-	const doc = await vscode.workspace.openTextDocument({ content: details, language: "markdown" });
-	await vscode.window.showTextDocument(doc, { preview: true });
+	AgentDetailsPanel.show(id);
 }
 

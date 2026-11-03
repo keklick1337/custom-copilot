@@ -168,7 +168,9 @@ export function pickTools(allowWrite: boolean, canSpawn: boolean): vscode.Langua
 					(t.name === AGENT_TOOL_NAMES.run || t.name === AGENT_TOOL_NAMES.stop || t.name === AGENT_TOOL_NAMES.resume))
 		)
 		.map(toChatTool);
-	return [...workspace, ...coordination, ...(allowWrite ? AGENT_WRITE_TOOLS : [])];
+	// Every agent gets its own terminal (run command); file edit/create only with allowWrite.
+	const ownTools = AGENT_WRITE_TOOLS.filter((t) => allowWrite || t.name === AGENT_TOOL_NAMES.runCommand);
+	return [...workspace, ...coordination, ...ownTools];
 }
 
 export async function selectModel(

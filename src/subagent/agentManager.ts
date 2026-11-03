@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import { logger } from "../logger";
-import { currentMainTurn, isAutoResumeTurn, isMainChatIdle } from "../chatActivity";
+import { autoResumeDepth, currentMainTurn, isAutopilotTurn, isMainChatIdle, noteMainCancelled, wasMainTurnCancelled } from "../chatActivity";
 import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER } from "./agentNames";
 import { HARD_MAX_STEPS, pickTools, selectModel } from "./agentSetup";
-import { agentCreateFile, agentEditFile, agentRunCommand } from "./agentWriteTools";
+import { agentCreateFile, agentEditFile, agentRunCommand, disposeAgentTerminal } from "./agentWriteTools";
 
 /**
  * Background subagents (Claude Code style).
@@ -48,6 +48,26 @@ export interface AgentMessage {
 	at: number;
 }
 
+/** One entry of an agent's work log (shown in the agent map). */
+export interface TranscriptEntry {
+	kind: "task" | "thinking" | "text" | "tool" | "result" | "inbox" | "compact" | "report" | "error" | "resume";
+	text: string;
+	/** Tool name for "tool" / "result". */
+	tool?: string;
+	at: number;
+}
+
+/** Main chat (root of an agent tree) as known from tool calls / requests. */
+export interface SessionInfo {
+	session: string;
+	title: string;
+	modelName?: string;
+	contextTokens?: number;
+}
+
+const MAX_TRANSCRIPT_ENTRIES = 600;
+const MAX_TRANSCRIPT_TEXT = 6000;
+
 export interface AgentNotification {
 	kind: "finished" | "message";
 	agentId: string;
@@ -58,6 +78,8 @@ export interface AgentNotification {
 	session?: string;
 	/** Never auto-resume the chat for it (user stopped the agent). */
 	quiet?: boolean;
+	/** How many main-chat requests already carried a notice about it. */
+	noticed?: number;
 }
 
 export interface AgentRecord {
@@ -94,6 +116,12 @@ export interface AgentRecord {
 	 * never auto-resumes the chat again (prevents agent → report → agent loops).
 	 */
 	noAutoResume?: boolean;
+	/** Shell commands run without asking (Autopilot / global auto-approve / setting). */
+	autoApprove?: boolean;
+	/** Tokens processed across all model requests (prompt + completion). */
+	totalTokens: number;
+	/** Readable log of the agent's work (for the agent map). */
+	transcript: TranscriptEntry[];
 	/** Current context size in tokens (provider usage, else an estimate). */
 	contextTokens: number;
 	/** The model's input window. */
@@ -158,6 +186,20 @@ function assistantMessage(turn: AgentTurn, fallbackText?: string): vscode.Langua
 
 /** Input of the `delegateTask` tool (main chat and agents). */
 export interface DelegateTaskInput {
+	/**
+	 * What to do (default "start"). One tool carries every agent operation:
+	 * Copilot may hide our separate agent tools behind tool groups/search,
+	 * but a model that can start agents can always wait for them.
+	 */
+	action?: "start" | "wait" | "status" | "message" | "stop" | "resume";
+	/** Agent id/name for message / stop / resume / status details. */
+	id?: string;
+	/** Agents to wait for (action "wait"). */
+	ids?: string[];
+	/** Text for message / resume. */
+	message?: string;
+	/** Max wait for action "wait" (default 600, max 3600; 0 = just read). */
+	timeoutSeconds?: number;
 	task: string;
 	name?: string;
 	background?: boolean;
@@ -251,8 +293,128 @@ function isContextOverflow(err: unknown): boolean {
 const COMPACT_PROMPT =
 	"Your context window is nearly full. Write a compact but complete summary of your work so far that lets you continue without the earlier conversation: the task and constraints, every concrete finding (exact file paths, line numbers, symbols, values), what you already changed, open questions, and your remaining plan. Do not call tools. Output only the summary.";
 
+/**
+ * Whether agents started now may run shell commands without asking: the main
+ * chat is in Autopilot, VS Code's global tool auto-approve is on, or the
+ * user set `customcopilot.subagent.autoApproveCommands` to "always".
+ */
+function mainAutoApprove(): boolean {
+	const mode = setting<string>("autoApproveCommands", "autopilot");
+	if (mode === "always") {
+		return true;
+	}
+	if (mode === "never") {
+		return false;
+	}
+	const globalAuto = vscode.workspace.getConfiguration().get<boolean>("chat.tools.global.autoApprove", false) === true;
+	return isAutopilotTurn() || globalAuto;
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A short title for an agent whose caller gave no `name`: the gist of the
+ * task, skipping boilerplate preambles ("Repo /path. Read AGENTS.md first.
+ * Do NOT commit…") and preferring the text after a "Task:" marker.
+ */
+export function autoTitle(task: string): string {
+	let text = String(task ?? "").replace(/\r/g, "");
+	const marker = /(?:^|\n)\s*(?:#+\s*)?(?:task|goal|objective|задача)\s*:\s*/i.exec(text);
+	if (marker) {
+		text = text.slice(marker.index + marker[0].length);
+	}
+	const boiler = /^(repo|repository|workspace|project|cwd|context|note|read |do not|don't|never|you are|you're|important|strict|scope|rules?)\b/i;
+	const sentences = text
+		.split(/\n+|(?<=[.!?])\s+/)
+		.map((t) => t.trim().replace(/^[-*•\d.)\s]+/, ""))
+		.filter((t) => t.length > 3 && !boiler.test(t));
+	let title = (sentences[0] ?? text.trim())
+		.replace(/`|\*\*/g, "")
+		.replace(/\s+/g, " ")
+		.replace(/[.:;,]+$/, "");
+	title = title.replace(/^(please\s+)?(task\s*:\s*)?/i, "");
+	if (title.length > 60) {
+		const cut = title.slice(0, 60);
+		title = `${cut.slice(0, Math.max(30, cut.lastIndexOf(" ")))}…`;
+	}
+	return title ? title[0].toUpperCase() + title.slice(1) : "";
+}
+
+/** One-word "tasks" models send instead of setting `action`. */
+const WAIT_WORDS = /^(wait|waiting|await|drain|poll|join|collect|check|results?|reports?|get[ _-]?reports?|read[ _-]?reports?|sync|block)$/i;
+const STATUS_WORDS = /^(status|list|agents|progress|ls|show)$/i;
+const JUNK_TASK = /^(placeholder|test|testing|probe|ping|hello|hi|ok|noop|no-op|dummy|example|todo|tbd|x+|\.+|-+|_+|none|null|empty)$/i;
+
+/**
+ * The operation a `delegateTask` call means. Weaker models often ignore the
+ * `action` field and express it through `task` instead ("wait", "drain",
+ * "status") or send a placeholder task while agents are running — they want
+ * to wait. Inferring that beats rejecting (which made them loop).
+ */
+export function resolveAgentAction(
+	input: { action?: string; task?: string; expectedOutput?: string },
+	agentsActive: boolean
+): string {
+	const explicit = String(input.action ?? "").trim().toLowerCase();
+	if (explicit && explicit !== "start") {
+		return explicit;
+	}
+	const task = String(input.task ?? "").trim();
+	if (!task) {
+		return explicit === "start" ? "start" : agentsActive ? "wait" : "start";
+	}
+	if (WAIT_WORDS.test(task)) {
+		return "wait";
+	}
+	if (STATUS_WORDS.test(task)) {
+		return "status";
+	}
+	if (JUNK_TASK.test(task) && agentsActive) {
+		return "wait";
+	}
+	return "start";
+}
+
+/** Consecutive report-started main turns that may still start auto-posting agents. */
+const MAX_AUTO_RESUME_CHAIN = 3;
+
+/** Shell commands that only pass time (busy-waiting for agents). */
+const IDLE_COMMAND = /^\s*(sleep|timeout|wait|start-sleep|ping\s+-[nc]\s*\d+|read\s+-t|true|echo\b[^|;&]*)(\s|$)[^|;&]*$/i;
+
+/**
+ * True for a main-chat tool call that only waits on / polls background
+ * agents (or burns time) — dropped while the chat is paused for them.
+ * Starting more agents, messaging/stopping them and real work are kept.
+ */
+export function isIdleMainCall(name: string, input: unknown): boolean {
+	const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+	switch (name) {
+		case AGENT_TOOL_NAMES.list:
+		case AGENT_TOOL_NAMES.wait:
+		case "manage_todo_list":
+			return true;
+		case AGENT_TOOL_NAMES.run: {
+			const action = resolveAgentAction(args as { action?: string; task?: string }, true);
+			return action === "wait" || action === "status" || action === "list";
+		}
+		case "run_in_terminal":
+		case "copilot_runInTerminal":
+			return IDLE_COMMAND.test(String(args.command ?? ""));
+		default:
+			return false;
+	}
+}
+
+/** Text that ends a paused main-chat turn. */
+export function pauseNotice(agents: { id: string; name: string }[]): string {
+	const names = agents.map((a) => `«${a.name}» (${a.id})`).join(", ");
+	return (
+		`⏸ **Chat paused** — ${agents.length} background agent${agents.length > 1 ? "s are" : " is"} working: ${names}. ` +
+		"Each report will be posted into this chat when its agent finishes, and the work continues from there. " +
+		"Track them in the agent map (status bar → Agents)."
+	);
 }
 
 class AgentManager {
@@ -270,6 +432,74 @@ class AgentManager {
 	/** Main-chat turn the start counter belongs to. */
 	private startsTurn = -1;
 	private startsInTurn = 0;
+	/** Main-chat turn that started background agents (it is paused after them). */
+	private pauseTurn = -1;
+
+	/** Pausing the main chat while its agents work is enabled. */
+	pauseEnabled(): boolean {
+		// Pausing only makes sense when reports are posted back to the chat.
+		return setting("pauseChat", true) && setting("autoResume", true);
+	}
+
+	/**
+	 * Agents the main chat should pause for in `turn`: running top-level
+	 * agents when that turn started background work (pause enabled).
+	 */
+	/** A new user turn started: an earlier pause no longer applies. */
+	clearPause(): void {
+		this.pauseTurn = -1;
+	}
+
+	pauseFor(turn: number): AgentRecord[] {
+		if (!this.pauseEnabled() || turn !== this.pauseTurn) {
+			return [];
+		}
+		return this.list().filter((a) => a.status === "running" && a.parentId === MAIN_AGENT && !a.noAutoResume);
+	}
+
+	private readonly sessions = new Map<string, SessionInfo>();
+	private mainContext: { tokens: number; modelName: string } | undefined;
+
+	/** Append to an agent's work log (bounded). */
+	log(r: AgentRecord, entry: Omit<TranscriptEntry, "at">): void {
+		const text = entry.text.length > MAX_TRANSCRIPT_TEXT ? `${entry.text.slice(0, MAX_TRANSCRIPT_TEXT)}\n…[truncated]` : entry.text;
+		r.transcript.push({ ...entry, text, at: Date.now() });
+		if (r.transcript.length > MAX_TRANSCRIPT_ENTRIES) {
+			r.transcript.splice(1, r.transcript.length - MAX_TRANSCRIPT_ENTRIES);
+		}
+	}
+
+	/** Title + model of the chat a top-level agent was started from (agent-map root). */
+	noteSession(session: string | undefined, title: string, modelName: string | undefined): void {
+		// Unknown session (proposal unavailable) → the "" root.
+		const key = session ?? "";
+		const prev = this.sessions.get(key);
+		this.sessions.set(key, {
+			session: key,
+			title: prev?.title || title || "Chat",
+			modelName: modelName ?? prev?.modelName ?? this.mainContext?.modelName,
+			contextTokens: prev?.contextTokens ?? this.mainContext?.tokens,
+		});
+	}
+
+	/** Context size of the main chat's latest request to OUR models. */
+	noteMainContext(tokens: number, modelName: string): void {
+		this.mainContext = { tokens, modelName };
+		const s = this.sessions.get(this.lastActiveSession ?? "");
+		if (s) {
+			s.contextTokens = tokens;
+			s.modelName = modelName;
+			this.changeEmitter.fire();
+		}
+	}
+
+	sessionInfos(): SessionInfo[] {
+		return [...this.sessions.values()];
+	}
+
+	transcriptOf(idOrName: string): TranscriptEntry[] {
+		return this.find(idOrName)?.record.transcript ?? [];
+	}
 
 	/** Record the chat session a main-chat tool call came from. */
 	noteActiveSession(session: string | undefined): void {
@@ -284,14 +514,14 @@ class AgentManager {
 	start(opts: StartAgentOptions): AgentRecord | string {
 		const maxConcurrent = Math.max(1, setting("maxConcurrent", 4));
 		if (this.runningCount() >= maxConcurrent) {
-			return `Error: ${maxConcurrent} agents are already running (customcopilot.subagent.maxConcurrent). Wait for one (customcopilot_waitForAgents) or stop one.`;
+			return `Error: ${maxConcurrent} agents are already running (customcopilot.subagent.maxConcurrent). Wait for one ({"action": "wait"}) or stop one ({"action": "stop", "id": "…"}).`;
 		}
 		const parent = opts.parentId && opts.parentId !== MAIN_AGENT ? this.agents.get(opts.parentId)?.record : undefined;
 		const depth = parent ? parent.depth + 1 : 1;
 		const id = `a${this.nextId++}`;
 		const record: AgentRecord = {
 			id,
-			name: (opts.name ?? "").trim() || id,
+			name: (opts.name ?? "").trim() || autoTitle(opts.task) || id,
 			task: opts.task,
 			expectedOutput: opts.expectedOutput,
 			modelId: opts.model.id,
@@ -313,6 +543,8 @@ class AgentManager {
 			contextExact: false,
 			compactions: 0,
 			resumes: 0,
+			totalTokens: 0,
+			transcript: [],
 		};
 		const runtime: AgentRuntime = {
 			record,
@@ -339,7 +571,95 @@ class AgentManager {
 	}
 
 	/**
-	 * Shared implementation of `delegateTask` for the main chat and agents.
+	 * `delegateTask` dispatcher (main chat and agents): action start (default)
+	 * / wait / status / message / stop / resume. Returns the tool-result text.
+	 */
+	async control(
+		caller: string,
+		input: DelegateTaskInput,
+		callerModel: vscode.LanguageModelChat | undefined,
+		ctx: { toolInvocationToken: vscode.ChatParticipantToolToken | undefined; session?: string; token: vscode.CancellationToken }
+	): Promise<string> {
+		const action = resolveAgentAction(input, this.runningCount() > 0 || this.unreadNotifications(ctx.session) > 0);
+		const id = String(input.id ?? "").trim();
+		switch (action) {
+			case "start":
+				return this.delegate(caller, input, callerModel, ctx);
+			case "list":
+				return id ? this.details(id) ?? `No agent "${id}".` : this.describe(caller);
+			case "status":
+				return id ? this.details(id) ?? `No agent "${id}".` : this.describe(caller);
+			case "message":
+				return this.send(caller, id || MAIN_AGENT, String(input.message ?? ""));
+			case "stop": {
+				if (caller !== MAIN_AGENT) {
+					const target = this.find(id);
+					if (!target || !this.isDescendant(target.record, caller)) {
+						return "Error: you can only stop your own sub-agents.";
+					}
+				} else if (id.toLowerCase() === "all") {
+					this.stopAll();
+					return "Stopping all running agents.";
+				}
+				const r = this.stop(id);
+				return r ? `Stopping agent ${r.id} "${r.name}" (and its sub-agents).` : `No agent "${id}".`;
+			}
+			case "resume":
+				return this.resume(caller, id, String(input.message ?? ""), { ...ctx, background: input.background !== false });
+			case "wait":
+				return this.waitAction(caller, input, ctx);
+			default:
+				return `Error: unknown action "${action}" (use start, wait, status, message, stop or resume).`;
+		}
+	}
+
+	/** action "wait": block until reports / messages arrive, then return them. */
+	private async waitAction(
+		caller: string,
+		input: DelegateTaskInput,
+		ctx: { session?: string; token: vscode.CancellationToken }
+	): Promise<string> {
+		const ids = Array.isArray(input.ids) ? input.ids.map(String) : input.id ? [String(input.id)] : undefined;
+		const timeoutMs = Math.min(3600, Math.max(0, Number(input.timeoutSeconds ?? 600))) * 1000;
+		if (caller !== MAIN_AGENT) {
+			const runtime = this.agents.get(caller);
+			if (!runtime) {
+				return "Error: unknown caller.";
+			}
+			runtime.record.activity = "waiting for messages / sub-agents";
+			this.changeEmitter.fire();
+			await this.waitAgent(runtime, ids ?? this.list().filter((a) => a.parentId === caller).map((a) => a.id), timeoutMs);
+			const inbox = runtime.record.inbox.length ? `\n\n${this.drainInbox(runtime)}` : "\n\nNo new messages.";
+			return `${this.describe(caller)}${inbox}`;
+		}
+		const postable = this.list().filter((a) => a.status === "running" && a.parentId === MAIN_AGENT && !a.noAutoResume);
+		if (this.pauseEnabled() && timeoutMs > 0 && postable.length > 0 && this.unreadNotifications(ctx.session) === 0) {
+			// Do not hold the chat inside a tool call: the turn pauses and each
+			// report is posted into the chat when its agent finishes.
+			this.pauseTurn = currentMainTurn();
+			return (
+				"Agents are still running. The chat now PAUSES — end your turn with a one-line status for the user; " +
+				"each report will be posted into this chat as a message when its agent finishes, and you continue then.\n\n" +
+				this.describe(MAIN_AGENT)
+			);
+		}
+		await this.waitMain(ids, timeoutMs, ctx.token, ctx.session);
+		if (ctx.token.isCancellationRequested) {
+			return "Cancelled.";
+		}
+		const pending = this.drainNotifications(ctx.session);
+		const status = this.describe(MAIN_AGENT);
+		if (pending.length === 0) {
+			return (
+				`No new agent reports yet.${this.runningCount() ? " Agents are still running — if you have nothing else to do, END YOUR TURN with a short status to the user; their reports will be posted into this chat and you continue then. Do not poll." : ""}` +
+				`\n\n${status}`
+			);
+		}
+		return `${formatNotifications(pending, 60_000, false)}\n\n## Agents\n${status}`;
+	}
+
+	/**
+	 * Shared implementation of `delegateTask` start for the main chat and agents.
 	 * Returns the tool-result text.
 	 */
 	async delegate(
@@ -351,6 +671,21 @@ class AgentManager {
 		const task = (input.task ?? "").trim();
 		if (!task) {
 			return "Error: `task` is required.";
+		}
+		// Placeholder / probe tasks: models sometimes "test" the tool. Never
+		// start an agent for them (each one costs a full agent loop).
+		const words = task.split(/\s+/).filter(Boolean);
+		if (
+			task.length < 25 ||
+			words.length < 4 ||
+			/^(placeholder|test|testing|probe|ping|hello|hi|ok|noop|dummy|example|todo|tbd)\b/i.test(task) ||
+			/\breply\s+["'“]?ok["'”]?\s*(only)?\.?$/i.test(task)
+		) {
+			return (
+				"Rejected: this looks like a placeholder or a test, not a real sub-task. Do NOT call this tool to test it or as a placeholder. " +
+				"Only delegate substantial, self-contained work (several steps of research or implementation) with a detailed task description; do small things yourself and continue the user's task. " +
+				'To WAIT for running agents call this same tool with {"action": "wait"}; for their status {"action": "status"}.'
+			);
 		}
 		const parentRecord = caller !== MAIN_AGENT ? this.agents.get(caller)?.record : undefined;
 		if (caller !== MAIN_AGENT) {
@@ -369,9 +704,13 @@ class AgentManager {
 			}
 			const maxPerTurn = Math.max(1, setting("maxStartsPerTurn", 6));
 			if (this.startsInTurn >= maxPerTurn) {
-				return `Error: ${maxPerTurn} agents were already started in this turn (customcopilot.subagent.maxStartsPerTurn). Do the remaining work yourself or wait for the running agents (customcopilot_waitForAgents).`;
+				return `Error: ${maxPerTurn} agents were already started in this turn (customcopilot.subagent.maxStartsPerTurn). Do the remaining work yourself or wait for the running agents: call this tool with {"action": "wait"}.`;
 			}
 			this.startsInTurn++;
+			if (input.background !== false) {
+				// This turn launched background work: the chat pauses after it.
+				this.pauseTurn = turn;
+			}
 		}
 		const defaultSteps = Math.max(1, setting("maxSteps", 15));
 		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? defaultSteps)));
@@ -397,23 +736,39 @@ class AgentManager {
 		if (typeof started === "string") {
 			return `${started}\n\n${this.describe(caller)}`;
 		}
-		if (caller === MAIN_AGENT && isAutoResumeTurn()) {
+		if (caller === MAIN_AGENT && autoResumeDepth() >= MAX_AUTO_RESUME_CHAIN) {
+			// Report → agents → report … with no user message in between:
+			// stop the chain here (reports stay readable via "wait").
 			started.noAutoResume = true;
 		} else if (parentRecord?.noAutoResume) {
 			started.noAutoResume = true;
 		}
+		started.autoApprove = parentRecord ? parentRecord.autoApprove === true : mainAutoApprove();
 		if (!background) {
 			const done = await this.waitFor(started.id, ctx.token);
 			return `[Subagent ${started.id} "${started.name}" — ${model.name}, ${done?.status}, ${done?.steps} rounds, ${done?.toolCalls} tool calls]\n\n${done?.report ?? done?.error ?? ""}`;
 		}
-		const whereReport =
-			caller === MAIN_AGENT
-				? "customcopilot_waitForAgents returns it (use it when you have nothing else to do), and if this turn ends first it is posted to this chat"
-				: "it arrives as a message at the start of one of your next rounds (customcopilot_waitForAgents waits for it)";
+		const head = `Started background agent ${started.id} "${started.name}" on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, up to ${maxSteps} rounds).`;
+		if (caller !== MAIN_AGENT) {
+			return `${head} Its report arrives as a message at the start of one of your next rounds; {"action": "wait"} blocks until it does.`;
+		}
+		if (this.pauseEnabled() && !started.noAutoResume) {
+			return (
+				`${head}\n` +
+				"Start any other agents you need now (in this same response if possible), then END YOUR TURN with a short status for the user. " +
+				"The chat PAUSES while agents run — waiting, polling, sleep or todo updates are not executed. " +
+				"Each report is posted into this chat as a message when its agent finishes, and you continue the user's task from there. " +
+				`Steer the agent with {"action": "message", "id": "${started.id}", "message": "…"}.`
+			);
+		}
 		return (
-			`Started background agent ${started.id} "${started.name}" on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, up to ${maxSteps} rounds). ` +
-			`Keep working — do not wait idly. Its report is delivered automatically: ${whereReport}. ` +
-			`Steer it with customcopilot_sendAgentMessage (to: "${started.id}").`
+			`${head}\n` +
+			"You do NOT need to stay active while it runs. Do other useful work for the user if there is any; " +
+			"otherwise END YOUR TURN now with a short status message to the user (what is running and what happens next) — " +
+			"when the agent finishes, its report is posted into this chat automatically and you continue from there. " +
+			'Only if you need the result before you can continue this turn, call this tool with {"action": "wait"} (it blocks until a report arrives). ' +
+			"Never poll with shell commands, sleep, todo updates or placeholder calls. " +
+			`Steer the agent with {"action": "message", "id": "${started.id}", "message": "…"}.`
 		);
 	}
 
@@ -479,11 +834,15 @@ class AgentManager {
 		if (caller === MAIN_AGENT && ctx.session) {
 			r.session = ctx.session;
 		}
+		if (caller === MAIN_AGENT) {
+			r.autoApprove = mainAutoApprove();
+		}
 		runtime.messages.push(
 			vscode.LanguageModelChatMessage.User(
 				`[Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}] ${text}\n\n(Up to ${budget} more tool rounds. Finish with an updated report.)`
 			)
 		);
+		this.log(r, { kind: "resume", text: `Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}: ${text}` });
 		runtime.cts = new vscode.CancellationTokenSource();
 		runtime.toolInvocationToken = ctx.background === false ? ctx.toolInvocationToken : undefined;
 		runtime.done = this.runLoop(runtime).catch((err) => {
@@ -571,6 +930,30 @@ class AgentManager {
 
 	runningCount(): number {
 		return this.list().filter((r) => r.status === "running").length;
+	}
+
+	/**
+	 * Notifications the main chat should be NOTICED about on its next model
+	 * request: those of the chat our tools were last called from (the
+	 * provider does not know the session) plus unscoped ones, at most twice
+	 * each and not older than an hour — a notice the main agent cannot act
+	 * on (e.g. another chat's report) must never repeat forever, it makes
+	 * models probe tools in a loop. Marks the returned ones as noticed.
+	 */
+	takeNoticeCount(): number {
+		const now = Date.now();
+		// Drop stale unread notifications entirely.
+		const fresh = this.notifications.filter((n) => now - n.at < 60 * 60_000);
+		if (fresh.length !== this.notifications.length) {
+			this.notifications.splice(0, this.notifications.length, ...fresh);
+		}
+		const due = this.notifications.filter(
+			(n) => (!n.session || n.session === this.lastActiveSession) && (n.noticed ?? 0) < 2
+		);
+		for (const n of due) {
+			n.noticed = (n.noticed ?? 0) + 1;
+		}
+		return due.length;
 	}
 
 	/** Notifications visible from `session` (its own + unscoped); all when undefined. */
@@ -858,6 +1241,25 @@ class AgentManager {
 
 	/** Post pending notifications to their chat sessions as new messages. */
 	private async autoResume(): Promise<void> {
+		if (wasMainTurnCancelled()) {
+			// The user stopped the chat: its queue is paused, and posting would
+			// pop VS Code's "pending requests" dialog. Ask instead.
+			const names = this.notifications.filter((n) => !n.quiet).map((n) => `«${n.agentName}»`);
+			if (names.length === 0) {
+				return;
+			}
+			void vscode.window
+				.showInformationMessage(`Background agent ${names.join(", ")} finished.`, "Post report to chat", "Show agent map")
+				.then(async (choice) => {
+					if (choice === "Post report to chat") {
+						noteMainCancelled(false);
+						await this.autoResume();
+					} else if (choice === "Show agent map") {
+						void vscode.commands.executeCommand("customcopilot.showAgentMap");
+					}
+				});
+			return;
+		}
 		// Only sessions with at least one non-quiet notification are resumed;
 		// quiet ones (user-stopped agents) stay unread otherwise.
 		const sessions = new Set(this.notifications.filter((n) => !n.quiet).map((n) => n.session ?? ""));
@@ -918,13 +1320,14 @@ class AgentManager {
 				)}`,
 			`# Task\n${r.task}`,
 			r.expectedOutput ? `# Expected report\n${r.expectedOutput}` : "",
-			`# Limits\nAt most ${r.maxSteps} tool rounds. ${r.allowWrite ? "Write tools are available." : "Read-only: you cannot modify files."}`,
+			`# Limits\nAt most ${r.maxSteps} tool rounds. ${r.allowWrite ? "Write tools are available; shell commands run in your own terminal." : "Read-only: you cannot edit files. You have your own terminal (customcopilot_agent_runCommand) — use it only for commands that do not modify the workspace (grep, ls, builds into temp dirs, tests)."}`,
 		]
 			.filter(Boolean)
 			.join("\n\n");
 		// A resumed agent continues its kept conversation.
 		if (runtime.messages.length === 0) {
 			runtime.messages.push(vscode.LanguageModelChatMessage.User(userPrompt));
+			this.log(r, { kind: "task", text: `${r.task}${r.expectedOutput ? `\n\nExpected report: ${r.expectedOutput}` : ""}` });
 		}
 		const messages = runtime.messages;
 		let finalText = "";
@@ -960,6 +1363,7 @@ class AgentManager {
 					turn = await this.request(runtime, runtime.tools);
 				}
 				const { text, calls } = turn;
+				this.logTurn(r, turn);
 				// Stopped while the model was answering: never report it as done.
 				if (token.isCancellationRequested) {
 					throw new vscode.CancellationError();
@@ -1043,6 +1447,7 @@ class AgentManager {
 						throw err;
 					}
 					results.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(resultText)]));
+					this.log(r, { kind: "result", tool: call.name, text: resultText });
 				}
 				if (r.inbox.length > 0) {
 					results.push(new vscode.LanguageModelTextPart(this.drainInbox(runtime)));
@@ -1054,6 +1459,7 @@ class AgentManager {
 			}
 			r.report = truncate(finalText.trim() || "(the agent returned an empty report)", MAX_REPORT_CHARS, "report");
 			r.status = "done";
+			this.log(r, { kind: "report", text: r.report });
 		} catch (err) {
 			if (isCancellation(err) || token.isCancellationRequested) {
 				r.status = "stopped";
@@ -1061,6 +1467,7 @@ class AgentManager {
 			} else {
 				r.status = "failed";
 				r.error = err instanceof Error ? err.message : String(err);
+				this.log(r, { kind: "error", text: r.error });
 			}
 		} finally {
 			r.endedAt = Date.now();
@@ -1077,6 +1484,29 @@ class AgentManager {
 				r,
 				(r.status === "done" ? r.report ?? "" : `${r.status.toUpperCase()}: ${r.error ?? ""}${r.report ? `\n${r.report}` : ""}`) + tail
 			);
+		}
+	}
+
+	/** Log a model response (thinking, text, tool calls) to the work log. */
+	private logTurn(r: AgentRecord, turn: AgentTurn): void {
+		const thinking = turn.thinking
+			.map((t) => (Array.isArray(t.value) ? t.value.join("") : t.value))
+			.join("")
+			.trim();
+		if (thinking) {
+			this.log(r, { kind: "thinking", text: thinking });
+		}
+		if (turn.text.trim()) {
+			this.log(r, { kind: "text", text: turn.text.trim() });
+		}
+		for (const c of turn.calls) {
+			let args = "";
+			try {
+				args = JSON.stringify(c.input ?? {}, null, 1);
+			} catch {
+				args = String(c.input);
+			}
+			this.log(r, { kind: "tool", tool: c.name, text: args });
 		}
 	}
 
@@ -1110,6 +1540,7 @@ class AgentManager {
 		let text = "";
 		const calls: vscode.LanguageModelToolCallPart[] = [];
 		const thinking: vscode.LanguageModelThinkingPart[] = [];
+		const totalBefore = r.totalTokens;
 		for await (const part of response.stream) {
 			if (part instanceof vscode.LanguageModelTextPart) {
 				text += part.value;
@@ -1127,6 +1558,7 @@ class AgentManager {
 					const usage = JSON.parse(new TextDecoder().decode(part.data)) as { prompt_tokens?: number; completion_tokens?: number };
 					const total = (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
 					if (total > 0) {
+						r.totalTokens += total;
 						r.contextTokens = total;
 						r.contextExact = true;
 						runtime.usageBase = total;
@@ -1136,6 +1568,10 @@ class AgentManager {
 					// ignore malformed usage
 				}
 			}
+		}
+		if (r.totalTokens === totalBefore) {
+			// No usage from the provider (non-own model): estimate.
+			r.totalTokens += estimateTokens(messages) + Math.ceil(text.length / 3.5);
 		}
 		return { text, calls, thinking };
 	}
@@ -1209,6 +1645,7 @@ class AgentManager {
 			);
 		}
 		r.compactions++;
+		this.log(r, { kind: "compact", text: summary.trim() ? `Context compacted. Summary:\n${summary.trim()}` : "Context trimmed (summary unavailable)." });
 		runtime.usageAtLength = undefined;
 		runtime.usageBase = undefined;
 		r.contextTokens = estimateTokens(messages);
@@ -1223,6 +1660,9 @@ class AgentManager {
 
 	private drainInbox(runtime: AgentRuntime): string {
 		const msgs = runtime.record.inbox.splice(0, runtime.record.inbox.length);
+		for (const m of msgs) {
+			this.log(runtime.record, { kind: "inbox", text: `From ${m.from}: ${m.text}` });
+		}
 		this.changeEmitter.fire();
 		return `[Messages received]\n${msgs.map((m) => `From ${m.from}: ${m.text}`).join("\n\n")}`;
 	}
@@ -1246,7 +1686,7 @@ class AgentManager {
 				return `${this.describe(id)}${inbox}`;
 			}
 			case AGENT_TOOL_NAMES.run:
-				return this.delegate(id, input as unknown as DelegateTaskInput, runtime.model, {
+				return this.control(id, input as unknown as DelegateTaskInput, runtime.model, {
 					toolInvocationToken: runtime.toolInvocationToken,
 					token: runtime.cts.token,
 				});
@@ -1284,8 +1724,8 @@ class AgentManager {
 	/** Write tools of write-enabled agents (see agentWriteTools.ts). */
 	private async invokeWriteTool(runtime: AgentRuntime, call: vscode.LanguageModelToolCallPart): Promise<string> {
 		const input = (call.input ?? {}) as Record<string, unknown>;
-		if (!runtime.record.allowWrite) {
-			return "Error: this agent is read-only.";
+		if (!runtime.record.allowWrite && call.name !== AGENT_TOOL_NAMES.runCommand) {
+			return "Error: this agent is read-only (it can run commands, but not edit files).";
 		}
 		try {
 			switch (call.name) {
@@ -1294,7 +1734,16 @@ class AgentManager {
 				case AGENT_TOOL_NAMES.createFile:
 					return await agentCreateFile(input);
 				default:
-					return await agentRunCommand(input, `${runtime.record.id} "${runtime.record.name}"`, runtime.allowAllCommands, runtime.cts.token);
+					return await agentRunCommand(input, {
+						agentLabel: `${runtime.record.id} "${runtime.record.name}"`,
+						autoApprove: runtime.record.autoApprove === true,
+						allowAll: runtime.allowAllCommands,
+						onWaiting: (cmd) => {
+							runtime.record.activity = cmd ? `waiting for approval: ${cmd.slice(0, 60)}` : "running command";
+							this.changeEmitter.fire();
+						},
+						token: runtime.cts.token,
+					});
 			}
 		} catch (err) {
 			return `Tool error: ${err instanceof Error ? err.message : String(err)}`;
@@ -1373,6 +1822,7 @@ class AgentManager {
 			.filter((r) => r.record.status !== "running" && !neededAncestors.has(r.record.id))
 			.sort((a, b) => (a.record.endedAt ?? 0) - (b.record.endedAt ?? 0));
 		for (const r of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED_AGENTS))) {
+			disposeAgentTerminal(`${r.record.id} "${r.record.name}"`);
 			this.agents.delete(r.record.id);
 		}
 	}
@@ -1390,13 +1840,17 @@ class AgentManager {
 export function formatNotifications(items: AgentNotification[], maxReportChars: number, forChat: boolean): string {
 	const blocks = items.map((n) =>
 		n.kind === "finished"
-			? `### Agent ${n.agentId} "${n.agentName}" finished\n${truncate(n.text, maxReportChars, "report — call customcopilot_listAgents with this id for the full text")}`
-			: `### Message from agent ${n.agentId} "${n.agentName}"\n${n.text}`
+			? `### 📨 Agent «${n.agentName}» (${n.agentId}) finished\n\n${truncate(n.text, maxReportChars, `report — {"action": "status", "id": "${n.agentId}"} shows the full text`)}`
+			: `### 💬 Message from agent «${n.agentName}» (${n.agentId})\n\n${n.text}`
 	);
-	const header = forChat
-		? `${AUTO_RESUME_HEADER} (${items.length}). These are reports of background agents YOU started earlier in this chat — continue the user's original task using them. Do not start new agents just to acknowledge or test this update.`
-		: `${items.length} notification(s):`;
-	return `${header}\n\n${blocks.join("\n\n")}`;
+	if (!forChat) {
+		return `${items.length} notification(s):\n\n${blocks.join("\n\n")}`;
+	}
+	const running = agentManager.runningCount();
+	return (
+		`${AUTO_RESUME_HEADER}${items.length > 1 ? `s (${items.length})` : ""}\n\n${blocks.join("\n\n---\n\n")}\n\n---\n` +
+		`_These are reports of background agents YOU started earlier in this chat. Continue the user's original task with them${running ? ` (${running} agent(s) still running — their reports will follow)` : ""}. Do not start agents just to acknowledge this._`
+	);
 }
 
 /** The singleton manager. */
@@ -1411,8 +1865,7 @@ export const agentManager = new AgentManager();
 export function withAgentNotice(
 	messages: readonly vscode.LanguageModelChatRequestMessage[]
 ): readonly vscode.LanguageModelChatRequestMessage[] {
-	const unread = agentManager.unreadNotifications();
-	if (unread === 0) {
+	if (agentManager.unreadNotifications() === 0) {
 		return messages;
 	}
 	const first = messages.find((m) => m.role === vscode.LanguageModelChatMessageRole.User);
@@ -1420,8 +1873,12 @@ export function withAgentNotice(
 	if (firstText?.value.startsWith(SUBAGENT_SENTINEL)) {
 		return messages;
 	}
+	const unread = agentManager.takeNoticeCount();
+	if (unread === 0) {
+		return messages;
+	}
 	const running = agentManager.runningCount();
-	const noticeText = `[System notice] ${unread} background agent notification(s) are waiting (agent reports / messages)${running ? `; ${running} agent(s) still running` : ""}. Call customcopilot_waitForAgents with timeoutSeconds 0 to read them now.`;
+	const noticeText = `[System notice] ${unread} background agent notification(s) are waiting (agent reports / messages)${running ? `; ${running} agent(s) still running` : ""}. Read them with the customcopilot_delegateTask tool: {"action": "wait", "timeoutSeconds": 0}.`;
 	const last = messages[messages.length - 1];
 	if (last && last.role === vscode.LanguageModelChatMessageRole.User) {
 		// Appended to the last user turn (after any tool results) — a separate

@@ -19,6 +19,7 @@ import {
 } from "./subagent/delegateTool";
 import { agentManager } from "./subagent/agentManager";
 import { AgentTreeProvider } from "./subagent/agentTree";
+import { AgentMapPanel } from "./subagent/agentMap";
 import { showZaiQuota } from "./zaiQuota";
 import { logger } from "./logger";
 import { normalizeUserModels, resolveThinkingEnabled } from "./utils";
@@ -70,11 +71,12 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand("customcopilot.resumeAgentById", (arg: unknown) => resumeAgentFromUi(agentArg(arg))),
 		vscode.commands.registerCommand("customcopilot.showAgentDetails", (arg: unknown) => showAgentDetails(agentArg(arg))),
 		vscode.window.registerTreeDataProvider("customcopilot.agentsView", new AgentTreeProvider()),
+		vscode.commands.registerCommand("customcopilot.showAgentMap", () => AgentMapPanel.show()),
 		{ dispose: () => agentManager.dispose() }
 	);
 	// Status-bar indicator while agents run (click → list / stop / read).
 	const agentsStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-	agentsStatus.command = "customcopilot.showAgents";
+	agentsStatus.command = "customcopilot.showAgentMap";
 	context.subscriptions.push(
 		agentsStatus,
 		agentManager.onDidChange(() => {

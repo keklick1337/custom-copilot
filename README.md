@@ -248,31 +248,26 @@ configs share one model id (e.g. five `glm-5.3` with different settings are told
 **background** (Claude Code style): the call returns immediately with the agent id and the main
 agent keeps working or talking to you while one or several agents run in parallel.
 
-| Tool | What it does |
+Everything goes through **one tool**, `#delegate` (`customcopilot_delegateTask`), with an
+`action` — so a model that can start agents can always wait for them, even when Copilot hides
+extra tools behind tool groups:
+
+| `action` | What it does |
 |---|---|
-| `#delegate` (`customcopilot_delegateTask`) | Start an agent (`task`, `name`, `expectedOutput`, optional `model`, `allowWrite`, `maxSteps`; `background: false` waits for the report). |
-| `#agents` (`customcopilot_listAgents`) | Running/finished agents with status, current activity, rounds; with `id` — full details and report. |
-| `#agentMessage` (`customcopilot_sendAgentMessage`) | Message an agent by id/name or `all`. Subagents use it to message the main agent (`to: "main"`) or **each other**. Messages are read at the recipient's next round. |
-| `#waitAgents` (`customcopilot_waitForAgents`) | Block until an agent finishes or sends a message, then return the reports. `timeoutSeconds: 0` only reads pending ones. |
-| `#stopAgent` (`customcopilot_stopAgent`) | Stop an agent and its sub-agents (or `all`). |
-| `#resumeAgent` (`customcopilot_resumeAgent`) | Continue a finished / stopped / failed agent with a new instruction — it keeps its **full previous conversation**, gets a fresh step budget and reports again. |
+| `start` *(default)* | Start an agent (`task`, `name` — a 3–7 word title, `expectedOutput`, optional `model`, `allowWrite`, `maxSteps`; `background: false` waits for the report). Placeholder / test tasks are rejected. |
+| `wait` | **Block** until an agent finishes or sends a message, then return the reports (`ids`, `timeoutSeconds`; `0` = only read). |
+| `status` | Agents as a tree (status, activity, context, rounds); with `id` — full details and report. |
+| `message` | Message a running agent (`id`, `message`); read at its next round. Subagents message `main` or **each other**. |
+| `stop` | Stop an agent and its sub-agents (`id` or `all`). |
+| `resume` | Continue a finished/stopped agent with a follow-up `message` — it keeps its **full previous conversation**. |
 
-**Nested agents** (Claude Code style): a subagent can start its own sub-agents with the same tool
-for independent parts of its task, up to `customcopilot.subagent.maxDepth` levels (default 3).
-They inherit the parent's model, a read-only parent can only start read-only children, and a
-child's report goes to its **parent** (into its inbox) — the parent waits for its running children
-before writing its own report. Agents can only stop / resume their own descendants.
-
-**Context window per agent.** Every agent shows its context usage (`ctx 45k/200k (22%)` — exact
-from our provider's usage reports, `~` = estimated). When it reaches
-`customcopilot.subagent.compactThreshold` (default 80%) of the model's window, the agent
-**auto-compacts**: the same model writes a summary of the work so far (findings with paths/lines,
-changes, remaining plan) and the history is replaced by the task + summary, then it continues.
-A context-overflow error from the API also triggers one compaction and a retry.
+The same operations also exist as separate tools (`#agents`, `#agentMessage`, `#waitAgents`,
+`#stopAgent`, `#resumeAgent`).
 
 **How reports reach the main agent** when an agent finishes:
 
-1. The main agent is blocked in `#waitAgents` → it wakes up at once with the report.
+1. The main agent is blocked in `#waitAgents` (only when chat pausing is off, or for agents that
+   do not post to the chat) → it wakes up at once with the report.
 2. The main turn is still running (it is busy with other work) → a short notice is added to
    its next model request (our models) until it reads the report with `#waitAgents`.
 3. The main turn has ended → after `customcopilot.subagent.autoResumeIdleMs` of idle time the
@@ -281,7 +276,38 @@ A context-overflow error from the API also triggers one compaction and a retry.
    is not the focused one, it is opened first; your unsent draft in the input box is kept. The post
    waits until the main turn has really ended (its last model response called no tools), so it never
    cancels a tool confirmation the chat is waiting for. Agents you stop yourself are not reported this way
-   (their state stays readable in the agent list).
+   (their state stays readable in the agent list). The post shows up as a **📨 Background agent
+   report** message with each agent's report. If the chat is busy at that moment it is queued like a
+   message you typed. If you pressed **Stop** in the chat (VS Code then holds your queued messages and
+   would ask *"You already have pending requests"*), the report is not posted by itself — a
+   notification offers **Post report to chat** instead.
+
+**Agent map.** **Show Agent Map** (status-bar item, the Background Agents view title, or the
+command palette) opens a live map like Claude Code's: each chat that started agents is a root
+(title, model, tokens in context), its agents and their sub-agents branch to the right with a
+status dot, duration and tokens. Agents get a readable title even when the model gives no `name`
+(derived from the task, skipping boilerplate like "Repo …, Read AGENTS.md first"). Click an agent to
+open its own **details tab** — status, model, duration, tokens, context and rounds (with bars),
+parent / sub-agent links, report, task and the **full work log** (replies, every tool call with its
+result, messages received, compactions; thinking on demand) — with **Stop**, **message** and
+**Resume** right there.
+
+**The chat pauses while agents work** (`customcopilot.subagent.pauseChat`, on by default). In the
+turn that started background agents, the extension itself holds back every call that would only
+wait for or poll them — `wait` / `status`, `sleep` / `echo` commands, todo updates — so the model
+cannot keep the chat busy: the turn ends with a **⏸ Chat paused** note listing the running agents
+(a text-only answer also ends Autopilot). Real work and starting more agents still go through, and a
+`wait` call returns at once instead of blocking. When an agent finishes, its report is posted into
+the chat as a new message and the main agent continues the user's task from it. Sub-agents behave
+the same way one level down: an agent whose own sub-agents are still running goes to sleep (no model
+requests) and wakes up when a sub-agent's report lands in its inbox.
+
+**Terminals and approvals.** Every agent runs shell commands in **its own VS Code terminal**
+("Agent a7 …", via shell integration), so you can watch what it executes. Read-only agents may
+only use non-modifying commands. Commands need approval through a non-modal notification —
+**except when the chat runs in Autopilot** (or VS Code's global tool auto-approve is on); see
+`customcopilot.subagent.autoApproveCommands` (`autopilot` / `always` / `never`) and
+`customcopilot.subagent.commandsInTerminal`.
 
 **Tools.** Subagents get read-only workspace tools (search, read, list, diagnostics, …) by
 default. With `allowWrite` (the user confirms when the agent is started) they also get their own
@@ -299,9 +325,9 @@ agents and unread reports; **hover it** for the same tree with **Stop / Resume /
 click it / run **Show Background Agents**. Limits: `customcopilot.subagent.maxSteps` rounds per agent, `customcopilot.subagent.maxConcurrent`
 agents at once. `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
 **Loop protection.** The main chat can start at most `customcopilot.subagent.maxStartsPerTurn`
-agents per turn (default 6), and agents started in a turn that an auto-posted report triggered
-never auto-post again (their reports stay readable with `#waitAgents`) — so a model can't fall into
-an *agent → report → new agent* loop. The tool descriptions tell the model when **not** to delegate
+agents per turn (default 6), and after 3 consecutive turns started by auto-posted reports (no
+message from you in between) newly started agents no longer auto-post (their reports stay readable
+with `{"action": "wait"}`) — so a model can't fall into an endless *agent → report → new agent* loop. The tool descriptions tell the model when **not** to delegate
 (trivial lookups, tests of the tool, reacting to an agent update).
 
 Agents live in memory: reloading the window stops them.
@@ -591,6 +617,7 @@ workspace, so a cloned repository can't redirect your API keys to another server
 | Show Background Agents | `customcopilot.showAgents` |
 | Stop All Background Agents | `customcopilot.stopAllAgents` |
 | Resume Background Agent (view / popup) | `customcopilot.resumeAgentById` |
+| Show Agent Map | `customcopilot.showAgentMap` |
 
 ## 🏗 Development
 

@@ -143,9 +143,17 @@ function calibrateImageTokenCost(
 	}
 }
 import { updateContextStatusBar } from "./statusBar";
-import { beginMainActivity, endMainActivity, noteMainResponse, noteMainTurn, notifyChatRequestStart } from "./chatActivity";
+import {
+	beginMainActivity,
+	currentMainTurn,
+	endMainActivity,
+	noteMainCancelled,
+	noteMainResponse,
+	noteMainTurn,
+	notifyChatRequestStart,
+} from "./chatActivity";
 import { AUTO_RESUME_HEADER } from "./subagent/agentNames";
-import { EXTENSION_ID, withAgentNotice } from "./subagent/agentManager";
+import { EXTENSION_ID, agentManager, isIdleMainCall, pauseNotice, withAgentNotice } from "./subagent/agentManager";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
 import { OllamaApi, probeOllamaModel } from "./ollama/ollamaApi";
@@ -289,6 +297,9 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 		const isOwnRequest = options.requestInitiator === EXTENSION_ID;
 		// Agent-loop requests offer tools (utility requests like titles don't).
 		const isAgentLoopRequest = !isOwnRequest && (options.tools?.length ?? 0) > 0;
+		// Main-chat round that follows a tool call of the same turn.
+		const lastMessage = messages[messages.length - 1];
+		const isToolRound = !!lastMessage?.content.some((p) => p instanceof vscode.LanguageModelToolResultPart);
 		if (isAgentLoopRequest) {
 			// The turn's user message = the last user message with text and no
 			// tool results (later rounds only add tool-result messages).
@@ -303,14 +314,44 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			const userText = (userMsg?.content ?? [])
 				.map((p) => (p instanceof vscode.LanguageModelTextPart ? p.value : ""))
 				.join("");
-			noteMainTurn(userText, userText.includes(AUTO_RESUME_HEADER));
+			noteMainTurn(
+				userText,
+				userText.includes(AUTO_RESUME_HEADER),
+				// Copilot offers task_complete only at the "autopilot" permission level.
+				(options.tools ?? []).some((t) => t.name === "task_complete")
+			);
+			if (!isToolRound) {
+				// A new user (or report) message: the chat is no longer paused.
+				agentManager.clearPause();
+			}
+			noteMainCancelled(false);
 		}
+		// The turn already started background agents: hold back calls that
+		// would only wait for / poll them, so the turn really ends and the
+		// chat rests until the reports are posted (see agentManager.pauseFor).
+		const pauseFor = isAgentLoopRequest && isToolRound ? agentManager.pauseFor(currentMainTurn()) : [];
+		const heldCalls: vscode.LanguageModelToolCallPart[] = [];
+		let wroteText = false;
 		let calledTools = false;
 		const watchedProgress: Progress<LanguageModelResponsePart2> = isAgentLoopRequest
 			? {
 					report: (part) => {
 						if (part instanceof vscode.LanguageModelToolCallPart) {
+							if (pauseFor.length > 0) {
+								heldCalls.push(part);
+								return;
+							}
 							calledTools = true;
+						} else if (part instanceof vscode.LanguageModelTextPart && part.value.trim()) {
+							wroteText = true;
+						} else if (part instanceof vscode.LanguageModelDataPart && part.mimeType === "usage") {
+							// Main chat's context size → root node of the agent map.
+							try {
+								const u = JSON.parse(new TextDecoder().decode(part.data)) as { prompt_tokens?: number; completion_tokens?: number };
+								agentManager.noteMainContext((u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0), model.name);
+							} catch {
+								// ignore
+							}
 						}
 						progress.report(part);
 					},
@@ -321,11 +362,40 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 		}
 		try {
 			await this.provideWithRetries(model, isOwnRequest ? messages : withAgentNotice(messages), options, watchedProgress, token);
+			if (pauseFor.length > 0 && !token.isCancellationRequested) {
+				const kept = heldCalls.filter((c) => !isIdleMainCall(c.name, c.input));
+				if (kept.length > 0) {
+					// Real work (or more agents): let the turn go on, minus the polling.
+					for (const call of kept) {
+						progress.report(call);
+					}
+					calledTools = true;
+				} else {
+					if (heldCalls.length > 0) {
+						logger.info("subagent.pause", {
+							dropped: heldCalls.map((c) => c.name),
+							agents: pauseFor.map((a) => a.id),
+						});
+					}
+					// Text only → Copilot ends the turn (Autopilot included).
+					progress.report(new vscode.LanguageModelTextPart(`${wroteText ? "\n\n" : ""}${pauseNotice(pauseFor)}`));
+				}
+			}
+		} catch (err) {
+			if (isAgentLoopRequest) {
+				// VS Code keeps queued messages unprocessed after a failed turn.
+				noteMainCancelled(true);
+			}
+			throw err;
 		} finally {
 			if (!isOwnRequest) {
 				endMainActivity();
 			}
 			if (isAgentLoopRequest) {
+				if (token.isCancellationRequested) {
+					// Stopped by the user: VS Code leaves its queue paused.
+					noteMainCancelled(true);
+				}
 				noteMainResponse(calledTools && !token.isCancellationRequested);
 			}
 		}

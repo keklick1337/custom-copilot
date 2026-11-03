@@ -99,16 +99,146 @@ export async function agentCreateFile(input: Record<string, unknown>): Promise<s
 	return `${exists ? "Overwrote" : "Created"} ${vscode.workspace.asRelativePath(uri)} (${content.length} chars).`;
 }
 
+/** Per-agent execution context for shell commands. */
+export interface CommandContext {
+	agentLabel: string;
+	/** Skip confirmations (Autopilot / global auto-approve / setting). */
+	autoApprove: boolean;
+	/** The user chose "Run all from this agent". */
+	allowAll: { value: boolean };
+	/** Reported while waiting for approval (shown in the agent tree / status bar). */
+	onWaiting: (waiting: string | undefined) => void;
+	token: vscode.CancellationToken;
+}
+
+const agentTerminals = new Map<string, vscode.Terminal>();
+
+/** Close the terminal of an agent (when it is pruned / on dispose). */
+export function disposeAgentTerminal(agentLabel: string): void {
+	agentTerminals.get(agentLabel)?.dispose();
+	agentTerminals.delete(agentLabel);
+}
+
 /**
- * Run a shell command after the user's confirmation. `allowAll` is the
- * per-agent "allow all commands" state, flipped by the dialog.
+ * Ask for approval with a NON-modal notification (it does not block the
+ * editor; it waits in the notification center if dismissed from view).
  */
-export async function agentRunCommand(
-	input: Record<string, unknown>,
-	agentLabel: string,
-	allowAll: { value: boolean },
-	token: vscode.CancellationToken
-): Promise<string> {
+async function confirmCommand(command: string, cwd: string, ctx: CommandContext): Promise<boolean> {
+	if (ctx.autoApprove || ctx.allowAll.value) {
+		return true;
+	}
+	ctx.onWaiting(command);
+	try {
+		const short = command.length > 160 ? `${command.slice(0, 157)}…` : command;
+		const choice = await Promise.race([
+			vscode.window.showInformationMessage(
+				`Background agent ${ctx.agentLabel} wants to run: ${short}  (in ${vscode.workspace.asRelativePath(cwd) || cwd})`,
+				"Run",
+				"Run all from this agent",
+				"Deny"
+			),
+			new Promise<undefined>((resolve) => ctx.token.onCancellationRequested(() => resolve(undefined))),
+		]);
+		if (choice === "Run all from this agent") {
+			ctx.allowAll.value = true;
+			return true;
+		}
+		return choice === "Run";
+	} finally {
+		ctx.onWaiting(undefined);
+	}
+}
+
+/**
+ * Run a command in the agent's own VS Code terminal ("Agent a7 · name") via
+ * shell integration, so the user sees what agents execute. Returns
+ * undefined when shell integration is unavailable (caller falls back).
+ */
+async function runInAgentTerminal(
+	command: string,
+	cwd: string,
+	timeoutMs: number,
+	ctx: CommandContext
+): Promise<string | undefined> {
+	let terminal = agentTerminals.get(ctx.agentLabel);
+	if (!terminal || terminal.exitStatus !== undefined) {
+		terminal = vscode.window.createTerminal({ name: `Agent ${ctx.agentLabel}`, cwd, isTransient: true });
+		agentTerminals.set(ctx.agentLabel, terminal);
+	}
+	const term = terminal;
+	const integration =
+		term.shellIntegration ??
+		(await new Promise<vscode.TerminalShellIntegration | undefined>((resolve) => {
+			const timer = setTimeout(() => {
+				sub.dispose();
+				resolve(undefined);
+			}, 5000);
+			const sub = vscode.window.onDidChangeTerminalShellIntegration((e) => {
+				if (e.terminal === term) {
+					clearTimeout(timer);
+					sub.dispose();
+					resolve(e.shellIntegration);
+				}
+			});
+		}));
+	if (!integration) {
+		return undefined;
+	}
+	const full = `cd ${JSON.stringify(cwd)} && ${command}`;
+	const execution = integration.executeCommand(full);
+	let out = "";
+	const reading = (async () => {
+		for await (const chunk of execution.read()) {
+			if (out.length < MAX_OUTPUT_CHARS * 2) {
+				out += chunk;
+			}
+		}
+	})();
+	let killedBy = "";
+	const exitCode = await new Promise<number | undefined>((resolve) => {
+		const timer = setTimeout(() => {
+			killedBy = `timed out after ${timeoutMs / 1000}s`;
+			term.sendText("\u0003", false);
+			finish(undefined);
+		}, timeoutMs);
+		const cancelSub = ctx.token.onCancellationRequested(() => {
+			killedBy = "cancelled";
+			term.sendText("\u0003", false);
+			finish(undefined);
+		});
+		const endSub = vscode.window.onDidEndTerminalShellExecution((e) => {
+			if (e.execution === execution) {
+				finish(e.exitCode);
+			}
+		});
+		function finish(code: number | undefined) {
+			clearTimeout(timer);
+			cancelSub.dispose();
+			endSub.dispose();
+			resolve(code);
+		}
+	});
+	await Promise.race([reading, new Promise((r) => setTimeout(r, 500))]);
+	// Strip terminal escape sequences from the captured output.
+	// eslint-disable-next-line no-control-regex
+	const clean = out.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)/g, "").replace(/\r/g, "");
+	return formatResult(clean, exitCode ?? null, killedBy);
+}
+
+function formatResult(out: string, code: number | null, killedBy: string, error?: Error): string {
+	const trimmed =
+		out.length > MAX_OUTPUT_CHARS
+			? `${out.slice(0, MAX_OUTPUT_CHARS / 2)}\n…[${out.length - MAX_OUTPUT_CHARS} chars omitted]…\n${out.slice(-MAX_OUTPUT_CHARS / 2)}`
+			: out;
+	return `${error ? `Failed to start: ${error.message}\n` : ""}${killedBy ? `Process ${killedBy}.\n` : ""}Exit code: ${code ?? "none"}\n${trimmed || "(no output)"}`;
+}
+
+/**
+ * Run a shell command for an agent: approval (skipped in Autopilot / with
+ * auto-approve), then execution in the agent's terminal (falls back to a
+ * hidden child process when shell integration is unavailable or disabled).
+ */
+export async function agentRunCommand(input: Record<string, unknown>, ctx: CommandContext): Promise<string> {
 	const command = String(input.command ?? "").trim();
 	if (!command) {
 		return "Error: `command` is required.";
@@ -118,20 +248,21 @@ export async function agentRunCommand(
 	if (!cwd) {
 		return "Error: no workspace folder is open.";
 	}
-	if (!allowAll.value) {
-		const choice = await vscode.window.showWarningMessage(
-			`Background agent ${agentLabel} wants to run a command`,
-			{ modal: true, detail: `${command}\n\nin ${vscode.workspace.asRelativePath(cwd) || cwd}` },
-			"Run",
-			"Run all from this agent"
-		);
-		if (choice === "Run all from this agent") {
-			allowAll.value = true;
-		} else if (choice !== "Run") {
-			return "The user denied this command.";
-		}
+	if (!(await confirmCommand(command, cwd, ctx))) {
+		return ctx.token.isCancellationRequested ? "Cancelled." : "The user denied this command.";
 	}
 	const timeoutMs = Math.min(900, Math.max(1, Number(input.timeoutSeconds ?? 120))) * 1000;
+	const useTerminal = vscode.workspace.getConfiguration().get<boolean>("customcopilot.subagent.commandsInTerminal", true);
+	if (useTerminal) {
+		const viaTerminal = await runInAgentTerminal(command, cwd, timeoutMs, ctx);
+		if (viaTerminal !== undefined) {
+			return viaTerminal;
+		}
+	}
+	return runInChildProcess(command, cwd, timeoutMs, ctx.token);
+}
+
+function runInChildProcess(command: string, cwd: string, timeoutMs: number, token: vscode.CancellationToken): Promise<string> {
 	return new Promise<string>((resolve) => {
 		const child = spawn(command, { cwd, shell: true, env: process.env });
 		let out = "";
@@ -153,13 +284,7 @@ export async function agentRunCommand(
 		const finish = (code: number | null, error?: Error) => {
 			clearTimeout(timer);
 			sub.dispose();
-			const trimmed =
-				out.length > MAX_OUTPUT_CHARS
-					? `${out.slice(0, MAX_OUTPUT_CHARS / 2)}\n…[${out.length - MAX_OUTPUT_CHARS} chars omitted]…\n${out.slice(-MAX_OUTPUT_CHARS / 2)}`
-					: out;
-			resolve(
-				`${error ? `Failed to start: ${error.message}\n` : ""}${killedBy ? `Process ${killedBy}.\n` : ""}Exit code: ${code ?? "none"}\n${trimmed || "(no output)"}`
-			);
+			resolve(formatResult(out, code, killedBy, error));
 		};
 		child.on("error", (err) => finish(null, err));
 		child.on("close", (code) => finish(code));
