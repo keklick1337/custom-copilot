@@ -377,6 +377,17 @@
 								<input id="chatRetryJitter" type="number" min="0" step="100" value="0" />
 							</div>
 						</div>
+						<div class="row">
+							<div class="field">
+								<label for="subagentMaxConcurrent">Max concurrent background agents</label>
+								<div class="field-description">
+									How many subagents (<code>#delegate</code>, all nesting levels together) may run at the same time
+									(1–16). Further starts are refused until one finishes. Applies to the next start, no reload needed.
+									Sets <code>customcopilot.subagent.maxConcurrent</code>.
+								</div>
+								<input id="subagentMaxConcurrent" type="number" min="1" max="16" step="1" value="4" />
+							</div>
+						</div>
 					</section>
 					<section id="chatGenSection">
 						<div class="section-header">

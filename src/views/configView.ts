@@ -49,6 +49,7 @@ interface InitPayload {
 	chatRetries: number;
 	chatRetryInterval: number;
 	chatRetryJitter: number;
+	subagentMaxConcurrent: number;
 }
 
 type IncomingMessage =
@@ -119,6 +120,7 @@ type IncomingMessage =
 	| { type: "setChatRetries"; value: number }
 	| { type: "setChatRetryInterval"; value: number }
 	| { type: "setChatRetryJitter"; value: number }
+	| { type: "setSubagentMaxConcurrent"; value: number }
 	| {
 			type: "launchChats";
 			prompts: string[];
@@ -412,6 +414,9 @@ export class ConfigViewController {
 			case "setChatRetryJitter":
 				await this.setChatRetryJitter(message.value);
 				break;
+			case "setSubagentMaxConcurrent":
+				await this.setSubagentMaxConcurrent(message.value);
+				break;
 			case "launchChats":
 				await this.launchChats(
 					message.prompts,
@@ -583,6 +588,7 @@ export class ConfigViewController {
 		const chatRetries = config.get<number>("customcopilot.chatRetries", 0);
 		const chatRetryInterval = config.get<number>("customcopilot.chatRetryInterval", 1000);
 		const chatRetryJitter = config.get<number>("customcopilot.chatRetryJitter", 0);
+		const subagentMaxConcurrent = config.get<number>("customcopilot.subagent.maxConcurrent", 4);
 		const payload: InitPayload = {
 			proxyUrl,
 			userAgent,
@@ -606,6 +612,7 @@ export class ConfigViewController {
 			chatRetries,
 			chatRetryInterval,
 			chatRetryJitter,
+			subagentMaxConcurrent,
 		};
 		this.webview.postMessage({ type: "init", payload });
 	}
@@ -1373,6 +1380,16 @@ export class ConfigViewController {
 		const config = vscode.workspace.getConfiguration();
 		const normalized = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 1000;
 		await config.update("customcopilot.chatRetryInterval", normalized, vscode.ConfigurationTarget.Global);
+		await this.sendInit();
+	}
+
+	private async setSubagentMaxConcurrent(value: number) {
+		const config = vscode.workspace.getConfiguration();
+		const normalized = Number.isFinite(value) ? Math.min(16, Math.max(1, Math.trunc(value))) : 4;
+		await config.update("customcopilot.subagent.maxConcurrent", normalized, vscode.ConfigurationTarget.Global);
+		vscode.window.showInformationMessage(
+			`Up to ${normalized} background agent${normalized > 1 ? "s" : ""} can now run at the same time.`
+		);
 		await this.sendInit();
 	}
 

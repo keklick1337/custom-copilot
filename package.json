@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.6",
+	"version": "1.2.7",
 	"engines": {
 		"vscode": "^1.134.0"
 	},

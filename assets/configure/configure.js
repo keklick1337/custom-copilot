@@ -77,6 +77,7 @@ const el = {
 	chatRetries: $("chatRetries"),
 	chatRetryInterval: $("chatRetryInterval"),
 	chatRetryJitter: $("chatRetryJitter"),
+	subagentMaxConcurrent: $("subagentMaxConcurrent"),
 	// Chat Generator
 	chatGenTemplate: $("chatGenTemplate"),
 	chatGenToken: $("chatGenToken"),
@@ -1808,6 +1809,18 @@ if (el.chatRetries) {
 	});
 }
 
+if (el.subagentMaxConcurrent) {
+	el.subagentMaxConcurrent.addEventListener("change", () => {
+		let value = parseInt(el.subagentMaxConcurrent.value, 10);
+		if (!Number.isFinite(value)) {
+			value = 4;
+		}
+		value = Math.min(16, Math.max(1, value));
+		el.subagentMaxConcurrent.value = String(value);
+		vscode.postMessage({ type: "setSubagentMaxConcurrent", value });
+	});
+}
+
 if (el.chatRetryInterval) {
 	el.chatRetryInterval.addEventListener("change", () => {
 		let value = parseInt(el.chatRetryInterval.value, 10);
@@ -3017,6 +3030,9 @@ window.addEventListener("message", async ({ data: msg }) => {
 			}
 			if (el.chatRetryJitter) {
 				el.chatRetryJitter.value = String(p.chatRetryJitter != null ? p.chatRetryJitter : 0);
+			}
+			if (el.subagentMaxConcurrent) {
+				el.subagentMaxConcurrent.value = String(p.subagentMaxConcurrent != null ? p.subagentMaxConcurrent : 4);
 			}
 
 			// Refresh sidebar

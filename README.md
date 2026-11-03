@@ -168,6 +168,8 @@ The configuration panel is a webview hosted in its own activity‑bar container.
   - **Automatic chat retries** (`customcopilot.chatRetries` / `chatRetryInterval` /
     `chatRetryJitter`) — auto "Try Again" on failed requests; `0` off, `-1` infinite, or a
     max attempt count with optional jitter.
+  - **Max concurrent background agents** (`customcopilot.subagent.maxConcurrent`, 1–16,
+    default 4) — how many subagents may run at once; applies to the next start.
 - **Git Commit Settings** — pick the model and language used for commit‑message generation.
 - **Chat Generator** — generate and launch many chats from a single prompt template (see below).
 - **User‑Agent presets** — a dropdown of common desktop/mobile User‑Agent strings plus a
