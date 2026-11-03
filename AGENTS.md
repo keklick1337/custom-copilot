@@ -48,13 +48,18 @@ to the adapter matching the model's `apiMode`.
 | Networking | `src/network.ts` — undici-based `proxyFetch` with per-request ProxyAgent dispatcher (bypasses VS Code's patched global fetch which drops the dispatcher — REQUIRED for proxy support), proxy URL normalization (`socks5h`→`socks5`, `direct`/`none` tokens), masked curl-reproduction debug logging (denylist-by-default header masking); `src/versionManager.ts` — default User-Agent / version. |
 | Configuration UI | `src/views/configView.ts` (webview host `SettingsViewProvider` / `ConfigViewController`), `src/views/modelKeys.ts` (webview model-key parsing), `src/views/configTransfer.ts` (export/import), + `assets/configure/{configure.html,configure.css,configure.js}` (webview front-end; `PROVIDER_PRESETS` catalog of 40+ provider presets with optgroup categories). |
 | Git commits | `src/gitCommit/` — `commitMessageGenerator.ts`, `gitUtils.ts` (all git calls via `execFile` argument arrays — NEVER shell-string interpolation). |
+| Subagents | `src/subagent/agentManager.ts` — background agent manager (agent loop on the main chat's model, inboxes, main-agent notifications, wait/wake, auto-resume via `workbench.action.chat.open`, notice injection into main-chat requests); `src/subagent/delegateTool.ts` — the `delegateTask` / `listAgents` / `sendAgentMessage` / `waitForAgents` / `stopAgent` / `resumeAgent` LM tools + status-bar popup; `src/subagent/agentTree.ts` — the "Background Agents" tree view; `src/subagent/agentSetup.ts` — model/tool selection (default = the caller's exact `LanguageModelChat`, exact-id match first for duplicate configs); `src/subagent/agentNames.ts` — tool names; `src/subagent/agentWriteTools.ts` — the agents' own write tools (edit / create file confined to workspace folders, confirmed shell commands). Background agents call workspace tools WITHOUT a chat invocation token (a stale token makes VS Code cancel the call, and a live one would attach tool UI to the user's next turn); cancellation errors cross the RPC boundary as a plain `Error` named "Canceled" — test with `isCancellation()`, never `instanceof vscode.CancellationError` alone. Agents nest up to `subagent.maxDepth`; a child's report goes to its parent's inbox; conversations are kept for `resumeAgent`; context is tracked from the provider's `usage` data part and auto-compacted at `subagent.compactThreshold`. When a subagent calls an agent tool it is handled in-process (caller identity), never via `vscode.lm.invokeTool`. Subagent model requests are recognised in provider.ts by `requestInitiator === EXTENSION_ID`. |
 | Status bar | `src/statusBar.ts` — provider / token usage / quick access; resolves the model config through the shared `resolveUserModelById`. |
 | Logging | `src/logger.ts` — JSON-lines file logger. |
 | Types & utils | `src/types.ts` (`CustomModelItem`, configs), `src/utils.ts` (`normalizeUserModels`, `resolveUserModelById`, proxy helpers, `safeUrlHost`). |
 
 ## Conventions
 
-- **Proposed APIs**: `chatProvider`. The `.d.ts` lives at `src/vscode.proposed.chatProvider.d.ts`
+- **Proposed APIs**: `chatProvider`, `languageModelThinkingPart`, `chatParticipantAdditions`
+  (only for `LanguageModelToolInvocationOptions.model` — the main chat's model for subagents;
+  read defensively, the getter may throw), `chatParticipantPrivate` (only for
+  `LanguageModelToolInvocationOptions.chatSessionResource` — the chat session that started an
+  agent, used to post its report back to that session). The `.d.ts` lives at `src/vscode.proposed.chatProvider.d.ts`
   and is refreshed via `npm run download-api`. `package.json` → `enabledApiProposals` must list
   each one used.
 - **Secrets** (`vscode.SecretStorage`):

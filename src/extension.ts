@@ -5,7 +5,20 @@ import { initStatusBar } from "./statusBar";
 import { SettingsViewProvider } from "./views/configView";
 import { setSkillsContext } from "./views/skillsController";
 import { SearchSkillsTool, InstallSkillTool, ReadSkillTool, ImproveSkillTool, CreateSkillTool } from "./skills/skillTools";
-import { DelegateTaskTool } from "./subagent/delegateTool";
+import {
+	DelegateTaskTool,
+	ListAgentsTool,
+	SendAgentMessageTool,
+	StopAgentTool,
+	ResumeAgentTool,
+	resumeAgentFromUi,
+	WaitForAgentsTool,
+	agentsTooltip,
+	showAgentDetails,
+	showAgentsQuickPick,
+} from "./subagent/delegateTool";
+import { agentManager } from "./subagent/agentManager";
+import { AgentTreeProvider } from "./subagent/agentTree";
 import { showZaiQuota } from "./zaiQuota";
 import { logger } from "./logger";
 import { normalizeUserModels, resolveThinkingEnabled } from "./utils";
@@ -42,6 +55,40 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.lm.registerTool("customcopilot_improveSkill", new ImproveSkillTool()),
 		vscode.lm.registerTool("customcopilot_createSkill", new CreateSkillTool()),
 		vscode.lm.registerTool("customcopilot_delegateTask", new DelegateTaskTool())
+	);
+	// Background subagents: observe, steer and collect (see subagent/agentManager.ts).
+	context.subscriptions.push(
+		vscode.lm.registerTool("customcopilot_listAgents", new ListAgentsTool()),
+		vscode.lm.registerTool("customcopilot_sendAgentMessage", new SendAgentMessageTool()),
+		vscode.lm.registerTool("customcopilot_waitForAgents", new WaitForAgentsTool()),
+		vscode.lm.registerTool("customcopilot_stopAgent", new StopAgentTool()),
+		vscode.commands.registerCommand("customcopilot.showAgents", () => showAgentsQuickPick()),
+		vscode.commands.registerCommand("customcopilot.stopAllAgents", () => agentManager.stopAll(true)),
+		vscode.lm.registerTool("customcopilot_resumeAgent", new ResumeAgentTool()),
+		// Commands get an id (popup links) or the tree element (view menus).
+		vscode.commands.registerCommand("customcopilot.stopAgentById", (arg: unknown) => agentManager.stop(agentArg(arg), true)),
+		vscode.commands.registerCommand("customcopilot.resumeAgentById", (arg: unknown) => resumeAgentFromUi(agentArg(arg))),
+		vscode.commands.registerCommand("customcopilot.showAgentDetails", (arg: unknown) => showAgentDetails(agentArg(arg))),
+		vscode.window.registerTreeDataProvider("customcopilot.agentsView", new AgentTreeProvider()),
+		{ dispose: () => agentManager.dispose() }
+	);
+	// Status-bar indicator while agents run (click → list / stop / read).
+	const agentsStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+	agentsStatus.command = "customcopilot.showAgents";
+	context.subscriptions.push(
+		agentsStatus,
+		agentManager.onDidChange(() => {
+			const running = agentManager.runningCount();
+			const unread = agentManager.unreadNotifications();
+			if (running === 0 && unread === 0) {
+				agentsStatus.hide();
+				return;
+			}
+			agentsStatus.text = `$(organization) ${running}${unread ? ` · ${unread} new` : ""}`;
+			// Hover popup: per-agent Stop / Details links.
+			agentsStatus.tooltip = agentsTooltip();
+			agentsStatus.show();
+		})
 	);
 	// Initialize logger
 	logger.init();
@@ -576,3 +623,12 @@ function warnAboutIgnoredWorkspaceSettings(): void {
 			}
 		});
 }
+
+/** Agent id from a command argument: an id string or a tree element ({ id }). */
+function agentArg(arg: unknown): string {
+	if (typeof arg === "string") {
+		return arg;
+	}
+	return arg && typeof arg === "object" && typeof (arg as { id?: unknown }).id === "string" ? (arg as { id: string }).id : "";
+}
+

@@ -64,3 +64,52 @@ export function waitForChatRequestStart(
 		const tokenListener = token?.onCancellationRequested(() => finish(false));
 	});
 }
+
+// ---------------------------------------------------------------------------
+// Main-chat activity (used by background subagents to decide when the main
+// chat is idle and can be resumed with their reports).
+// ---------------------------------------------------------------------------
+
+let activeMainRequests = 0;
+let lastMainActivity = 0;
+
+/** Mark the start of a main-chat activity (a model request or one of our tool calls). */
+export function beginMainActivity(): void {
+	activeMainRequests++;
+	lastMainActivity = Date.now();
+}
+
+/** Mark the end of a main-chat activity started with {@link beginMainActivity}. */
+export function endMainActivity(): void {
+	activeMainRequests = Math.max(0, activeMainRequests - 1);
+	lastMainActivity = Date.now();
+}
+
+/**
+ * True when no main-chat request is in flight and nothing happened for at
+ * least `idleMs` (the agent loop runs tools between model requests, so a
+ * short gap alone does not mean the turn is over).
+ */
+export function isMainChatIdle(idleMs: number): boolean {
+	if (activeMainRequests > 0) {
+		return false;
+	}
+	const quiet = Date.now() - lastMainActivity;
+	// The last agent-loop response asked for tools: the turn is still going
+	// (tools running, or a confirmation pending — posting now would cancel
+	// it). Assume it ended only after a long silence (e.g. the user stopped it).
+	return lastMainResponseCalledTools ? quiet >= TURN_STALE_MS : quiet >= idleMs;
+}
+
+/** After this long without activity a turn that last called tools counts as over. */
+const TURN_STALE_MS = 10 * 60_000;
+let lastMainResponseCalledTools = false;
+
+/**
+ * Record how a main-chat agent-loop response (a request that offered tools)
+ * ended: with tool calls (turn continues) or without (turn finished).
+ */
+export function noteMainResponse(calledTools: boolean): void {
+	lastMainResponseCalledTools = calledTools;
+	lastMainActivity = Date.now();
+}

@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -50,7 +50,9 @@
 	"license": "MIT",
 	"enabledApiProposals": [
 		"chatProvider",
-		"languageModelThinkingPart"
+		"languageModelThinkingPart",
+		"chatParticipantAdditions",
+		"chatParticipantPrivate"
 	],
 	"contributes": {
 		"viewsContainers": {
@@ -69,6 +71,11 @@
 					"id": "customcopilot.settingsView",
 					"name": "Configuration Panel",
 					"icon": "assets/logo.png"
+				},
+				{
+					"id": "customcopilot.agentsView",
+					"name": "Background Agents",
+					"icon": "$(organization)"
 				}
 			]
 		},
@@ -214,6 +221,35 @@
 				"command": "customcopilot.setDefaultModel",
 				"title": "Select Commit Message Model",
 				"category": "Copilot Custom Models Endpoint"
+			},
+			{
+				"command": "customcopilot.showAgents",
+				"title": "Show Background Agents",
+				"category": "Copilot Custom Models Endpoint"
+			},
+			{
+				"command": "customcopilot.stopAllAgents",
+				"title": "Stop All Background Agents",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(stop-circle)"
+			},
+			{
+				"command": "customcopilot.stopAgentById",
+				"title": "Stop Background Agent",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(debug-stop)"
+			},
+			{
+				"command": "customcopilot.showAgentDetails",
+				"title": "Show Background Agent Details",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(info)"
+			},
+			{
+				"command": "customcopilot.resumeAgentById",
+				"title": "Resume Background Agent",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(debug-restart)"
 			}
 		],
 		"menus": {
@@ -237,6 +273,42 @@
 				{
 					"command": "customcopilot.abortGitCommitMessage",
 					"when": "config.git.enabled && customcopilot.isGeneratingCommit"
+				},
+				{
+					"command": "customcopilot.stopAgentById",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.showAgentDetails",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.resumeAgentById",
+					"when": "false"
+				}
+			],
+			"view/item/context": [
+				{
+					"command": "customcopilot.stopAgentById",
+					"when": "view == customcopilot.agentsView && viewItem == agentRunning",
+					"group": "inline"
+				},
+				{
+					"command": "customcopilot.resumeAgentById",
+					"when": "view == customcopilot.agentsView && viewItem == agentFinished",
+					"group": "inline"
+				},
+				{
+					"command": "customcopilot.showAgentDetails",
+					"when": "view == customcopilot.agentsView",
+					"group": "inline"
+				}
+			],
+			"view/title": [
+				{
+					"command": "customcopilot.stopAllAgents",
+					"when": "view == customcopilot.agentsView",
+					"group": "navigation"
 				}
 			]
 		},
@@ -709,14 +781,46 @@
 				"customcopilot.subagent.model": {
 					"type": "string",
 					"default": "",
-					"markdownDescription": "Model used by the `#delegate` subagent tool when the caller gives no hint: an id or name substring (e.g. `glm-4.7-flash`, `claude-haiku`). Empty = the largest-context model of this extension."
+					"markdownDescription": "Fallback model for `#delegate` subagents when the main chat's model is unavailable and no `model` hint is given. By default subagents run on **the exact model selected in the chat** (the same config, even when several configs share one model id); sub-agents inherit their parent's model. An id or name substring (e.g. `glm-4.7-flash`)."
 				},
 				"customcopilot.subagent.maxSteps": {
 					"type": "number",
 					"default": 15,
 					"minimum": 1,
-					"maximum": 40,
-					"markdownDescription": "Default maximum tool-calling rounds for a `#delegate` subagent before it must write its report."
+					"maximum": 60,
+					"markdownDescription": "Default maximum tool-calling rounds for a `#delegate` subagent before it must write its report (cap 60)."
+				},
+				"customcopilot.subagent.maxConcurrent": {
+					"type": "number",
+					"default": 4,
+					"minimum": 1,
+					"maximum": 16,
+					"markdownDescription": "Maximum number of subagents (all nesting levels) running at the same time."
+				},
+				"customcopilot.subagent.maxDepth": {
+					"type": "number",
+					"default": 3,
+					"minimum": 1,
+					"maximum": 6,
+					"markdownDescription": "How deep subagents may nest: `1` = only the main chat starts agents; `3` (default) = agents can start sub-agents, which can start their own. Sub-agents inherit their parent's model; their reports go to the parent."
+				},
+				"customcopilot.subagent.compactThreshold": {
+					"type": "number",
+					"default": 0.8,
+					"minimum": 0.3,
+					"maximum": 0.95,
+					"markdownDescription": "Auto-compact a subagent's context when it reaches this share of the model's input window (`0.8` = 80%): the same model summarizes the work so far and the history is replaced by the task + summary. A context-overflow error also triggers one compaction and a retry."
+				},
+				"customcopilot.subagent.autoResume": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead."
+				},
+				"customcopilot.subagent.autoResumeIdleMs": {
+					"type": "number",
+					"default": 5000,
+					"minimum": 1000,
+					"markdownDescription": "How long (ms) the main chat must be idle (no model request or agent tool call) before an agent report is auto-posted to it."
 				},
 				"customcopilot.imageMaxDimension": {
 					"type": "number",
@@ -785,10 +889,10 @@
 			{
 				"name": "customcopilot_delegateTask",
 				"toolReferenceName": "delegate",
-				"displayName": "Delegate to Subagent",
+				"displayName": "Run Subagent",
 				"icon": "$(organization)",
-				"modelDescription": "Run a focused sub-task on a separate model in a FRESH context and get back only its final report. Use it to keep the main conversation's context small: broad codebase exploration ('find where X is implemented and how it is wired'), multi-file research, reading long logs/docs, comparing implementations, or reviewing a diff. The subagent has read-only workspace tools (search/read/list/diagnostics) by default and cannot see this conversation, so `task` must be self-contained: include file paths, symbols, constraints and what you already know. Say exactly what the report must contain in `expectedOutput`. Independent sub-tasks can be delegated in parallel. Do NOT delegate trivial single lookups (do them directly) or work that needs the user's input. Set allowWrite=true only when the sub-task must edit files or run commands (the user is asked to confirm).",
-				"userDescription": "Hand a self-contained sub-task to a subagent with its own context; only its report comes back.",
+				"modelDescription": "Start a subagent: a separate agent loop on the SAME model as this chat, in a FRESH context, that returns only its final report. By default it runs in the BACKGROUND: this call returns immediately with the agent id and you keep working (or talking to the user) in parallel; several independent agents can run at once. Its report is delivered automatically — customcopilot_waitForAgents returns it (call it when you have nothing else to do; it wakes you as soon as an agent finishes), and if your turn has ended the report is posted to the chat. Use it to keep the main context small: broad codebase exploration, multi-file research, reading long logs/docs, comparing implementations, reviewing a diff, or independent implementation chunks. The subagent cannot see this conversation, so `task` must be self-contained (paths, symbols, constraints, what is known); say what the report must contain in `expectedOutput`. It has read-only workspace tools by default; allowWrite=true gives edit/terminal tools (the user confirms). Agents can message you and each other (customcopilot_sendAgentMessage), see each other (customcopilot_listAgents) and start their own sub-agents for independent parts (reports go to their parent). Set background=false only when you cannot do anything until the report arrives. Do NOT delegate trivial single lookups.",
+				"userDescription": "Run a self-contained sub-task in a background agent on the same model; its report comes back when it finishes.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
 					"type": "object",
@@ -797,13 +901,21 @@
 							"type": "string",
 							"description": "Self-contained task: goal, relevant paths/symbols, constraints, what is already known."
 						},
+						"name": {
+							"type": "string",
+							"description": "Short unique label for the agent (e.g. 'auth-research'), used to address it in messages."
+						},
 						"expectedOutput": {
 							"type": "string",
 							"description": "What the final report must contain (format, detail level, e.g. 'list of file:line with one-line explanation')."
 						},
+						"background": {
+							"type": "boolean",
+							"description": "Default true: run in the background and return immediately. false: wait here for the report."
+						},
 						"model": {
 							"type": "string",
-							"description": "Optional model hint: an id/name substring (e.g. 'glm-4.7-flash'), or 'fast' / 'strong'. Default: customcopilot.subagent.model or the largest-context model."
+							"description": "Optional model override: an id/name substring (e.g. 'glm-4.7-flash') or 'fast'. Default: the same model as this chat."
 						},
 						"allowWrite": {
 							"type": "boolean",
@@ -811,11 +923,131 @@
 						},
 						"maxSteps": {
 							"type": "number",
-							"description": "Max tool-calling rounds (default customcopilot.subagent.maxSteps, cap 40)."
+							"description": "Max tool-calling rounds (default customcopilot.subagent.maxSteps, cap 60)."
 						}
 					},
 					"required": [
 						"task"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_listAgents",
+				"toolReferenceName": "agents",
+				"displayName": "List Background Agents",
+				"icon": "$(organization)",
+				"modelDescription": "List the background subagents as a tree (who started whom) with status, current activity, context usage (tokens / window), rounds and unread messages. With `id`, return that agent's full details including its report and sub-agents.",
+				"userDescription": "List running/finished background agents.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "Optional agent id or name for full details and report."
+						}
+					}
+				}
+			},
+			{
+				"name": "customcopilot_sendAgentMessage",
+				"toolReferenceName": "agentMessage",
+				"displayName": "Message Background Agent",
+				"icon": "$(comment)",
+				"modelDescription": "Send a message to a running background agent (by id or name), to every running agent (to: \"all\"), or — when called by a subagent — to the main agent (to: \"main\"). The recipient reads it at the start of its next round. Use it to steer, give new information or answer an agent's question.",
+				"userDescription": "Send a message to a background agent.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"to": {
+							"type": "string",
+							"description": "Agent id or name, \"all\", or \"main\" (subagents only)."
+						},
+						"message": {
+							"type": "string",
+							"description": "The message text."
+						}
+					},
+					"required": [
+						"to",
+						"message"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_waitForAgents",
+				"toolReferenceName": "waitAgents",
+				"displayName": "Wait for Background Agents",
+				"icon": "$(watch)",
+				"modelDescription": "Wait until a background agent finishes or sends you a message, then return all pending agent reports/messages and the agent list. Wakes up immediately when something arrives. Use it when you have nothing else useful to do while agents run. `timeoutSeconds: 0` just reads pending notifications without waiting. With `ids`, waits until those agents have all finished (or a message arrives).",
+				"userDescription": "Wait for background agents' reports.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"ids": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"description": "Optional agent ids/names to wait for (all must finish)."
+						},
+						"timeoutSeconds": {
+							"type": "number",
+							"description": "Max wait (default 600, cap 3600; 0 = don't wait)."
+						}
+					}
+				}
+			},
+			{
+				"name": "customcopilot_stopAgent",
+				"toolReferenceName": "stopAgent",
+				"displayName": "Stop Background Agent",
+				"icon": "$(debug-stop)",
+				"modelDescription": "Stop a running background agent by id or name (or \"all\"), together with its sub-agents. Its partial state is reported as stopped.",
+				"userDescription": "Stop a background agent.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "Agent id or name, or \"all\"."
+						}
+					},
+					"required": [
+						"id"
+					]
+				}
+			},
+			{
+				"name": "customcopilot_resumeAgent",
+				"toolReferenceName": "resumeAgent",
+				"displayName": "Resume Background Agent",
+				"icon": "$(debug-restart)",
+				"modelDescription": "Resume a finished, stopped or failed background agent (by id or name) with a new instruction. It continues from its FULL previous conversation (no need to repeat context) with a fresh step budget and reports again when done — cheaper and better than starting a new agent for follow-up work on the same topic. Subagents can resume only their own sub-agents.",
+				"userDescription": "Continue a finished background agent with its previous context.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "Agent id or name."
+						},
+						"message": {
+							"type": "string",
+							"description": "The follow-up instruction."
+						},
+						"background": {
+							"type": "boolean",
+							"description": "Default true. false: wait here for the new report."
+						}
+					},
+					"required": [
+						"id",
+						"message"
 					]
 				}
 			},

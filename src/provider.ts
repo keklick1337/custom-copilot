@@ -143,7 +143,8 @@ function calibrateImageTokenCost(
 	}
 }
 import { updateContextStatusBar } from "./statusBar";
-import { notifyChatRequestStart } from "./chatActivity";
+import { beginMainActivity, endMainActivity, noteMainResponse, notifyChatRequestStart } from "./chatActivity";
+import { EXTENSION_ID, withAgentNotice } from "./subagent/agentManager";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
 import { OllamaApi, probeOllamaModel } from "./ollama/ollamaApi";
@@ -285,6 +286,43 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 		// invoked the request is already registered on the chat session model, so the Chat
 		// Generator can safely move on to the next session without losing this one.
 		notifyChatRequestStart();
+		// Requests from our own subagents are not "main chat" activity.
+		const isOwnRequest = options.requestInitiator === EXTENSION_ID;
+		// Agent-loop requests offer tools (utility requests like titles don't).
+		const isAgentLoopRequest = !isOwnRequest && (options.tools?.length ?? 0) > 0;
+		let calledTools = false;
+		const watchedProgress: Progress<LanguageModelResponsePart2> = isAgentLoopRequest
+			? {
+					report: (part) => {
+						if (part instanceof vscode.LanguageModelToolCallPart) {
+							calledTools = true;
+						}
+						progress.report(part);
+					},
+				}
+			: progress;
+		if (!isOwnRequest) {
+			beginMainActivity();
+		}
+		try {
+			await this.provideWithRetries(model, isOwnRequest ? messages : withAgentNotice(messages), options, watchedProgress, token);
+		} finally {
+			if (!isOwnRequest) {
+				endMainActivity();
+			}
+			if (isAgentLoopRequest) {
+				noteMainResponse(calledTools && !token.isCancellationRequested);
+			}
+		}
+	}
+
+	private async provideWithRetries(
+		model: LanguageModelChatInformation,
+		messages: readonly LanguageModelChatRequestMessage[],
+		options: ProvideLanguageModelChatResponseOptions,
+		progress: Progress<LanguageModelResponsePart2>,
+		token: CancellationToken
+	): Promise<void> {
 		let hasReported = false;
 		const trackingProgress: Progress<LanguageModelResponsePart2> = {
 			report: (part) => {

@@ -239,14 +239,66 @@ Screenshots and attachments whose long edge exceeds `customcopilot.imageMaxDimen
 Copilot does not resize. A 4K screenshot no longer eats the context window on GLM vision.
 Per model: `image_max_dimension` (`0` = send unchanged). Results are cached per image.
 
-### 🤖 Subagents (`#delegate`)
+### 🤖 Background subagents (`#delegate`)
 
-The `customcopilot_delegateTask` tool (`#delegate`) lets the agent hand a self-contained
-sub-task to a separate model in a **fresh context** and get back only the final report — broad
-codebase exploration, long logs/docs, reviews — so the main chat context stays small.
-Subagents get read-only tools by default (write tools only with `allowWrite` + confirmation),
-run up to `customcopilot.subagent.maxSteps` tool rounds, and use `customcopilot.subagent.model`
-(or a `fast` / `strong` / name hint) — e.g. a cheap GLM‑Flash for scouting.
+`#delegate` starts a **subagent**: its own tool loop in a **fresh context**, on **exactly the model
+selected in the chat** (like VS Code's built-in `runSubagent`) — the same config, even when several
+configs share one model id (e.g. five `glm-5.3` with different settings are told apart by their
+`provider:idx:id::configId` identifier). Unlike `runSubagent`, it runs in the
+**background** (Claude Code style): the call returns immediately with the agent id and the main
+agent keeps working or talking to you while one or several agents run in parallel.
+
+| Tool | What it does |
+|---|---|
+| `#delegate` (`customcopilot_delegateTask`) | Start an agent (`task`, `name`, `expectedOutput`, optional `model`, `allowWrite`, `maxSteps`; `background: false` waits for the report). |
+| `#agents` (`customcopilot_listAgents`) | Running/finished agents with status, current activity, rounds; with `id` — full details and report. |
+| `#agentMessage` (`customcopilot_sendAgentMessage`) | Message an agent by id/name or `all`. Subagents use it to message the main agent (`to: "main"`) or **each other**. Messages are read at the recipient's next round. |
+| `#waitAgents` (`customcopilot_waitForAgents`) | Block until an agent finishes or sends a message, then return the reports. `timeoutSeconds: 0` only reads pending ones. |
+| `#stopAgent` (`customcopilot_stopAgent`) | Stop an agent and its sub-agents (or `all`). |
+| `#resumeAgent` (`customcopilot_resumeAgent`) | Continue a finished / stopped / failed agent with a new instruction — it keeps its **full previous conversation**, gets a fresh step budget and reports again. |
+
+**Nested agents** (Claude Code style): a subagent can start its own sub-agents with the same tool
+for independent parts of its task, up to `customcopilot.subagent.maxDepth` levels (default 3).
+They inherit the parent's model, a read-only parent can only start read-only children, and a
+child's report goes to its **parent** (into its inbox) — the parent waits for its running children
+before writing its own report. Agents can only stop / resume their own descendants.
+
+**Context window per agent.** Every agent shows its context usage (`ctx 45k/200k (22%)` — exact
+from our provider's usage reports, `~` = estimated). When it reaches
+`customcopilot.subagent.compactThreshold` (default 80%) of the model's window, the agent
+**auto-compacts**: the same model writes a summary of the work so far (findings with paths/lines,
+changes, remaining plan) and the history is replaced by the task + summary, then it continues.
+A context-overflow error from the API also triggers one compaction and a retry.
+
+**How reports reach the main agent** when an agent finishes:
+
+1. The main agent is blocked in `#waitAgents` → it wakes up at once with the report.
+2. The main turn is still running (it is busy with other work) → a short notice is added to
+   its next model request (our models) until it reads the report with `#waitAgents`.
+3. The main turn has ended → after `customcopilot.subagent.autoResumeIdleMs` of idle time the
+   report is **posted as a new message to the chat session that started the agent**, so the main
+   agent starts working again (`customcopilot.subagent.autoResume`, on by default). If that session
+   is not the focused one, it is opened first; your unsent draft in the input box is kept. The post
+   waits until the main turn has really ended (its last model response called no tools), so it never
+   cancels a tool confirmation the chat is waiting for. Agents you stop yourself are not reported this way
+   (their state stays readable in the agent list).
+
+**Tools.** Subagents get read-only workspace tools (search, read, list, diagnostics, …) by
+default. With `allowWrite` (the user confirms when the agent is started) they also get their own
+write tools: **edit file** (exact string replace), **create file** — both confined to the workspace
+folders — and **run command** (every command is confirmed in a dialog, with a *Run all from this
+agent* option; output and exit code are returned, with a timeout). Copilot's own edit/terminal tools
+are not used by agents: they only work inside Copilot's own agent loop. Background agents run
+detached from the chat request, so their tool calls don't appear in (or interrupt) your chat; any
+confirmations come as dialogs. Foreground agents (`background: false`) run inside the live request.
+
+The **Background Agents** view in
+the extension's sidebar shows the agents as a **tree of who started whom** with status, context
+usage and rounds, plus inline **Stop / Resume / Details** buttons. A status-bar item shows running
+agents and unread reports; **hover it** for the same tree with **Stop / Resume / Details** links, or
+click it / run **Show Background Agents**. Limits: `customcopilot.subagent.maxSteps` rounds per agent, `customcopilot.subagent.maxConcurrent`
+agents at once. `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
+Agents live in memory: reloading the window stops them.
 
 ### 🟦 Z.AI / GLM extras
 
@@ -530,6 +582,9 @@ workspace, so a cloned repository can't redirect your API keys to another server
 | Stop Commit Message Generation | `customcopilot.abortGitCommitMessage` |
 | Toggle Model Capability (tools / vision / thinking) | `customcopilot.toggleModelCapability` |
 | Select Commit Message Model | `customcopilot.setDefaultModel` |
+| Show Background Agents | `customcopilot.showAgents` |
+| Stop All Background Agents | `customcopilot.stopAllAgents` |
+| Resume Background Agent (view / popup) | `customcopilot.resumeAgentById` |
 
 ## 🏗 Development
 

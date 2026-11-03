@@ -1,161 +1,57 @@
 import * as vscode from "vscode";
-import { logger } from "../logger";
-import { VENDOR_MODES } from "../vendorModes";
+import { beginMainActivity, endMainActivity } from "../chatActivity";
+import { MAIN_AGENT, agentManager, contextLabel, formatNotifications, type DelegateTaskInput } from "./agentManager";
 
 /**
- * `delegateTask` language-model tool: runs a focused sub-task on a separate
- * model in a FRESH context and returns only its final report, so the main
- * chat's context window is not filled with exploration noise. The subagent
- * gets read-only workspace tools by default (it can search and read but not
- * edit), loops on tool calls up to a step budget, and must end with a concise
- * report. Pick a cheap/fast model for scouting and a strong one for analysis.
+ * Subagent language-model tools (see `agentManager.ts`):
+ * - `delegateTask` (#delegate) — start an agent on the MAIN CHAT'S MODEL (like
+ *   VS Code's built-in runSubagent) in a fresh context; by default it runs in
+ *   the background and the main chat continues immediately;
+ * - `listAgents`, `sendAgentMessage`, `waitForAgents`, `stopAgent` — observe,
+ *   steer and collect the agents.
+ * The subagent gets read-only workspace tools unless allowWrite is set.
  */
 
-export interface DelegateTaskInput {
-	/** Self-contained task description with all context the subagent needs. */
-	task: string;
-	/** What the final report must contain (format, level of detail). */
-	expectedOutput?: string;
-	/** Model hint: an id/name substring, or "fast" / "strong". Default: the configured subagent model. */
-	model?: string;
-	/** Allow tools that can modify the workspace (edits, terminal). Default false. */
-	allowWrite?: boolean;
-	/** Max tool-calling rounds (default from settings, hard cap 40). */
-	maxSteps?: number;
-}
 
-const OWN_VENDORS = new Set(VENDOR_MODES.map((v) => v.vendor));
-const HARD_MAX_STEPS = 40;
-const MAX_TOOL_RESULT_CHARS = 24_000;
-const MAX_REPORT_CHARS = 60_000;
-
-/** Tool-name fragments that are safe for a read-only subagent. */
-const READ_ONLY_HINTS = [
-	"read",
-	"search",
-	"grep",
-	"find",
-	"list",
-	"get",
-	"fetch",
-	"semantic",
-	"codebase",
-	"usages",
-	"symbol",
-	"errors",
-	"problems",
-	"diagnostic",
-	"view",
-	"open",
-	"lookup",
-];
-/** Fragments that indicate side effects; these win over READ_ONLY_HINTS. */
-const WRITE_HINTS = [
-	"edit",
-	"write",
-	"create",
-	"delete",
-	"remove",
-	"rename",
-	"replace",
-	"insert",
-	"apply",
-	"patch",
-	"run",
-	"terminal",
-	"exec",
-	"install",
-	"commit",
-	"push",
-	"move",
-	"send",
-	"kill",
-	"task",
-	"notebook",
-	"delegate",
-	"subagent",
-];
-
-function isReadOnlyTool(tool: vscode.LanguageModelToolInformation): boolean {
-	const name = tool.name.toLowerCase();
-	if (WRITE_HINTS.some((h) => name.includes(h))) {
-		return false;
-	}
-	return READ_ONLY_HINTS.some((h) => name.includes(h));
-}
-
-function pickTools(allowWrite: boolean): vscode.LanguageModelChatTool[] {
-	return vscode.lm.tools
-		.filter((t) => t.name !== "customcopilot_delegateTask" && !/delegate|subagent|runSubagent/i.test(t.name))
-		.filter((t) => allowWrite || isReadOnlyTool(t))
-		.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema ?? { type: "object", properties: {} } }));
-}
-
-async function selectModel(hint: string | undefined): Promise<vscode.LanguageModelChat | undefined> {
-	const config = vscode.workspace.getConfiguration();
-	const configured = (config.get<string>("customcopilot.subagent.model", "") || "").trim();
-	const wanted = (hint ?? "").trim().toLowerCase();
-	const all = await vscode.lm.selectChatModels();
-	if (all.length === 0) {
+/** The model the main chat is using (proposed `chatParticipantAdditions`); undefined when unavailable. */
+function mainChatModel(options: object): vscode.LanguageModelChat | undefined {
+	try {
+		return (options as { model?: vscode.LanguageModelChat }).model;
+	} catch {
+		// The getter throws when the selected model cannot be resolved.
 		return undefined;
 	}
-	const ours = all.filter((m) => OWN_VENDORS.has(m.vendor));
-	const byText = (needle: string) =>
-		[...ours, ...all].find((m) => m.id.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle));
-
-	if (wanted && wanted !== "fast" && wanted !== "strong") {
-		const m = byText(wanted);
-		if (m) {
-			return m;
-		}
-	}
-	if (configured) {
-		const m = byText(configured.toLowerCase());
-		if (m) {
-			return m;
-		}
-	}
-	const pool = ours.length > 0 ? ours : all;
-	if (wanted === "fast") {
-		const fast = pool.find((m) => /flash|mini|haiku|air|turbo|lite|nano|small/i.test(`${m.id} ${m.name}`));
-		if (fast) {
-			return fast;
-		}
-	}
-	// Largest context window ≈ strongest when nothing else is known.
-	return [...pool].sort((a, b) => b.maxInputTokens - a.maxInputTokens)[0];
 }
 
-function toolResultToText(result: vscode.LanguageModelToolResult): string {
-	let text = "";
-	for (const part of result.content) {
-		if (part instanceof vscode.LanguageModelTextPart) {
-			text += part.value;
-		} else if (part instanceof vscode.LanguageModelPromptTsxPart) {
-			text += JSON.stringify(part.value);
-		}
-	}
-	return text.length > MAX_TOOL_RESULT_CHARS
-		? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars]`
-		: text;
+/** The chat session a tool call came from (proposed `chatParticipantPrivate`). */
+function chatSession(options: object): string | undefined {
+	const uri = (options as { chatSessionResource?: vscode.Uri }).chatSessionResource;
+	return uri ? uri.toString() : undefined;
 }
 
-const SYSTEM_PROMPT = [
-	"You are a focused subagent working for a coding assistant inside VS Code.",
-	"You run in a fresh context: you only know what the task below tells you plus what you discover with tools.",
-	"Work autonomously — never ask questions. Use the available tools to gather facts; prefer targeted searches over reading whole files.",
-	"Do not modify anything unless the task explicitly allows it and write tools are available.",
-	"Finish with a single final message that is the report for the main agent: concise, factual, with exact file paths and line numbers where relevant.",
-	"Do not include your intermediate reasoning or tool logs in the report.",
-].join("\n");
+function text(value: string): vscode.LanguageModelToolResult {
+	return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(value)]);
+}
+
+/** Wrap a main-chat tool call so it counts as main activity (auto-resume idle detection). */
+async function asMainActivity<T>(fn: () => Promise<T>): Promise<T> {
+	beginMainActivity();
+	try {
+		return await fn();
+	} finally {
+		endMainActivity();
+	}
+}
 
 export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskInput> {
 	async prepareInvocation(
 		options: vscode.LanguageModelToolInvocationPrepareOptions<DelegateTaskInput>
 	): Promise<vscode.PreparedToolInvocation> {
 		const task = (options.input.task ?? "").trim();
+		const label = (options.input.name ?? "").trim();
 		const short = task.length > 120 ? `${task.slice(0, 117)}…` : task;
-		const base = { invocationMessage: `Subagent: ${short}` };
+		const bg = options.input.background !== false;
+		const base = { invocationMessage: `${bg ? "Starting background agent" : "Subagent"}${label ? ` "${label}"` : ""}: ${short}` };
 		if (options.input.allowWrite) {
 			return {
 				...base,
@@ -174,111 +70,245 @@ export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskIn
 		options: vscode.LanguageModelToolInvocationOptions<DelegateTaskInput>,
 		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
-		const input = options.input;
-		const task = (input.task ?? "").trim();
-		if (!task) {
-			return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart("Error: `task` is required.")]);
-		}
-		const config = vscode.workspace.getConfiguration();
-		const defaultSteps = Math.max(1, config.get<number>("customcopilot.subagent.maxSteps", 15));
-		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? defaultSteps)));
-		const allowWrite = input.allowWrite === true;
-
-		const model = await selectModel(input.model);
-		if (!model) {
-			return new vscode.LanguageModelToolResult([
-				new vscode.LanguageModelTextPart("Error: no language model is available for the subagent."),
-			]);
-		}
-		const tools = pickTools(allowWrite);
-		const started = Date.now();
-		logger.info("subagent.start", { model: model.id, tools: tools.length, maxSteps, allowWrite });
-
-		const userPrompt = [
-			`# Task\n${task}`,
-			input.expectedOutput ? `# Expected report\n${input.expectedOutput}` : "",
-			`# Limits\nAt most ${maxSteps} tool rounds. ${allowWrite ? "Write tools are available." : "Read-only: you cannot modify files."}`,
-		]
-			.filter(Boolean)
-			.join("\n\n");
-
-		const messages: vscode.LanguageModelChatMessage[] = [
-			vscode.LanguageModelChatMessage.User(`${SYSTEM_PROMPT}\n\n${userPrompt}`),
-		];
-
-		let finalText = "";
-		let steps = 0;
-		let toolCalls = 0;
-		try {
-			for (;;) {
-				if (token.isCancellationRequested) {
-					throw new vscode.CancellationError();
-				}
-				const lastRound = steps >= maxSteps;
-				const response = await model.sendRequest(
-					messages,
-					{
-						justification: "Subagent delegated by the main chat",
-						tools: lastRound || tools.length === 0 ? undefined : tools,
-					},
-					token
-				);
-				let text = "";
-				const calls: vscode.LanguageModelToolCallPart[] = [];
-				for await (const part of response.stream) {
-					if (part instanceof vscode.LanguageModelTextPart) {
-						text += part.value;
-					} else if (part instanceof vscode.LanguageModelToolCallPart) {
-						calls.push(part);
-					}
-				}
-				if (calls.length === 0) {
-					finalText = text;
-					break;
-				}
-				steps++;
-				messages.push(vscode.LanguageModelChatMessage.Assistant([...(text ? [new vscode.LanguageModelTextPart(text)] : []), ...calls]));
-				const results: vscode.LanguageModelToolResultPart[] = [];
-				for (const call of calls) {
-					toolCalls++;
-					let resultText: string;
-					try {
-						const r = await vscode.lm.invokeTool(
-							call.name,
-							{ input: call.input, toolInvocationToken: options.toolInvocationToken },
-							token
-						);
-						resultText = toolResultToText(r) || "(empty result)";
-					} catch (err) {
-						if (err instanceof vscode.CancellationError) {
-							throw err;
-						}
-						resultText = `Tool error: ${err instanceof Error ? err.message : String(err)}`;
-					}
-					results.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(resultText)]));
-				}
-				const nudge =
-					steps >= maxSteps
-						? [new vscode.LanguageModelTextPart("Step budget reached. Write your final report now, without calling tools.")]
-						: [];
-				messages.push(vscode.LanguageModelChatMessage.User([...results, ...nudge]));
-			}
-		} catch (err) {
-			if (err instanceof vscode.CancellationError) {
-				throw err;
-			}
-			const msg = err instanceof Error ? err.message : String(err);
-			logger.warn("subagent.error", { model: model.id, error: msg });
-			return new vscode.LanguageModelToolResult([
-				new vscode.LanguageModelTextPart(`Subagent failed after ${steps} rounds (${model.name}): ${msg}`),
-			]);
-		}
-
-		const report = finalText.trim() || "(the subagent returned an empty report)";
-		const trimmed = report.length > MAX_REPORT_CHARS ? `${report.slice(0, MAX_REPORT_CHARS)}\n…[report truncated]` : report;
-		logger.info("subagent.done", { model: model.id, steps, toolCalls, ms: Date.now() - started, chars: trimmed.length });
-		return new vscode.LanguageModelToolResult([
-			new vscode.LanguageModelTextPart(`[Subagent report — ${model.name}, ${steps} rounds, ${toolCalls} tool calls]\n\n${trimmed}`),
-		]);
+		return asMainActivity(async () => {
+			const session = chatSession(options);
+			agentManager.noteActiveSession(session);
+			return text(
+				await agentManager.delegate(MAIN_AGENT, options.input, mainChatModel(options), {
+					toolInvocationToken: options.toolInvocationToken,
+					session,
+					token,
+				})
+			);
+		});
 	}
 }
+
+interface ListAgentsInput {
+	id?: string;
+}
+
+export class ListAgentsTool implements vscode.LanguageModelTool<ListAgentsInput> {
+	async invoke(options: vscode.LanguageModelToolInvocationOptions<ListAgentsInput>): Promise<vscode.LanguageModelToolResult> {
+		agentManager.noteActiveSession(chatSession(options));
+		const id = (options.input.id ?? "").trim();
+		if (id) {
+			return text(agentManager.details(id) ?? `No agent "${id}".`);
+		}
+		return text(agentManager.describe(MAIN_AGENT));
+	}
+}
+
+interface SendAgentMessageInput {
+	to: string;
+	message: string;
+}
+
+export class SendAgentMessageTool implements vscode.LanguageModelTool<SendAgentMessageInput> {
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<SendAgentMessageInput>
+	): Promise<vscode.PreparedToolInvocation> {
+		return { invocationMessage: `Message to agent ${options.input.to}` };
+	}
+
+	async invoke(options: vscode.LanguageModelToolInvocationOptions<SendAgentMessageInput>): Promise<vscode.LanguageModelToolResult> {
+		agentManager.noteActiveSession(chatSession(options));
+		return text(agentManager.send(MAIN_AGENT, options.input.to, options.input.message));
+	}
+}
+
+interface WaitForAgentsInput {
+	ids?: string[];
+	timeoutSeconds?: number;
+}
+
+export class WaitForAgentsTool implements vscode.LanguageModelTool<WaitForAgentsInput> {
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<WaitForAgentsInput>
+	): Promise<vscode.PreparedToolInvocation> {
+		const t = options.input.timeoutSeconds;
+		return { invocationMessage: t === 0 ? "Reading agent updates" : "Waiting for background agents…" };
+	}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<WaitForAgentsInput>,
+		token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		const session = chatSession(options);
+		agentManager.noteActiveSession(session);
+		const ids = Array.isArray(options.input.ids) ? options.input.ids.map(String) : undefined;
+		const timeoutMs = Math.min(3600, Math.max(0, Number(options.input.timeoutSeconds ?? 600))) * 1000;
+		// Blocked waiting counts as an active main turn: no auto-resume message
+		// is posted while the main agent is waiting here.
+		await asMainActivity(() => agentManager.waitMain(ids, timeoutMs, token, session));
+		// Cancelled (user pressed Stop): VS Code discards this result, so the
+		// notifications must stay unread (auto-resume / a later wait gets them).
+		if (token.isCancellationRequested) {
+			return text("Cancelled.");
+		}
+		// Only this chat session's notifications (+ unscoped ones).
+		const pending = agentManager.drainNotifications(session);
+		const status = agentManager.describe(MAIN_AGENT);
+		if (pending.length === 0) {
+			return text(`No new agent notifications.\n\n${status}`);
+		}
+		return text(`${formatNotifications(pending, 60_000, false)}\n\n## Agents\n${status}`);
+	}
+}
+
+interface ResumeAgentInput {
+	id: string;
+	message?: string;
+	background?: boolean;
+}
+
+export class ResumeAgentTool implements vscode.LanguageModelTool<ResumeAgentInput> {
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<ResumeAgentInput>
+	): Promise<vscode.PreparedToolInvocation> {
+		return { invocationMessage: `Resuming agent ${options.input.id}` };
+	}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ResumeAgentInput>,
+		token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		return asMainActivity(async () => {
+			const session = chatSession(options);
+			agentManager.noteActiveSession(session);
+			return text(
+				await agentManager.resume(MAIN_AGENT, options.input.id, options.input.message ?? "", {
+					toolInvocationToken: options.toolInvocationToken,
+					token,
+					background: options.input.background !== false,
+					session,
+				})
+			);
+		});
+	}
+}
+
+/** UI: resume an agent with a message typed by the user. */
+export async function resumeAgentFromUi(id: string): Promise<void> {
+	const rec = agentManager.find(id)?.record;
+	if (!rec) {
+		vscode.window.showWarningMessage(`No agent "${id}".`);
+		return;
+	}
+	const message = await vscode.window.showInputBox({
+		title: `Resume agent ${rec.id} "${rec.name}"`,
+		prompt: "Instruction for the agent (it continues with its previous context)",
+		value: "Continue the task.",
+		ignoreFocusOut: true,
+	});
+	if (message === undefined) {
+		return;
+	}
+	const cts = new vscode.CancellationTokenSource();
+	const result = await agentManager.resume(MAIN_AGENT, rec.id, message, {
+		toolInvocationToken: undefined,
+		token: cts.token,
+		background: true,
+	});
+	if (result.startsWith("Error")) {
+		vscode.window.showWarningMessage(result);
+	}
+}
+
+interface StopAgentInput {
+	id: string;
+}
+
+export class StopAgentTool implements vscode.LanguageModelTool<StopAgentInput> {
+	async invoke(options: vscode.LanguageModelToolInvocationOptions<StopAgentInput>): Promise<vscode.LanguageModelToolResult> {
+		agentManager.noteActiveSession(chatSession(options));
+		const id = (options.input.id ?? "").trim();
+		if (id.toLowerCase() === "all") {
+			agentManager.stopAll();
+			return text("Stopping all running agents.");
+		}
+		const r = agentManager.stop(id);
+		return text(r ? `Stopping agent ${r.id} "${r.name}" (was ${r.status}).` : `No agent "${id}".`);
+	}
+}
+
+/** Command palette: list agents, open a report or stop an agent. */
+export async function showAgentsQuickPick(): Promise<void> {
+	const agents = agentManager.tree();
+	if (agents.length === 0) {
+		vscode.window.showInformationMessage("No background agents.");
+		return;
+	}
+	const picked = await vscode.window.showQuickPick(
+		agents.map((a) => ({
+			label: `${"\u2003".repeat(a.depth - 1)}${a.status === "running" ? "$(sync~spin)" : a.status === "done" ? "$(check)" : "$(error)"} ${a.id} ${a.name}`,
+			description: `${a.status} · ${a.modelName} [${a.modelId}] · ${a.steps} rounds`,
+			detail: a.status === "running" ? a.activity : a.task.slice(0, 200),
+			id: a.id,
+		})),
+		{ title: "Background agents", placeHolder: "Select an agent" }
+	);
+	if (!picked) {
+		return;
+	}
+	const rec = agentManager.find(picked.id)?.record;
+	const actions = rec?.status === "running" ? ["Show details", "Stop agent"] : ["Show details", "Resume agent…"];
+	const action = await vscode.window.showQuickPick(actions, { title: `${picked.id}` });
+	if (action === "Resume agent…") {
+		await resumeAgentFromUi(picked.id);
+	} else if (action === "Stop agent") {
+		agentManager.stop(picked.id, true);
+	} else if (action === "Show details") {
+		const doc = await vscode.workspace.openTextDocument({ content: agentManager.details(picked.id) ?? "", language: "markdown" });
+		await vscode.window.showTextDocument(doc, { preview: true });
+	}
+}
+
+/** Status-bar hover: one line per agent with Stop / Details command links. */
+export function agentsTooltip(): vscode.MarkdownString {
+	const md = new vscode.MarkdownString(undefined, true);
+	md.isTrusted = {
+		enabledCommands: [
+			"customcopilot.stopAgentById",
+			"customcopilot.resumeAgentById",
+			"customcopilot.showAgentDetails",
+			"customcopilot.stopAllAgents",
+		],
+	};
+	md.supportThemeIcons = true;
+	const agents = agentManager.tree();
+	const link = (cmd: string, id: string) => `command:${cmd}?${encodeURIComponent(JSON.stringify([id]))}`;
+	md.appendMarkdown("**Background agents**\n\n");
+	for (const a of agents) {
+		const icon = a.status === "running" ? "$(sync~spin)" : a.status === "done" ? "$(check)" : "$(error)";
+		const indent = "&nbsp;&nbsp;&nbsp;&nbsp;".repeat(a.depth - 1);
+		const name = a.name.replace(/[[\]*_`]/g, "");
+		const action =
+			a.status === "running"
+				? ` · [$(debug-stop) Stop](${link("customcopilot.stopAgentById", a.id)})`
+				: ` · [$(debug-restart) Resume](${link("customcopilot.resumeAgentById", a.id)})`;
+		md.appendMarkdown(
+			`${indent}${icon} \`${a.id}\` ${name} — ${a.status === "running" ? a.activity : a.status} · ${contextLabel(a)}${action} · [Details](${link("customcopilot.showAgentDetails", a.id)})\n\n`
+		);
+	}
+	const unread = agentManager.unreadNotifications();
+	if (unread) {
+		md.appendMarkdown(`_${unread} unread report(s)/message(s) for the main agent_\n\n`);
+	}
+	if (agentManager.runningCount() > 1) {
+		md.appendMarkdown(`[$(debug-stop) Stop all](command:customcopilot.stopAllAgents)`);
+	}
+	return md;
+}
+
+/** Open an agent's details (task, status, report) in a read-only document. */
+export async function showAgentDetails(id: string): Promise<void> {
+	const details = agentManager.details(id);
+	if (!details) {
+		vscode.window.showWarningMessage(`No agent "${id}".`);
+		return;
+	}
+	const doc = await vscode.workspace.openTextDocument({ content: details, language: "markdown" });
+	await vscode.window.showTextDocument(doc, { preview: true });
+}
+
