@@ -16,7 +16,26 @@ import {
 	agentsTooltip,
 	showAgentDetails,
 	showAgentsQuickPick,
+	openAgentWorktree,
+	applyAgentWorktree,
+	removeAgentWorktreeFromUi,
+	newAgentDefinition,
 } from "./subagent/delegateTool";
+import { watchAgentTypes } from "./subagent/agentTypes";
+import { scheduler } from "./scheduler/scheduler";
+import {
+	ScheduleTreeProvider,
+	ScheduleWakeupTool,
+	SchedulePanel,
+	cancelScheduled,
+	createScheduleStatusBar,
+	editScheduled,
+	newReminder,
+	runScheduledNow,
+	scheduleArg,
+	snoozeScheduled,
+} from "./scheduler/scheduleUi";
+import { cleanupStaleAgentWorktrees } from "./subagent/agentWorktree";
 import { agentManager } from "./subagent/agentManager";
 import { AgentTreeProvider } from "./subagent/agentTree";
 import { AgentMapPanel } from "./subagent/agentMap";
@@ -32,6 +51,10 @@ import { keyBalancer } from "./keyBalancer";
 export function activate(context: vscode.ExtensionContext) {
 	// Privacy: drop a system-prompt capture left on disk when persistence is off.
 	cleanupPersistedPromptOnActivation();
+	// Persisted wake-ups: re-armed; ones missed while closed are offered to the user.
+	scheduler.init(context.globalState);
+	// Agents live in memory: unchanged agent worktrees of a previous window are stale.
+	void cleanupStaleAgentWorktrees().catch(() => undefined);
 
 	// Security-sensitive settings are application-scoped; values a workspace
 	// still carries are ignored by VS Code. Tell the user instead of silently
@@ -72,6 +95,28 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand("customcopilot.showAgentDetails", (arg: unknown) => showAgentDetails(agentArg(arg))),
 		vscode.window.registerTreeDataProvider("customcopilot.agentsView", new AgentTreeProvider()),
 		vscode.commands.registerCommand("customcopilot.showAgentMap", () => AgentMapPanel.show()),
+		vscode.commands.registerCommand("customcopilot.openAgentWorktree", (arg: unknown) => openAgentWorktree(agentArg(arg))),
+		vscode.commands.registerCommand("customcopilot.applyAgentWorktree", (arg: unknown) => applyAgentWorktree(agentArg(arg))),
+		vscode.commands.registerCommand("customcopilot.removeAgentWorktree", (arg: unknown) => removeAgentWorktreeFromUi(agentArg(arg))),
+		vscode.commands.registerCommand("customcopilot.newAgentDefinition", () => newAgentDefinition()),
+		vscode.commands.registerCommand("customcopilot.cleanupAgentWorktrees", async () => {
+			const n = await cleanupStaleAgentWorktrees();
+			vscode.window.showInformationMessage(n ? `Removed ${n} unchanged agent worktree(s).` : "No unchanged agent worktrees to remove.");
+		}),
+		// Custom agent types (.claude/agents, .github/agents) are re-read on change.
+		watchAgentTypes(),
+		// Scheduled wake-ups / reminders (Claude Code ScheduleWakeup / cron style).
+		vscode.lm.registerTool("customcopilot_scheduleWakeup", new ScheduleWakeupTool()),
+		vscode.window.registerTreeDataProvider("customcopilot.scheduleView", new ScheduleTreeProvider()),
+		createScheduleStatusBar(),
+		vscode.commands.registerCommand("customcopilot.showSchedule", (arg: unknown) => SchedulePanel.show(scheduleArg(arg) || undefined)),
+		vscode.commands.registerCommand("customcopilot.newReminder", () => newReminder()),
+		vscode.commands.registerCommand("customcopilot.cancelScheduled", (arg: unknown) => cancelScheduled(scheduleArg(arg))),
+		vscode.commands.registerCommand("customcopilot.runScheduledNow", (arg: unknown) => runScheduledNow(scheduleArg(arg))),
+		vscode.commands.registerCommand("customcopilot.snoozeScheduled", (arg: unknown) => snoozeScheduled(scheduleArg(arg))),
+		vscode.commands.registerCommand("customcopilot.editScheduled", (arg: unknown) => editScheduled(scheduleArg(arg))),
+		vscode.commands.registerCommand("customcopilot.clearScheduleHistory", () => scheduler.clearHistory()),
+		{ dispose: () => scheduler.dispose() },
 		{ dispose: () => agentManager.dispose() }
 	);
 	// Status-bar indicator while agents run (click → list / stop / read).

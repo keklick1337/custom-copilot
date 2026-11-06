@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { recommendedPromptAddition } from "../subagent/agentPrompts";
+import { agentManager } from "../subagent/agentManager";
 import * as crypto from "crypto";
 import {
 	buildRegisteredModelId,
@@ -20,6 +22,56 @@ import { vendorForApiMode } from "../vendorModes";
 import { getChatRequestStartCount, waitForChatRequestStart } from "../chatActivity";
 import { getCapturedSystemPrompt, loadPersistedSystemPrompt } from "../promptCapture";
 import { testPromptOverride, type PromptOverrideMode, type PromptReplacement } from "../promptOverride";
+
+/** Commands the configuration webview may run (buttons on the settings page). */
+const WEBVIEW_COMMANDS = new Set([
+	"customcopilot.showAgentMap",
+	"customcopilot.newAgentDefinition",
+	"customcopilot.cleanupAgentWorktrees",
+	"customcopilot.showSchedule",
+	"customcopilot.newReminder",
+]);
+
+interface SettingSpec {
+	type?: string;
+	minimum?: number;
+	maximum?: number;
+	enum?: string[];
+}
+
+let subagentSchemaCache: Record<string, SettingSpec> | undefined;
+
+/** Settings outside customcopilot.subagent.* that the settings page may edit (full keys). */
+const EXTRA_WEBVIEW_SETTINGS = [
+	"customcopilot.recommendedPrompt",
+	"customcopilot.schedule.enabled",
+	"customcopilot.schedule.minDelaySeconds",
+	"customcopilot.schedule.maxPending",
+	"customcopilot.schedule.maxChain",
+];
+
+/**
+ * Settings the Global Settings page edits generically, as declared in our
+ * package.json: customcopilot.subagent.* (keyed without the prefix) plus
+ * EXTRA_WEBVIEW_SETTINGS (keyed by their full name).
+ */
+function subagentSchema(): Record<string, SettingSpec> {
+	if (subagentSchemaCache) {
+		return subagentSchemaCache;
+	}
+	const props = (vscode.extensions.getExtension("keklick1337.keklick-copilot")?.packageJSON?.contributes?.configuration?.properties ??
+		{}) as Record<string, SettingSpec>;
+	const out: Record<string, SettingSpec> = {};
+	for (const [k, v] of Object.entries(props)) {
+		if (k.startsWith("customcopilot.subagent.")) {
+			out[k.slice("customcopilot.subagent.".length)] = v;
+		} else if (EXTRA_WEBVIEW_SETTINGS.includes(k)) {
+			out[k] = v;
+		}
+	}
+	subagentSchemaCache = out;
+	return out;
+}
 
 interface InitPayload {
 	proxyUrl: string;
@@ -49,7 +101,8 @@ interface InitPayload {
 	chatRetries: number;
 	chatRetryInterval: number;
 	chatRetryJitter: number;
-	subagentMaxConcurrent: number;
+	/** customcopilot.subagent.* values (key without prefix → value). */
+	subagentSettings: Record<string, unknown>;
 }
 
 type IncomingMessage =
@@ -120,7 +173,9 @@ type IncomingMessage =
 	| { type: "setChatRetries"; value: number }
 	| { type: "setChatRetryInterval"; value: number }
 	| { type: "setChatRetryJitter"; value: number }
-	| { type: "setSubagentMaxConcurrent"; value: number }
+	| { type: "setSubagentSetting"; key: string; value: unknown }
+	| { type: "runCommand"; command: string }
+	| { type: "requestRecommendedPrompt" }
 	| {
 			type: "launchChats";
 			prompts: string[];
@@ -414,8 +469,19 @@ export class ConfigViewController {
 			case "setChatRetryJitter":
 				await this.setChatRetryJitter(message.value);
 				break;
-			case "setSubagentMaxConcurrent":
-				await this.setSubagentMaxConcurrent(message.value);
+			case "setSubagentSetting":
+				await this.setSubagentSetting(message.key, message.value);
+				break;
+			case "requestRecommendedPrompt":
+				this.webview.postMessage({
+					type: "recommendedPrompt",
+					text: recommendedPromptAddition(true, agentManager.pauseEnabled()),
+				} as unknown as OutgoingMessage);
+				break;
+			case "runCommand":
+				if (WEBVIEW_COMMANDS.has(message.command)) {
+					await vscode.commands.executeCommand(message.command);
+				}
 				break;
 			case "launchChats":
 				await this.launchChats(
@@ -588,7 +654,10 @@ export class ConfigViewController {
 		const chatRetries = config.get<number>("customcopilot.chatRetries", 0);
 		const chatRetryInterval = config.get<number>("customcopilot.chatRetryInterval", 1000);
 		const chatRetryJitter = config.get<number>("customcopilot.chatRetryJitter", 0);
-		const subagentMaxConcurrent = config.get<number>("customcopilot.subagent.maxConcurrent", 4);
+		const subagentSettings: Record<string, unknown> = {};
+		for (const key of Object.keys(subagentSchema())) {
+			subagentSettings[key] = config.get(key.startsWith("customcopilot.") ? key : `customcopilot.subagent.${key}`);
+		}
 		const payload: InitPayload = {
 			proxyUrl,
 			userAgent,
@@ -612,7 +681,7 @@ export class ConfigViewController {
 			chatRetries,
 			chatRetryInterval,
 			chatRetryJitter,
-			subagentMaxConcurrent,
+			subagentSettings,
 		};
 		this.webview.postMessage({ type: "init", payload });
 	}
@@ -737,7 +806,7 @@ export class ConfigViewController {
 
 		const csp = [
 			`default-src 'none'`,
-			`img-src ${webview.cspSource} https:`,
+			`img-src ${webview.cspSource} https: data:`,
 			`style-src 'unsafe-inline'`,
 			`script-src 'nonce-${nonce}'`,
 		].join("; ");
@@ -1383,13 +1452,38 @@ export class ConfigViewController {
 		await this.sendInit();
 	}
 
-	private async setSubagentMaxConcurrent(value: number) {
-		const config = vscode.workspace.getConfiguration();
-		const normalized = Number.isFinite(value) ? Math.min(16, Math.max(1, Math.trunc(value))) : 4;
-		await config.update("customcopilot.subagent.maxConcurrent", normalized, vscode.ConfigurationTarget.Global);
-		vscode.window.showInformationMessage(
-			`Up to ${normalized} background agent${normalized > 1 ? "s" : ""} can now run at the same time.`
-		);
+	/**
+	 * Save one customcopilot.subagent.* setting from the Global Settings page,
+	 * validated against the extension's own configuration schema.
+	 */
+	private async setSubagentSetting(key: string, value: unknown) {
+		const spec = subagentSchema()[key];
+		if (!spec) {
+			return;
+		}
+		let normalized: unknown;
+		if (spec.type === "boolean") {
+			normalized = value === true;
+		} else if (spec.type === "number") {
+			const n = Number(value);
+			if (!Number.isFinite(n)) {
+				return;
+			}
+			normalized = Math.min(spec.maximum ?? Infinity, Math.max(spec.minimum ?? -Infinity, n));
+		} else if (spec.type === "array") {
+			normalized = (Array.isArray(value) ? value : [])
+				.map((v) => String(v).trim())
+				.filter((v) => v && !v.includes(".."));
+		} else {
+			const text = String(value ?? "").trim();
+			if (spec.enum && !spec.enum.includes(text)) {
+				return;
+			}
+			normalized = text;
+		}
+		await vscode.workspace
+			.getConfiguration()
+			.update(key.startsWith("customcopilot.") ? key : `customcopilot.subagent.${key}`, normalized, vscode.ConfigurationTarget.Global);
 		await this.sendInit();
 	}
 

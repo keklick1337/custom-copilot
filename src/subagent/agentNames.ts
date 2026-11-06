@@ -14,3 +14,9 @@ export const AGENT_TOOL_NAMES = {
 
 /** First line of an auto-resume chat message (also used to recognise such turns). */
 export const AUTO_RESUME_HEADER = "📨 Background agent report";
+
+/** The scheduling tool (wake-ups / reminders / recurring prompts). */
+export const SCHEDULE_TOOL_NAME = "customcopilot_scheduleWakeup";
+
+/** First line of a message posted by a scheduled wake-up. */
+export const WAKEUP_HEADER = "⏰ Scheduled wake-up";

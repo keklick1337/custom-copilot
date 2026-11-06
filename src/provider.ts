@@ -152,7 +152,8 @@ import {
 	noteMainTurn,
 	notifyChatRequestStart,
 } from "./chatActivity";
-import { AUTO_RESUME_HEADER } from "./subagent/agentNames";
+import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER, SCHEDULE_TOOL_NAME, WAKEUP_HEADER } from "./subagent/agentNames";
+import { SUBAGENT_SENTINEL, SUBAGENT_SYSTEM_END, recommendedPromptAddition } from "./subagent/agentPrompts";
 import { EXTENSION_ID, agentManager, isIdleMainCall, pauseNotice, withAgentNotice } from "./subagent/agentManager";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
@@ -171,7 +172,7 @@ import type { GeminiGenerateContentRequest } from "./gemini/geminiTypes";
 import { CommonApi, type ApiUsage, type MessageConversionConfig } from "./commonApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
-import { applyPromptOverride } from "./promptOverride";
+import { appendToSystemPrompt, applyPromptOverride, liftEmbeddedSystemPrompt } from "./promptOverride";
 
 /**
  * VS Code Chat provider backed by user-configured custom model endpoints.
@@ -316,10 +317,13 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				.join("");
 			noteMainTurn(
 				userText,
-				userText.includes(AUTO_RESUME_HEADER),
+				// Agent reports and scheduled wake-ups are automatic turns (loop guards).
+				userText.includes(AUTO_RESUME_HEADER) || userText.includes(WAKEUP_HEADER),
 				// Copilot offers task_complete only at the "autopilot" permission level.
 				(options.tools ?? []).some((t) => t.name === "task_complete")
 			);
+			// Agents started from this chat get the same workspace tools.
+			agentManager.noteMainTools((options.tools ?? []).map((t) => t.name));
 			if (!isToolRound) {
 				// A new user (or report) message: the chat is no longer paused.
 				agentManager.clearPause();
@@ -501,6 +505,22 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			// the single chokepoint before any adapter converts the messages. It also
 			// captures the original system prompt so it can be viewed/reused in the UI.
 			messages = applyPromptOverride(messages, model.id);
+			if (options.requestInitiator === EXTENSION_ID) {
+				// Our subagents: their system prompt travels in the first user message.
+				messages = liftEmbeddedSystemPrompt(messages, SUBAGENT_SENTINEL, SUBAGENT_SYSTEM_END);
+			} else if (
+				(options.tools?.length ?? 0) > 0 &&
+				// Copilot Chat's agent loop only — not other extensions' tool-using requests.
+				(!options.requestInitiator || /^github\.copilot/i.test(options.requestInitiator)) &&
+				vscode.workspace.getConfiguration().get<boolean>("customcopilot.recommendedPrompt", true)
+			) {
+				// Main chat agent loop: the recommended addition to Copilot's prompt —
+				// Claude Code–style working rules + the background-agents guide
+				// (only when the delegate tool is offered in this request).
+				const withAgents = options.tools?.some((t) => t.name === AGENT_TOOL_NAMES.run) ?? false;
+				const withSchedule = options.tools?.some((t) => t.name === SCHEDULE_TOOL_NAME) ?? false;
+				messages = appendToSystemPrompt(messages, recommendedPromptAddition(withAgents, agentManager.pauseEnabled(), withSchedule));
+			}
 
 			// get model config from user settings
 			const config = vscode.workspace.getConfiguration();

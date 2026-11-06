@@ -42,7 +42,8 @@ export class AgentTreeProvider implements vscode.TreeDataProvider<AgentRecord> {
 			hasChildren ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None
 		);
 		item.id = a.id;
-		item.description = `${a.id} · ${a.status === "running" ? a.activity : a.status} · ${contextLabel(a)} · ${a.steps}/${a.maxSteps}`;
+		const ownWorktree = !!a.worktree && a.worktree.owner === a.id && !a.worktree.removed;
+		item.description = `${a.id}${a.agentType !== "general-purpose" ? ` · ${a.agentType}` : ""}${ownWorktree ? " · worktree" : ""} · ${a.status === "running" ? a.activity : a.status} · ${contextLabel(a)} · ${a.steps}/${a.maxSteps}`;
 		item.iconPath =
 			a.status === "running"
 				? new vscode.ThemeIcon("sync~spin")
@@ -53,14 +54,18 @@ export class AgentTreeProvider implements vscode.TreeDataProvider<AgentRecord> {
 						: new vscode.ThemeIcon("error", new vscode.ThemeColor("testing.iconFailed"));
 		const md = new vscode.MarkdownString();
 		md.appendMarkdown(`**${a.name}** \`${a.id}\` — ${a.status}\n\n`);
-		md.appendMarkdown(`Model: ${a.modelName} \`${a.modelId}\`\n\n`);
+		md.appendMarkdown(`Type: ${a.agentType} · Model: ${a.modelName} \`${a.modelId}\`\n\n`);
+		if (a.worktree) {
+			md.appendMarkdown(`Worktree: \`${a.worktree.path}\` (${a.worktree.branch})${a.worktree.removed ? " — removed" : a.worktreeStatus ? ` — ${a.worktreeStatus}` : ""}\n\n`);
+		}
 		md.appendMarkdown(
 			`${contextLabel(a)}${a.compactions ? ` · compacted ${a.compactions}×` : ""}${a.resumes ? ` · resumed ${a.resumes}×` : ""}\n\n`
 		);
 		md.appendMarkdown(`Started by: ${a.parentId === MAIN_AGENT ? "main chat" : a.parentId} · ${a.toolCalls} tool calls\n\n`);
 		md.appendText(a.task.length > 400 ? `${a.task.slice(0, 397)}…` : a.task);
 		item.tooltip = md;
-		item.contextValue = a.status === "running" ? "agentRunning" : "agentFinished";
+		// "agentFinished.worktree" — regex `when` clauses keep matching the base state.
+		item.contextValue = `${a.status === "running" ? "agentRunning" : "agentFinished"}${ownWorktree ? ".worktree" : ""}`;
 		item.command = { command: "customcopilot.showAgentDetails", title: "Details", arguments: [a.id] };
 		return item;
 	}

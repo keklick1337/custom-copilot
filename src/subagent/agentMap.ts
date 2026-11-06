@@ -23,6 +23,9 @@ body { margin: 0; padding: 0; color: var(--vscode-foreground); background: var(-
 button { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; padding: 5px 12px; border-radius: 3px; cursor: pointer; font-family: inherit; }
 button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 button:hover { opacity: .9; }
+.badge { font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex: 0 0 auto; }
+.box.wt code { font-family: var(--vscode-editor-font-family); font-size: 12px; word-break: break-all; }
+.box.wt .actions { margin-top: 8px; }
 `;
 
 const SHARED_JS = `
@@ -67,6 +70,12 @@ function summary(r: AgentRecord) {
 		allowWrite: r.allowWrite,
 		autoApprove: r.autoApprove === true,
 		unread: r.inbox.length,
+		agentType: r.agentType,
+		worktreePath: r.worktree?.path ?? "",
+		worktreeBranch: r.worktree?.branch ?? "",
+		worktreeOwn: !!r.worktree && r.worktree.owner === r.id,
+		worktreeRemoved: r.worktree?.removed === true,
+		worktreeStatus: r.worktreeStatus ?? "",
 	};
 }
 
@@ -100,6 +109,12 @@ async function runAgentAction(type: string, id: string, text: string): Promise<v
 		if (result.startsWith("Error") || result.startsWith("Not delivered")) {
 			vscode.window.showWarningMessage(result);
 		}
+	} else if (type === "openWorktree") {
+		await vscode.commands.executeCommand("customcopilot.openAgentWorktree", id);
+	} else if (type === "applyWorktree") {
+		await vscode.commands.executeCommand("customcopilot.applyAgentWorktree", id);
+	} else if (type === "removeWorktree") {
+		await vscode.commands.executeCommand("customcopilot.removeAgentWorktree", id);
 	} else if (type === "resume") {
 		const cts = new vscode.CancellationTokenSource();
 		const result = await agentManager.resume(MAIN_AGENT, id, text.trim() || "Continue the task.", {
@@ -199,7 +214,9 @@ function card(a) {
   const dur = fmtDur((a.endedAt || Date.now()) - a.startedAt);
   const extra = a.status === "running" ? " · " + esc(a.activity) : a.status === "done" ? "" : " · " + a.status;
   return '<div class="card" data-id="' + esc(a.id) + '" title="' + esc(a.id + " · " + a.modelName + " — click for details") + '">' +
-    '<div class="title"><span class="dot ' + dotClass(a) + '"></span><span class="t">' + esc(a.name) + "</span></div>" +
+    '<div class="title"><span class="dot ' + dotClass(a) + '"></span><span class="t">' + esc(a.name) + "</span>" +
+      (a.agentType && a.agentType !== "general-purpose" ? '<span class="badge">' + esc(a.agentType) + "</span>" : "") +
+      (a.worktreeOwn && !a.worktreeRemoved ? '<span class="badge" title="' + esc(a.worktreePath) + '">worktree</span>' : "") + "</div>" +
     '<div class="meta">' + dur + " · " + fmtTok(a.totalTokens) + " tokens" + extra + "</div></div>";
 }
 function subtree(a) {
@@ -370,6 +387,7 @@ function render() {
       stat("Context", (d.contextExact ? "" : "~") + fmtTok(d.contextTokens) + " / " + fmtTok(d.maxContextTokens) + " (" + ctxPct + "%)", ctxPct) +
       stat("Rounds", d.steps + " / " + d.maxSteps, d.maxSteps ? d.steps / d.maxSteps * 100 : 0) +
       stat("Tool calls", d.toolCalls + (d.compactions ? " · compacted " + d.compactions + "×" : "") + (d.resumes ? " · resumed " + d.resumes + "×" : "")) +
+      stat("Type", esc(d.agentType || "general-purpose")) +
       stat("Access", d.allowWrite ? "read/write" + (d.autoApprove ? " · auto-approve" : "") : "read-only + terminal") +
       stat("Started by", d.parentId === "main" ? "main chat" : '<span class="links"><a data-open="' + esc(d.parentId) + '">' + esc(d.parentName || d.parentId) + "</a></span>") +
     "</div>" +
@@ -380,6 +398,12 @@ function render() {
       (running ? '<button id="stop">Stop</button>' : "") +
       '<button id="map">Agent map</button>' +
     "</div>" +
+    (d.worktreePath ? "<h3>Worktree</h3><div class=\\"box wt\\"><div><code>" + esc(d.worktreePath) + "</code></div><div class=\\"status\\">branch " + esc(d.worktreeBranch) +
+      (d.worktreeOwn ? "" : " · inherited from the agent that started it") +
+      (d.worktreeRemoved ? " · removed" : d.worktreeStatus ? " · " + esc(d.worktreeStatus) : running ? " · in use" : "") + "</div>" +
+      (d.worktreeOwn && !d.worktreeRemoved ? '<div class="actions"><button data-act="openWorktree">Open in new window</button>' +
+        (running ? "" : '<button class="primary" data-act="applyWorktree">Apply to workspace</button><button data-act="removeWorktree">Remove worktree</button>') + "</div>" : "") +
+      "</div>" : "") +
     (d.error ? "<h3>Error</h3><div class=\\"box\\"><pre>" + esc(d.error) + "</pre></div>" : "") +
     (d.report ? "<h3>Report</h3><div class=\\"box\\"><pre>" + esc(d.report) + "</pre></div>" : "") +
     "<h3>Task</h3><div class=\\"box\\"><pre>" + esc(d.task) + (d.expectedOutput ? "\\n\\nExpected report: " + esc(d.expectedOutput) : "") + "</pre></div>" +
@@ -391,6 +415,7 @@ function render() {
   const stop = document.getElementById("stop"); if (stop) stop.onclick = () => vscode.postMessage({ type: "stop" });
   document.getElementById("map").onclick = () => vscode.postMessage({ type: "map" });
   for (const a of root.querySelectorAll("[data-open]")) a.onclick = () => vscode.postMessage({ type: "open", id: a.dataset.open });
+  for (const b of root.querySelectorAll("[data-act]")) b.onclick = () => vscode.postMessage({ type: b.dataset.act });
   for (const c of root.querySelectorAll("[data-k]")) c.onchange = () => { if (c.checked) hidden.delete(c.dataset.k); else hidden.add(c.dataset.k); render(); };
   for (const m of root.querySelectorAll(".more")) m.onclick = () => { expanded.add(Number(m.parentElement.dataset.i)); m.parentElement.classList.remove("collapsed"); m.remove(); };
   window.scrollTo(0, scroll);

@@ -1349,3 +1349,437 @@ tr:hover td {
 .skill-card .skill-inline-preview {
 	margin-top: 6px;
 }
+
+/* ===================================================================
+   Settings pages — categories (collapsible), cards, switches
+   Sized by the panel's own width (container queries), so the same page
+   works in a narrow sidebar and in a wide editor-area panel.
+   =================================================================== */
+
+:root {
+	--cc-radius: 6px;
+	--cc-border: var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+	--cc-surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	--cc-hover: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08));
+}
+
+/* Modernised base controls: subtle rounding like the current VS Code UI. */
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="email"],
+input[type="url"],
+input[type="search"],
+select,
+textarea {
+	border-radius: 4px;
+}
+
+input[type="search"] {
+	width: 100%;
+	height: 28px;
+	padding: 3px 8px 3px 28px;
+	font-family: var(--vscode-font-family);
+	font-size: 13px;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background)
+		url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'%3E%3Cpath fill='%23888' d='M15.25 13.69l-4.06-4.06a5.75 5.75 0 1 0-1.06 1.06l4.06 4.06a.75.75 0 1 0 1.06-1.06zM2.5 6.5a4 4 0 1 1 8 0 4 4 0 0 1-8 0z'/%3E%3C/svg%3E")
+		no-repeat 8px center;
+	border: 1px solid var(--vscode-input-border, transparent);
+	outline: none;
+}
+
+input[type="search"]:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+button,
+button.secondary {
+	border-radius: 4px;
+}
+
+/* ── Settings page shell ─────────────────────────────────────────── */
+
+.settings-page {
+	padding-top: 12px;
+}
+
+.settings-search {
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	padding: 6px 0 10px;
+	background: var(--vscode-editor-background);
+}
+
+/* ── Category (details/summary) ─────────────────────────────────── */
+
+details.group {
+	border: 1px solid var(--cc-border);
+	border-radius: var(--cc-radius);
+	background: var(--cc-surface);
+	margin-bottom: 10px;
+	overflow: hidden;
+}
+
+details.group > summary {
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 9px 12px;
+	cursor: pointer;
+	user-select: none;
+	position: relative;
+}
+
+details.group > summary::-webkit-details-marker {
+	display: none;
+}
+
+/* Chevron */
+details.group > summary::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	flex: 0 0 auto;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: rotate(-45deg);
+	opacity: 0.7;
+	transition: transform 0.15s ease;
+	margin: 0 2px;
+}
+
+details.group[open] > summary::before {
+	transform: rotate(45deg);
+}
+
+details.group > summary:hover {
+	background: var(--cc-hover);
+}
+
+details.group > summary:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+details.group[open] > summary {
+	border-bottom: 1px solid var(--cc-border);
+}
+
+.group-icon {
+	font-size: 15px;
+	line-height: 1;
+	flex: 0 0 auto;
+}
+
+.group-heading {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.group-title {
+	font-weight: 600;
+	font-size: 13px;
+}
+
+.group-sub {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.group-count {
+	flex: 0 0 auto;
+	min-width: 20px;
+	padding: 0 6px;
+	height: 18px;
+	line-height: 18px;
+	border-radius: 9px;
+	font-size: 10px;
+	font-weight: 700;
+	text-align: center;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.group-count:empty {
+	display: none;
+}
+
+.group-body {
+	padding: 4px 0;
+	background: var(--vscode-editor-background);
+}
+
+.group-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 8px 12px 4px;
+}
+
+.sub-heading {
+	margin: 12px 12px 2px;
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Compact variant (inside forms, e.g. the model's advanced settings). */
+details.group.compact {
+	background: transparent;
+	margin: 10px 0 0;
+}
+
+details.group.compact > summary {
+	padding: 7px 10px;
+}
+
+details.group.compact .group-body {
+	padding: 10px 12px;
+	background: transparent;
+}
+
+details.group.compact .subsection {
+	border-radius: 4px;
+	margin-bottom: 0;
+}
+
+/* ── Setting rows ───────────────────────────────────────────────── */
+
+.setting {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 10px 12px;
+	border-left: 2px solid transparent;
+	min-width: 0;
+}
+
+.setting + .setting,
+.setting-grid + .setting,
+.setting + .setting-grid {
+	border-top: 1px solid color-mix(in srgb, var(--cc-border) 55%, transparent);
+}
+
+.setting:hover {
+	background: var(--cc-hover);
+	border-left-color: var(--vscode-focusBorder);
+}
+
+.setting-title {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 0;
+	cursor: pointer;
+}
+
+.setting .field-description {
+	margin-bottom: 4px;
+}
+
+.setting input[type="number"],
+.setting input[type="text"],
+.setting select {
+	max-width: 420px;
+}
+
+.setting-toggle {
+	flex-direction: row;
+	align-items: center;
+	gap: 14px;
+}
+
+.setting-text {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.setting-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.setting-grid > .setting + .setting {
+	border-top: none;
+}
+
+#promptOverrideBody {
+	padding: 4px 12px 10px;
+}
+
+.filtered-out {
+	display: none !important;
+}
+
+/* ── Switch (styled checkbox) ───────────────────────────────────── */
+
+.switch {
+	position: relative;
+	flex: 0 0 auto;
+	width: 34px;
+	height: 18px;
+	margin: 0;
+	cursor: pointer;
+}
+
+.switch input {
+	position: absolute;
+	opacity: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	cursor: pointer;
+	z-index: 1;
+}
+
+.switch .slider {
+	position: absolute;
+	inset: 0;
+	border-radius: 9px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-checkbox-border, var(--cc-border));
+	transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.switch .slider::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: var(--vscode-descriptionForeground);
+	transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.switch input:checked + .slider {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.switch input:checked + .slider::after {
+	transform: translateX(16px);
+	background: var(--vscode-button-foreground);
+}
+
+.switch input:focus-visible + .slider {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+/* ── Model form: "Advanced" disclosure ──────────────────────────── */
+
+.advanced-toggle {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	margin: 14px 0 0;
+	padding: 6px 10px;
+	border: 1px dashed var(--cc-border);
+	border-radius: var(--cc-radius);
+	text-decoration: none !important;
+	font-weight: 600;
+}
+
+.advanced-toggle:hover {
+	background: var(--cc-hover);
+}
+
+.advanced-content {
+	margin-top: 0;
+}
+
+/* ── Width-driven layout ────────────────────────────────────────── */
+
+@container (max-width: 420px) {
+	section.settings-page {
+		padding-left: 10px;
+		padding-right: 10px;
+	}
+	.setting-grid {
+		grid-template-columns: 1fr;
+	}
+	.setting-grid > .setting + .setting {
+		border-top: 1px solid color-mix(in srgb, var(--cc-border) 55%, transparent);
+	}
+	.group-sub {
+		display: none;
+	}
+	.setting input[type="number"],
+	.setting input[type="text"],
+	.setting select {
+		max-width: none;
+	}
+	.group-actions button {
+		flex: 1 1 auto;
+	}
+}
+
+@container (min-width: 900px) {
+	.settings-page {
+		max-width: 1100px;
+	}
+	/* Wide panel: two categories side by side is too busy — keep one column
+	   but give long descriptions room and toggles a fixed lane. */
+	.setting-toggle .setting-text {
+		max-width: 760px;
+	}
+}
+
+/* ── Recommended prompt ─────────────────────────────────────────── */
+
+.setting.recommended {
+	border-left-color: var(--vscode-button-background);
+}
+
+.pill {
+	display: inline-block;
+	margin-left: 6px;
+	padding: 0 7px;
+	border-radius: 9px;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 16px;
+	vertical-align: 1px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+details.preview {
+	margin: 0 12px 10px;
+}
+
+details.preview > summary {
+	cursor: pointer;
+	font-size: 12px;
+	color: var(--vscode-textLink-foreground);
+	padding: 2px 0;
+}
+
+details.preview textarea {
+	margin-top: 6px;
+	min-height: 160px;
+}
+
+.preview-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 6px;
+}
+
+.preview-actions .field-description {
+	margin: 0;
+}

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { spawn } from "child_process";
+import { type AgentWorktree, insideWorktree, toWorktreePath } from "./agentWorktree";
 
 /**
  * Write tools for write-enabled subagents (`allowWrite`). Copilot's own edit
@@ -12,15 +13,26 @@ import { spawn } from "child_process";
 
 const MAX_OUTPUT_CHARS = 20_000;
 
-/** Resolve a path inside a workspace folder; throws when outside. */
-function resolveWorkspacePath(p: string): vscode.Uri {
-	const folders = vscode.workspace.workspaceFolders ?? [];
-	if (folders.length === 0) {
-		throw new Error("No workspace folder is open.");
-	}
+/**
+ * Resolve a path inside a workspace folder; throws when outside. For an
+ * agent in its own worktree, paths are re-rooted into the worktree (paths
+ * under the main checkout map to the same relative path) and confined to it.
+ */
+function resolveWorkspacePath(p: string, wt?: AgentWorktree): vscode.Uri {
 	const raw = (p ?? "").trim();
 	if (!raw) {
 		throw new Error("`path` is required.");
+	}
+	if (wt) {
+		const mapped = toWorktreePath(raw, wt);
+		if (!insideWorktree(mapped, wt)) {
+			throw new Error(`Refusing to touch a path outside your worktree (${wt.path}): ${raw}`);
+		}
+		return vscode.Uri.file(mapped);
+	}
+	const folders = vscode.workspace.workspaceFolders ?? [];
+	if (folders.length === 0) {
+		throw new Error("No workspace folder is open.");
 	}
 	const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(folders[0].uri.fsPath, raw);
 	const inside = folders.some((f) => {
@@ -43,8 +55,13 @@ function countOccurrences(haystack: string, needle: string): number {
 	return count;
 }
 
-export async function agentEditFile(input: Record<string, unknown>): Promise<string> {
-	const uri = resolveWorkspacePath(String(input.path ?? ""));
+/** Path shown back to the agent: absolute inside a worktree, else workspace-relative. */
+function shownPath(uri: vscode.Uri, wt?: AgentWorktree): string {
+	return wt ? uri.fsPath : vscode.workspace.asRelativePath(uri);
+}
+
+export async function agentEditFile(input: Record<string, unknown>, wt?: AgentWorktree): Promise<string> {
+	const uri = resolveWorkspacePath(String(input.path ?? ""), wt);
 	const oldString = String(input.oldString ?? "");
 	const newString = String(input.newString ?? "");
 	if (!oldString) {
@@ -78,11 +95,11 @@ export async function agentEditFile(input: Record<string, unknown>): Promise<str
 		return "Error: the edit could not be applied.";
 	}
 	await (await vscode.workspace.openTextDocument(uri)).save();
-	return `Edited ${vscode.workspace.asRelativePath(uri)} (${replaced} replacement${replaced > 1 ? "s" : ""}).`;
+	return `Edited ${shownPath(uri, wt)} (${replaced} replacement${replaced > 1 ? "s" : ""}).`;
 }
 
-export async function agentCreateFile(input: Record<string, unknown>): Promise<string> {
-	const uri = resolveWorkspacePath(String(input.path ?? ""));
+export async function agentCreateFile(input: Record<string, unknown>, wt?: AgentWorktree): Promise<string> {
+	const uri = resolveWorkspacePath(String(input.path ?? ""), wt);
 	const content = String(input.content ?? "");
 	let exists = false;
 	try {
@@ -96,7 +113,7 @@ export async function agentCreateFile(input: Record<string, unknown>): Promise<s
 	}
 	await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(uri.fsPath)));
 	await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
-	return `${exists ? "Overwrote" : "Created"} ${vscode.workspace.asRelativePath(uri)} (${content.length} chars).`;
+	return `${exists ? "Overwrote" : "Created"} ${shownPath(uri, wt)} (${content.length} chars).`;
 }
 
 /** Per-agent execution context for shell commands. */
@@ -109,6 +126,8 @@ export interface CommandContext {
 	/** Reported while waiting for approval (shown in the agent tree / status bar). */
 	onWaiting: (waiting: string | undefined) => void;
 	token: vscode.CancellationToken;
+	/** The agent's isolated worktree: commands run (and stay) inside it. */
+	worktree?: AgentWorktree;
 }
 
 const agentTerminals = new Map<string, vscode.Terminal>();
@@ -244,7 +263,9 @@ export async function agentRunCommand(input: Record<string, unknown>, ctx: Comma
 		return "Error: `command` is required.";
 	}
 	const folders = vscode.workspace.workspaceFolders ?? [];
-	const cwd = input.cwd ? resolveWorkspacePath(String(input.cwd)).fsPath : folders[0]?.uri.fsPath;
+	const cwd = input.cwd
+		? resolveWorkspacePath(String(input.cwd), ctx.worktree).fsPath
+		: ctx.worktree?.path ?? folders[0]?.uri.fsPath;
 	if (!cwd) {
 		return "Error: no workspace folder is open.";
 	}

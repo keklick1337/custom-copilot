@@ -1,9 +1,23 @@
 import * as vscode from "vscode";
+import * as pathModule from "path";
 import { logger } from "../logger";
 import { autoResumeDepth, currentMainTurn, isAutopilotTurn, isMainChatIdle, noteMainCancelled, wasMainTurnCancelled } from "../chatActivity";
 import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER } from "./agentNames";
 import { HARD_MAX_STEPS, pickTools, selectModel } from "./agentSetup";
 import { agentCreateFile, agentEditFile, agentRunCommand, disposeAgentTerminal } from "./agentWriteTools";
+import { type AgentTypeDef, BUILT_IN_TYPES, describeAgentTypes, resolveAgentType } from "./agentTypes";
+import {
+	type AgentWorktree,
+	applyWorktreeToMain,
+	createAgentWorktree,
+	currentBranch,
+	describeChanges,
+	removeAgentWorktree,
+	setWorktreeLock,
+	toWorktreePath,
+	worktreeChanges,
+} from "./agentWorktree";
+import { SUBAGENT_SENTINEL, subagentFirstMessage, subagentSystemPrompt } from "./agentPrompts";
 
 /**
  * Background subagents (Claude Code style).
@@ -132,6 +146,12 @@ export interface AgentRecord {
 	compactions: number;
 	/** How many times the agent was resumed after finishing. */
 	resumes: number;
+	/** Agent type (`subagentType`): general-purpose, Explore, Plan or a custom agent. */
+	agentType: string;
+	/** Isolated git worktree it works in (own or inherited from an ancestor). */
+	worktree?: AgentWorktree;
+	/** Change summary of its own worktree when it finished ("2 changed files"). */
+	worktreeStatus?: string;
 }
 
 interface AgentRuntime {
@@ -152,6 +172,11 @@ interface AgentRuntime {
 	usageBase?: number;
 	/** The user allowed every shell command of this agent. */
 	allowAllCommands: { value: boolean };
+	type: AgentTypeDef;
+	/** Worktree bookkeeping after the agent ended (awaited by resume). */
+	finishing?: Promise<void>;
+	/** A resume is being set up (guards against a double resume). */
+	resuming?: boolean;
 }
 
 export interface StartAgentOptions {
@@ -165,6 +190,10 @@ export interface StartAgentOptions {
 	parentId?: string;
 	session?: string;
 	awaited?: boolean;
+	type?: AgentTypeDef;
+	/** Pre-assigned id (when a worktree was created for it first). */
+	id?: string;
+	worktree?: AgentWorktree;
 }
 
 /** One model response of an agent. */
@@ -191,7 +220,7 @@ export interface DelegateTaskInput {
 	 * Copilot may hide our separate agent tools behind tool groups/search,
 	 * but a model that can start agents can always wait for them.
 	 */
-	action?: "start" | "wait" | "status" | "message" | "stop" | "resume";
+	action?: "start" | "wait" | "status" | "message" | "stop" | "resume" | "types";
 	/** Agent id/name for message / stop / resume / status details. */
 	id?: string;
 	/** Agents to wait for (action "wait"). */
@@ -207,20 +236,12 @@ export interface DelegateTaskInput {
 	model?: string;
 	allowWrite?: boolean;
 	maxSteps?: number;
+	/** Agent type: general-purpose (default), Explore, Plan or a custom agent. */
+	subagentType?: string;
+	/** "worktree": run in an isolated git worktree. */
+	isolation?: string;
 }
 
-const SYSTEM_PROMPT = [
-	"You are a subagent working for the main coding agent inside VS Code. Your agent id is {ID}, your name is \"{NAME}\". You were started by {PARENT}.",
-	"You run in a fresh context: you only know what the task below tells you plus what you discover with tools.",
-	"Work autonomously — never ask the user questions. Prefer targeted searches over reading whole files.",
-	"Do not modify anything unless the task explicitly allows it and write tools are available.",
-	"Other agents may run in parallel. `customcopilot_listAgents` shows them; `customcopilot_sendAgentMessage` sends a message to the main agent (to: \"main\"), to your parent, or to another agent (its id or name) — use it to coordinate, avoid duplicate work, or ask for a decision; `customcopilot_waitForAgents` waits for messages or for other agents to finish. Messages sent to you appear at the start of your next round.",
-	"{SPAWN}",
-	"Finish with a single final message that is the report for whoever started you: concise, factual, with exact file paths and line numbers where relevant. Do not include intermediate reasoning or tool logs in the report.",
-].join("\n");
-
-/** Sentinel marking the first message of a subagent conversation. */
-const SUBAGENT_SENTINEL = "[customcopilot-subagent]";
 
 function truncate(text: string, max: number, what: string): string {
 	return text.length > max ? `${text.slice(0, max)}\n…[${what} truncated, ${text.length - max} more chars]` : text;
@@ -518,7 +539,8 @@ class AgentManager {
 		}
 		const parent = opts.parentId && opts.parentId !== MAIN_AGENT ? this.agents.get(opts.parentId)?.record : undefined;
 		const depth = parent ? parent.depth + 1 : 1;
-		const id = `a${this.nextId++}`;
+		const id = opts.id ?? this.reserveId();
+		const type = opts.type ?? BUILT_IN_TYPES[0];
 		const record: AgentRecord = {
 			id,
 			name: (opts.name ?? "").trim() || autoTitle(opts.task) || id,
@@ -545,11 +567,19 @@ class AgentManager {
 			resumes: 0,
 			totalTokens: 0,
 			transcript: [],
+			agentType: type.name,
+			// Own worktree, else the parent's (children work in the same copy).
+			worktree: opts.worktree ?? parent?.worktree,
 		};
 		const runtime: AgentRuntime = {
 			record,
+			type,
 			model: opts.model,
-			tools: pickTools(opts.allowWrite, depth < Math.max(1, setting("maxDepth", 3))),
+			tools: pickTools(opts.allowWrite, depth < Math.max(1, setting("maxDepth", 3)), {
+				tools: type.tools,
+				disallowedTools: type.disallowedTools,
+				mainTools: this.mainTools,
+			}),
 			cts: new vscode.CancellationTokenSource(),
 			// Background agents run DETACHED from the chat request: its token
 			// goes stale when the turn ends (and would attach tool UI to the
@@ -566,8 +596,34 @@ class AgentManager {
 		});
 		this.pruneFinished();
 		this.changeEmitter.fire();
-		logger.info("subagent.start", { id, parent: record.parentId, depth, model: opts.model.id, tools: runtime.tools.length });
+		logger.info("subagent.start", {
+			id,
+			type: type.name,
+			parent: record.parentId,
+			depth,
+			model: opts.model.id,
+			tools: runtime.tools.length,
+			worktree: record.worktree?.path,
+		});
 		return record;
+	}
+
+	/** Next agent id ("a7"). */
+	private reserveId(): string {
+		return `a${this.nextId++}`;
+	}
+
+	/** Tools the main chat currently has enabled (from its last model request). */
+	private mainTools: ReadonlySet<string> | undefined;
+
+	/**
+	 * Record the tool names of a main-chat request (its tool picker): agents
+	 * started from now on get the same workspace tools.
+	 */
+	noteMainTools(names: readonly string[]): void {
+		if (names.length > 0) {
+			this.mainTools = new Set(names);
+		}
 	}
 
 	/**
@@ -608,8 +664,10 @@ class AgentManager {
 				return this.resume(caller, id, String(input.message ?? ""), { ...ctx, background: input.background !== false });
 			case "wait":
 				return this.waitAction(caller, input, ctx);
+			case "types":
+				return `Agent types for \`subagentType\`:\n${describeAgentTypes()}`;
 			default:
-				return `Error: unknown action "${action}" (use start, wait, status, message, stop or resume).`;
+				return `Error: unknown action "${action}" (use start, wait, status, message, stop, resume or types).`;
 		}
 	}
 
@@ -712,16 +770,46 @@ class AgentManager {
 				this.pauseTurn = turn;
 			}
 		}
+		const type = resolveAgentType(input.subagentType);
+		if (!type) {
+			return `Error: unknown subagentType "${input.subagentType}". Available types:\n${describeAgentTypes()}`;
+		}
 		const defaultSteps = Math.max(1, setting("maxSteps", 15));
-		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? defaultSteps)));
-		// A read-only parent can never grant write tools to its children.
-		const allowWrite = input.allowWrite === true && (parentRecord ? parentRecord.allowWrite : true);
-		const model = await selectModel(input.model, callerModel);
+		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? type.maxSteps ?? defaultSteps)));
+		const isolation = String(input.isolation ?? type.isolation ?? "").trim().toLowerCase() === "worktree";
+		// Write tools: asked for, implied by a custom type's tools, or an
+		// isolated worktree (edits cannot touch the user's checkout) — never
+		// for read-only types, and a read-only parent can never grant them.
+		const isolatedCopy = isolation || !!parentRecord?.worktree;
+		const allowWrite =
+			!type.readOnly &&
+			(input.allowWrite === true || type.write === true || (isolatedCopy && input.allowWrite !== false)) &&
+			(parentRecord ? parentRecord.allowWrite : true);
+		const modelHint = input.model ?? (type.model && type.model.toLowerCase() !== "inherit" ? type.model : undefined);
+		const model = await selectModel(modelHint, callerModel);
 		if (!model) {
 			return "Error: no language model is available for the subagent.";
 		}
+		const maxConcurrent = Math.max(1, setting("maxConcurrent", 4));
+		if (this.runningCount() >= maxConcurrent) {
+			return `Error: ${maxConcurrent} agents are already running (customcopilot.subagent.maxConcurrent). Wait for one ({"action": "wait"}) or stop one ({"action": "stop", "id": "…"}).\n\n${this.describe(caller)}`;
+		}
 		const background = input.background !== false;
+		const id = this.reserveId();
+		let worktree: AgentWorktree | undefined;
+		if (isolation) {
+			const from = parentRecord?.worktree?.path ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+			if (!from) {
+				return 'Error: isolation "worktree" needs an open workspace folder.';
+			}
+			try {
+				worktree = await createAgentWorktree(id, from);
+			} catch (err) {
+				return `Error: could not create the worktree — ${err instanceof Error ? err.message : String(err)}. Start the agent without isolation, or fix the repository first.`;
+			}
+		}
 		const started = this.start({
+			id,
 			name: input.name,
 			task,
 			expectedOutput: input.expectedOutput,
@@ -732,8 +820,13 @@ class AgentManager {
 			parentId: caller,
 			session: ctx.session,
 			awaited: !background,
+			type,
+			worktree,
 		});
 		if (typeof started === "string") {
+			if (worktree) {
+				void removeAgentWorktree(worktree);
+			}
 			return `${started}\n\n${this.describe(caller)}`;
 		}
 		if (caller === MAIN_AGENT && autoResumeDepth() >= MAX_AUTO_RESUME_CHAIN) {
@@ -746,9 +839,11 @@ class AgentManager {
 		started.autoApprove = parentRecord ? parentRecord.autoApprove === true : mainAutoApprove();
 		if (!background) {
 			const done = await this.waitFor(started.id, ctx.token);
-			return `[Subagent ${started.id} "${started.name}" — ${model.name}, ${done?.status}, ${done?.steps} rounds, ${done?.toolCalls} tool calls]\n\n${done?.report ?? done?.error ?? ""}`;
+			return `[Subagent ${started.id} "${started.name}" (${type.name}) — ${model.name}, ${done?.status}, ${done?.steps} rounds, ${done?.toolCalls} tool calls]\n\n${done?.report ?? done?.error ?? ""}${this.worktreeFooter(started)}`;
 		}
-		const head = `Started background agent ${started.id} "${started.name}" on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, up to ${maxSteps} rounds).`;
+		const head =
+			`Started background agent ${started.id} "${started.name}" (${type.name}) on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, up to ${maxSteps} rounds)` +
+			(worktree ? ` in its own worktree ${worktree.path} (branch ${worktree.branch}).` : ".");
 		if (caller !== MAIN_AGENT) {
 			return `${head} Its report arrives as a message at the start of one of your next rounds; {"action": "wait"} blocks until it does.`;
 		}
@@ -811,7 +906,7 @@ class AgentManager {
 		if (caller !== MAIN_AGENT && !this.isDescendant(r, caller)) {
 			return "Error: you can only resume your own sub-agents.";
 		}
-		if (r.status === "running") {
+		if (r.status === "running" || runtime.resuming) {
 			return `Agent ${r.id} is still running — send it a message instead (customcopilot_sendAgentMessage).`;
 		}
 		if (runtime.messages.length === 0) {
@@ -823,7 +918,28 @@ class AgentManager {
 		}
 		const text = (message ?? "").trim() || "Continue the task.";
 		const budget = Math.max(1, setting("maxSteps", 15));
+		// Held until the agent is marked running (no double resume across the awaits below).
+		runtime.resuming = true;
+		// Let the end-of-run worktree bookkeeping finish first (it may remove it).
+		await runtime.finishing?.catch(() => undefined);
+		let worktreeNote = "";
+		if (r.worktree && !r.worktree.removed && r.worktree.owner === r.id) {
+			await setWorktreeLock(r.worktree, true);
+		}
+		if (r.worktree?.removed && r.worktree.owner === r.id) {
+			// Its worktree had no changes and was removed: give it a fresh one.
+			const old = r.worktree;
+			try {
+				r.worktree = await createAgentWorktree(r.id, old.checkoutRoot);
+				r.worktreeStatus = undefined;
+				worktreeNote = `\n\nYour previous worktree had no changes and was removed. You now work in a fresh isolated worktree at ${r.worktree.path} (branch ${r.worktree.branch}); it replaces ${old.path} in everything above.`;
+			} catch (err) {
+				runtime.resuming = false;
+				return `Error: could not recreate the agent's worktree — ${err instanceof Error ? err.message : String(err)}.`;
+			}
+		}
 		r.status = "running";
+		runtime.resuming = false;
 		r.endedAt = undefined;
 		r.error = undefined;
 		r.stoppedByUser = undefined;
@@ -839,7 +955,7 @@ class AgentManager {
 		}
 		runtime.messages.push(
 			vscode.LanguageModelChatMessage.User(
-				`[Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}] ${text}\n\n(Up to ${budget} more tool rounds. Finish with an updated report.)`
+				`[Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}] ${text}\n\n(Up to ${budget} more tool rounds. Finish with an updated report.)${worktreeNote}`
 			)
 		);
 		this.log(r, { kind: "resume", text: `Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}: ${text}` });
@@ -987,11 +1103,12 @@ class AgentManager {
 			const me = a.id === viewer ? " (you)" : "";
 			const status = a.status === "running" ? `running — ${a.activity}` : a.status;
 			const indent = "  ".repeat(a.depth - 1);
-			return `${indent}- ${a.id} "${a.name}"${me} [${status}] parent=${a.parentId}, model=${a.modelName} [${a.modelId}], ${contextLabel(a)}, ${a.steps}/${a.maxSteps} rounds, ${a.toolCalls} tool calls, ${age}${a.inbox.length ? `, ${a.inbox.length} unread msg` : ""}\n${indent}  task: ${a.task.length > 160 ? `${a.task.slice(0, 157)}…` : a.task}`;
+			const wt = a.worktree ? `, worktree ${a.worktree.removed ? "(removed)" : a.worktree.path}` : "";
+			return `${indent}- ${a.id} "${a.name}"${me} (${a.agentType}${wt}) [${status}] parent=${a.parentId}, model=${a.modelName} [${a.modelId}], ${contextLabel(a)}, ${a.steps}/${a.maxSteps} rounds, ${a.toolCalls} tool calls, ${age}${a.inbox.length ? `, ${a.inbox.length} unread msg` : ""}\n${indent}  task: ${a.task.length > 160 ? `${a.task.slice(0, 157)}…` : a.task}`;
 		});
 		const unread =
 			viewer === MAIN_AGENT && this.notifications.length
-				? `\n\n${this.notifications.length} unread notification(s) for main — call customcopilot_waitForAgents to read them.`
+				? `\n\n${this.notifications.length} unread notification(s) for main — read them with {"action": "wait", "timeoutSeconds": 0}.`
 				: "";
 		return `${lines.join("\n")}${unread}`;
 	}
@@ -1003,7 +1120,10 @@ class AgentManager {
 			return undefined;
 		}
 		return [
-			`${r.id} "${r.name}" [${r.status}] parent=${r.parentId}, model=${r.modelName} [${r.modelId}], ${r.steps} rounds, ${r.toolCalls} tool calls`,
+			`${r.id} "${r.name}" (${r.agentType}) [${r.status}] parent=${r.parentId}, model=${r.modelName} [${r.modelId}], ${r.steps} rounds, ${r.toolCalls} tool calls`,
+			r.worktree
+				? `Worktree: ${r.worktree.path} (branch ${r.worktree.branch}${r.worktree.owner !== r.id ? `, inherited from ${r.worktree.owner}` : ""})${r.worktree.removed ? " — removed" : r.worktreeStatus ? ` — ${r.worktreeStatus}` : ""}`
+				: "",
 			`Context: ${contextLabel(r)}${r.compactions ? `, auto-compacted ${r.compactions}×` : ""}${r.resumes ? `, resumed ${r.resumes}×` : ""}`,
 			`Sub-agents: ${this.list().filter((a) => a.parentId === r.id).map((a) => `${a.id} "${a.name}" [${a.status}]`).join(", ") || "none"}`,
 			`Task: ${r.task}`,
@@ -1239,6 +1359,24 @@ class AgentManager {
 		this.autoResumeTimer = setTimeout(tick, idleMs);
 	}
 
+	/**
+	 * Whether something may be posted into the chat now: "busy" (a turn is
+	 * running or a waiter is blocked — try later), "stopped" (the user pressed
+	 * Stop: VS Code holds its queue, posting would raise the pending-requests
+	 * dialog — ask the user instead) or "ready".
+	 */
+	chatPostState(idleMs = Math.max(1000, setting("autoResumeIdleMs", 5000))): "busy" | "stopped" | "ready" {
+		if (this.mainWaiters.size > 0 || !isMainChatIdle(idleMs)) {
+			return "busy";
+		}
+		return wasMainTurnCancelled() ? "stopped" : "ready";
+	}
+
+	/** The chat session our tools were last called from (≈ the focused chat). */
+	activeSession(): string | undefined {
+		return this.lastActiveSession;
+	}
+
 	/** Post pending notifications to their chat sessions as new messages. */
 	private async autoResume(): Promise<void> {
 		if (wasMainTurnCancelled()) {
@@ -1277,7 +1415,7 @@ class AgentManager {
 		for (const [session, items] of bySession) {
 			const query = formatNotifications(items, AUTO_RESUME_REPORT_CHARS, true);
 			try {
-				await this.postToSession(session || undefined, query);
+				await this.postToChat(session || undefined, query);
 				logger.info("subagent.autoResume", { notifications: items.length, session: session || "focused" });
 			} catch (err) {
 				// Could not reach the chat: keep them for waitForAgents / the notice.
@@ -1293,7 +1431,7 @@ class AgentManager {
 	 * tools were last called from, it is revealed first (`vscode.open` on its
 	 * chat URI). `preserveInput` keeps the user's draft in the input box.
 	 */
-	private async postToSession(session: string | undefined, query: string): Promise<void> {
+	async postToChat(session: string | undefined, query: string): Promise<void> {
 		if (session && session !== this.lastActiveSession) {
 			await vscode.commands.executeCommand("vscode.open", vscode.Uri.parse(session));
 			await sleep(500);
@@ -1308,25 +1446,22 @@ class AgentManager {
 		const r = runtime.record;
 		const token = runtime.cts.token;
 		const canSpawn = runtime.tools.some((t) => t.name === AGENT_TOOL_NAMES.run);
-		const userPrompt = [
-			`${SUBAGENT_SENTINEL}\n${SYSTEM_PROMPT.replace("{ID}", r.id)
-				.replace("{NAME}", r.name)
-				.replace("{PARENT}", r.parentId === MAIN_AGENT ? "the main agent" : `agent ${r.parentId}`)
-				.replace(
-					"{SPAWN}",
-					canSpawn
-						? "You may start your own sub-agents with `customcopilot_delegateTask`, but ONLY for large, independent parts of your task that can run in parallel (they run on your model; their reports arrive in your inbox) — never for trivial lookups, tests, or to acknowledge a message; do small things yourself. Stop them with `customcopilot_stopAgent`."
-						: "You cannot start further sub-agents (nesting limit)."
-				)}`,
-			`# Task\n${r.task}`,
-			r.expectedOutput ? `# Expected report\n${r.expectedOutput}` : "",
-			`# Limits\nAt most ${r.maxSteps} tool rounds. ${r.allowWrite ? "Write tools are available; shell commands run in your own terminal." : "Read-only: you cannot edit files. You have your own terminal (customcopilot_agent_runCommand) — use it only for commands that do not modify the workspace (grep, ls, builds into temp dirs, tests)."}`,
-		]
-			.filter(Boolean)
-			.join("\n\n");
 		// A resumed agent continues its kept conversation.
 		if (runtime.messages.length === 0) {
-			runtime.messages.push(vscode.LanguageModelChatMessage.User(userPrompt));
+			const system = subagentSystemPrompt({
+				id: r.id,
+				name: r.name,
+				type: runtime.type,
+				parent: r.parentId === MAIN_AGENT ? "the main agent" : `agent ${r.parentId}`,
+				canSpawn,
+				allowWrite: r.allowWrite,
+				maxSteps: r.maxSteps,
+				modelName: runtime.model.name,
+				worktree: r.worktree,
+				inheritedWorktree: !!r.worktree && r.worktree.owner !== r.id,
+				gitBranch: await currentBranch(r.worktree?.path ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch(() => undefined),
+			});
+			runtime.messages.push(vscode.LanguageModelChatMessage.User(subagentFirstMessage(system, r.task, r.expectedOutput)));
 			this.log(r, { kind: "task", text: `${r.task}${r.expectedOutput ? `\n\nExpected report: ${r.expectedOutput}` : ""}` });
 		}
 		const messages = runtime.messages;
@@ -1480,9 +1615,12 @@ class AgentManager {
 			const tail = leftovers.length
 				? `\n\n[Unread when it finished]\n${leftovers.map((m) => `From ${m.from}: ${m.text}`).join("\n\n")}`
 				: "";
+			await this.finishWorktree(r);
 			this.report(
 				r,
-				(r.status === "done" ? r.report ?? "" : `${r.status.toUpperCase()}: ${r.error ?? ""}${r.report ? `\n${r.report}` : ""}`) + tail
+				(r.status === "done" ? r.report ?? "" : `${r.status.toUpperCase()}: ${r.error ?? ""}${r.report ? `\n${r.report}` : ""}`) +
+					this.worktreeFooter(r) +
+					tail
 			);
 		}
 	}
@@ -1730,11 +1868,12 @@ class AgentManager {
 		try {
 			switch (call.name) {
 				case AGENT_TOOL_NAMES.editFile:
-					return await agentEditFile(input);
+					return await agentEditFile(input, runtime.record.worktree);
 				case AGENT_TOOL_NAMES.createFile:
-					return await agentCreateFile(input);
+					return await agentCreateFile(input, runtime.record.worktree);
 				default:
 					return await agentRunCommand(input, {
+						worktree: runtime.record.worktree,
 						agentLabel: `${runtime.record.id} "${runtime.record.name}"`,
 						autoApprove: runtime.record.autoApprove === true,
 						allowAll: runtime.allowAllCommands,
@@ -1748,6 +1887,110 @@ class AgentManager {
 		} catch (err) {
 			return `Tool error: ${err instanceof Error ? err.message : String(err)}`;
 		}
+	}
+
+	// ── Worktrees ──────────────────────────────────────────────────────
+
+	/** Agents still running inside `wt` (the owner and/or inheriting sub-agents). */
+	private worktreeUsers(wt: AgentWorktree): AgentRecord[] {
+		return this.list().filter((a) => a.status === "running" && a.worktree === wt);
+	}
+
+	/**
+	 * When the OWNER of a worktree ends: remove it if nothing changed (and no
+	 * sub-agent still works in it), else keep it and remember the summary.
+	 * Sub-agents ending in an inherited worktree retry the cleanup.
+	 */
+	private async finishWorktree(r: AgentRecord): Promise<void> {
+		const wt = r.worktree;
+		if (!wt || wt.removed) {
+			return;
+		}
+		const runtime = this.agents.get(wt.owner);
+		const work = (async () => {
+			const owner = runtime?.record;
+			if (!owner) {
+				return;
+			}
+			const busy = () => owner.status === "running" || runtime?.resuming === true || this.worktreeUsers(wt).length > 0;
+			if (busy()) {
+				return;
+			}
+			try {
+				const changes = await worktreeChanges(wt);
+				// Resumed (or a sub-agent started) meanwhile: leave it alone.
+				if (busy()) {
+					return;
+				}
+				if (changes && changes.files === 0 && changes.commits === 0) {
+					await removeAgentWorktree(wt);
+					owner.worktreeStatus = "no changes — worktree removed";
+				} else {
+					// Kept for review: unlock it so a later cleanup may consider it
+					// (cleanups only ever remove unchanged worktrees).
+					await setWorktreeLock(wt, false);
+					owner.worktreeStatus = changes ? describeChanges(changes) : "kept (state unknown)";
+				}
+			} catch (err) {
+				owner.worktreeStatus = `kept (${err instanceof Error ? err.message : String(err)})`;
+			}
+			this.changeEmitter.fire();
+		})();
+		if (runtime) {
+			runtime.finishing = work;
+		}
+		await work;
+	}
+
+
+	/** "[Worktree] …" lines appended to a report (own worktree only). */
+	private worktreeFooter(r: AgentRecord): string {
+		const wt = r.worktree;
+		if (!wt || wt.owner !== r.id) {
+			return "";
+		}
+		if (wt.removed) {
+			return "\n\n[Worktree] No changes were made — the worktree was removed.";
+		}
+		return (
+			`\n\n[Worktree] Changes are in ${wt.path} (branch ${wt.branch}, based on ${wt.base.slice(0, 12)}): ${r.worktreeStatus ?? "still in use by sub-agents"}. ` +
+			"The user's checkout is untouched. Review with `git -C <path> status` / `git -C <path> diff`; the user can apply them to the workspace from the agent's details (Apply to workspace) or merge the branch."
+		);
+	}
+
+	/** Worktree of an agent (UI). */
+	worktreeOf(idOrName: string): AgentWorktree | undefined {
+		return this.find(idOrName)?.record.worktree;
+	}
+
+	/** Apply an agent's worktree changes to the main checkout (UI). */
+	async applyWorktree(idOrName: string): Promise<string> {
+		const r = this.find(idOrName)?.record;
+		if (!r?.worktree) {
+			throw new Error("This agent has no worktree.");
+		}
+		if (this.worktreeUsers(r.worktree).length > 0) {
+			throw new Error("Agents are still working in this worktree — stop them or wait until they finish.");
+		}
+		return applyWorktreeToMain(r.worktree);
+	}
+
+	/** Delete an agent's worktree and branch (UI). */
+	async removeWorktree(idOrName: string): Promise<boolean> {
+		const r = this.find(idOrName)?.record;
+		if (!r?.worktree) {
+			return false;
+		}
+		if (this.worktreeUsers(r.worktree).length > 0) {
+			throw new Error("Agents are still working in this worktree — stop them first.");
+		}
+		const ok = await removeAgentWorktree(r.worktree);
+		if (ok) {
+			const owner = this.agents.get(r.worktree.owner)?.record ?? r;
+			owner.worktreeStatus = "worktree removed";
+			this.changeEmitter.fire();
+		}
+		return ok;
 	}
 
 	private isDescendant(r: AgentRecord, ancestorId: string): boolean {
@@ -1776,9 +2019,10 @@ class AgentManager {
 	): Promise<vscode.LanguageModelToolResult> {
 		const token = runtime.cts.token;
 		try {
+			const wt = runtime.record.worktree;
 			return await vscode.lm.invokeTool(
 				call.name,
-				{ input: call.input, toolInvocationToken: runtime.toolInvocationToken },
+				{ input: wt ? (remapPaths(call.input, wt) as object) : call.input, toolInvocationToken: runtime.toolInvocationToken },
 				token
 			);
 		} catch (err) {
@@ -1820,6 +2064,8 @@ class AgentManager {
 		}
 		const finished = [...this.agents.values()]
 			.filter((r) => r.record.status !== "running" && !neededAncestors.has(r.record.id))
+			// Keep agents whose kept worktree still awaits review (Apply / Remove live on the record).
+			.filter((r) => !(r.record.worktree && r.record.worktree.owner === r.record.id && !r.record.worktree.removed))
 			.sort((a, b) => (a.record.endedAt ?? 0) - (b.record.endedAt ?? 0));
 		for (const r of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED_AGENTS))) {
 			disposeAgentTerminal(`${r.record.id} "${r.record.name}"`);
@@ -1834,6 +2080,40 @@ class AgentManager {
 		}
 		this.changeEmitter.dispose();
 	}
+}
+
+/**
+ * Re-root absolute paths (plain or file:// URIs) under the main checkout
+ * into the agent's worktree, in any string field of a tool input.
+ */
+function remapPaths(input: unknown, wt: AgentWorktree, depth = 0): unknown {
+	if (depth > 6) {
+		return input;
+	}
+	if (typeof input === "string") {
+		if (input.startsWith("file://")) {
+			try {
+				const fsPath = vscode.Uri.parse(input).fsPath;
+				const mapped = toWorktreePath(fsPath, wt);
+				return mapped === fsPath ? input : vscode.Uri.file(mapped).toString();
+			} catch {
+				return input;
+			}
+		}
+		// Only absolute paths (relative strings are not necessarily paths).
+		return input.length < 4096 && pathModule.isAbsolute(input) ? toWorktreePath(input, wt) : input;
+	}
+	if (Array.isArray(input)) {
+		return input.map((v) => remapPaths(v, wt, depth + 1));
+	}
+	if (input && typeof input === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+			out[k] = remapPaths(v, wt, depth + 1);
+		}
+		return out;
+	}
+	return input;
 }
 
 /** Render notifications for the main agent (tool result or auto-resume message). */

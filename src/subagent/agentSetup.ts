@@ -33,6 +33,14 @@ const READ_ONLY_WORDS = new Set([
 	"structure",
 	"summary",
 	"output",
+	"resolve",
+	"docs",
+	"documentation",
+	"describe",
+	"inspect",
+	"info",
+	"status",
+	"diff",
 ]);
 /** Words that indicate side effects / UI interaction; they win over READ_ONLY_WORDS. */
 const WRITE_WORDS = new Set([
@@ -81,6 +89,20 @@ const READ_ONLY_EXCEPTIONS = new Set(["skill", "copilot_getNotebookSummary", "co
  */
 const NEVER_FOR_AGENTS = /^(copilot_|vscode_|run_in_terminal|get_terminal_output|manage_todo_list|runSubagent)|runsubagent/i;
 
+/**
+ * Whether the main chat offers this tool. Copilot's own tools reach the model
+ * under other names ("read_file" for copilot_readFile), so they are always
+ * kept; MCP / extension tools keep their names and follow the tool picker.
+ * Ignored when too few names match (unknown naming scheme).
+ */
+function inMainChat(name: string, mainTools: ReadonlySet<string> | undefined): boolean {
+	if (!mainTools?.size || name.startsWith("copilot_")) {
+		return true;
+	}
+	const known = vscode.lm.tools.filter((t) => mainTools.has(t.name)).length;
+	return known < 3 || mainTools.has(name);
+}
+
 function nameWords(name: string): string[] {
 	return name
 		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -89,15 +111,17 @@ function nameWords(name: string): string[] {
 		.filter(Boolean);
 }
 
-function isReadOnlyTool(tool: vscode.LanguageModelToolInformation): boolean {
+/** Tools that may have side effects (edits, commands, UI prompts) by name. */
+function isWriteTool(tool: vscode.LanguageModelToolInformation): boolean {
 	if (READ_ONLY_EXCEPTIONS.has(tool.name)) {
-		return true;
-	}
-	const words = nameWords(tool.name);
-	if (words.some((w) => WRITE_WORDS.has(w))) {
 		return false;
 	}
-	return words.some((w) => READ_ONLY_WORDS.has(w));
+	return nameWords(tool.name).some((w) => WRITE_WORDS.has(w));
+}
+
+/** Read-only by name: a read word and no write word (the read-only agents' allow-list). */
+export function isReadOnlyTool(tool: vscode.LanguageModelToolInformation): boolean {
+	return !isWriteTool(tool) && nameWords(tool.name).some((w) => READ_ONLY_WORDS.has(w));
 }
 
 /** In-process write tools of write-enabled agents (handled by the agent loop). */
@@ -109,7 +133,7 @@ export const AGENT_WRITE_TOOLS: vscode.LanguageModelChatTool[] = [
 		inputSchema: {
 			type: "object",
 			properties: {
-				path: { type: "string", description: "Workspace-relative or absolute path inside the workspace." },
+				path: { type: "string", description: "Absolute path (or relative to your working directory) inside the workspace — or inside your worktree when you have one." },
 				oldString: { type: "string", description: "Exact text to replace (whitespace and indentation must match)." },
 				newString: { type: "string", description: "Replacement text." },
 				replaceAll: { type: "boolean", description: "Replace every occurrence. Default false." },
@@ -123,7 +147,7 @@ export const AGENT_WRITE_TOOLS: vscode.LanguageModelChatTool[] = [
 		inputSchema: {
 			type: "object",
 			properties: {
-				path: { type: "string", description: "Workspace-relative or absolute path inside the workspace." },
+				path: { type: "string", description: "Absolute path (or relative to your working directory) inside the workspace — or inside your worktree when you have one." },
 				content: { type: "string", description: "Full file content." },
 				overwrite: { type: "boolean", description: "Replace an existing file. Default false." },
 			},
@@ -138,7 +162,7 @@ export const AGENT_WRITE_TOOLS: vscode.LanguageModelChatTool[] = [
 			type: "object",
 			properties: {
 				command: { type: "string", description: "Shell command line." },
-				cwd: { type: "string", description: "Working directory (workspace-relative). Default: workspace root." },
+				cwd: { type: "string", description: "Working directory (absolute, or relative to your working directory). Default: your working directory (the workspace root, or your worktree)." },
 				timeoutSeconds: { type: "number", description: "Kill after this many seconds (default 120, max 900)." },
 			},
 			required: ["command"],
@@ -146,7 +170,17 @@ export const AGENT_WRITE_TOOLS: vscode.LanguageModelChatTool[] = [
 	},
 ];
 
-export function pickTools(allowWrite: boolean, canSpawn: boolean): vscode.LanguageModelChatTool[] {
+/**
+ * Tools of an agent: read-only workspace tools (+ write-capable ones with
+ * allowWrite), coordination tools, and our own terminal / edit tools. A
+ * custom agent type may restrict the workspace tools (`tools`, exact VS Code
+ * tool names) or exclude some (`disallowedTools`).
+ */
+export function pickTools(
+	allowWrite: boolean,
+	canSpawn: boolean,
+	limits?: { tools?: string[]; disallowedTools?: string[]; mainTools?: ReadonlySet<string> }
+): vscode.LanguageModelChatTool[] {
 	const toChatTool = (t: vscode.LanguageModelToolInformation): vscode.LanguageModelChatTool => ({
 		name: t.name,
 		description: t.description,
@@ -154,7 +188,14 @@ export function pickTools(allowWrite: boolean, canSpawn: boolean): vscode.Langua
 	});
 	const workspace = vscode.lm.tools
 		.filter((t) => !OWN_AGENT_TOOLS.has(t.name) && !/delegate|subagent/i.test(t.name))
+		// Read-only agents: tools whose NAME says read/search only (allow-list —
+		// unknown tools such as browser_click or merge_pull_request stay out);
+		// write-enabled agents: everything except Copilot's loop-bound tools.
 		.filter((t) => isReadOnlyTool(t) || (allowWrite && !NEVER_FOR_AGENTS.test(t.name)))
+		// The same tools the main chat has enabled (its tool picker), when known.
+		.filter((t) => inMainChat(t.name, limits?.mainTools))
+		.filter((t) => !limits?.tools || limits.tools.includes(t.name))
+		.filter((t) => !limits?.disallowedTools?.includes(t.name))
 		.map(toChatTool);
 	// Coordination tools (handled in-process by the agent loop).
 	const coordination = vscode.lm.tools
@@ -169,7 +210,9 @@ export function pickTools(allowWrite: boolean, canSpawn: boolean): vscode.Langua
 		)
 		.map(toChatTool);
 	// Every agent gets its own terminal (run command); file edit/create only with allowWrite.
-	const ownTools = AGENT_WRITE_TOOLS.filter((t) => allowWrite || t.name === AGENT_TOOL_NAMES.runCommand);
+	const ownTools = AGENT_WRITE_TOOLS.filter((t) => allowWrite || t.name === AGENT_TOOL_NAMES.runCommand).filter(
+		(t) => !limits?.disallowedTools?.includes(t.name)
+	);
 	return [...workspace, ...coordination, ...ownTools];
 }
 

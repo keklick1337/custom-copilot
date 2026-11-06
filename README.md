@@ -168,8 +168,13 @@ The configuration panel is a webview hosted in its own activity‑bar container.
   - **Automatic chat retries** (`customcopilot.chatRetries` / `chatRetryInterval` /
     `chatRetryJitter`) — auto "Try Again" on failed requests; `0` off, `-1` infinite, or a
     max attempt count with optional jitter.
-  - **Max concurrent background agents** (`customcopilot.subagent.maxConcurrent`, 1–16,
-    default 4) — how many subagents may run at once; applies to the next start.
+  - **Background agents** — every `customcopilot.subagent.*` setting: limits (concurrent agents,
+    rounds, nesting depth, starts per turn, auto-compact threshold), chat flow (pause, report
+    posting, idle time), command approval, terminals, worktree folder and
+    symlinks, fallback model — plus **Agent map**, **New agent type…** and **Remove unchanged
+    worktrees** buttons.
+  - The page is organised in collapsible categories (Privacy & account, Chat, Background agents,
+    System prompt, Diagnostics) with a search box; it adapts to a narrow sidebar or a wide panel.
 - **Git Commit Settings** — pick the model and language used for commit‑message generation.
 - **Chat Generator** — generate and launch many chats from a single prompt template (see below).
 - **User‑Agent presets** — a dropdown of common desktop/mobile User‑Agent strings plus a
@@ -304,6 +309,62 @@ the chat as a new message and the main agent continues the user's task from it. 
 the same way one level down: an agent whose own sub-agents are still running goes to sleep (no model
 requests) and wakes up when a sub-agent's report lands in its inbox.
 
+**Agent types** (`subagentType`, like Claude Code): `general-purpose` (default — research and
+multi-step work, edits with `allowWrite`), `Explore` (fast **read-only** codebase search; say
+"quick", "medium" or "very thorough" in the task) and `Plan` (**read-only** architect: a step-by-step
+plan plus the critical files). **Custom agents** are Markdown files with YAML frontmatter in
+`<workspace>/.claude/agents/*.md`, `<workspace>/.github/agents/*.agent.md` or `~/.claude/agents/*.md`
+— `name`, `description` (when the main agent should pick it), `tools` (without Edit/Write the agent is
+read-only; exact VS Code tool names restrict its tools), `disallowedTools`, `model` (`inherit` or a
+model id/name), `maxTurns`, `isolation: worktree`; the body is its system prompt. They are re-read on
+change; **New Custom Agent Type…** (Background Agents view `…` menu) creates one from a template.
+`{"action": "types"}` lists all types.
+
+**Isolated worktrees** (`isolation: "worktree"`): the agent gets its own git worktree — a separate
+working copy on branch `worktree-agent-<id>-<rand>` under `customcopilot.subagent.worktreeDir`
+(default `.worktrees/`, added to `.git/info/exclude`, never to a tracked file) — so its edits never
+touch your checkout; write tools are on there without the usual confirmation. Its file tools re-root
+paths of your checkout into the worktree and refuse anything outside it; workspace read tools get
+their paths re-rooted too; sub-agents it starts work in the same worktree. Folders listed in
+`customcopilot.subagent.worktreeSymlinks` (e.g. `node_modules`) are symlinked in, git-ignored files
+listed in a `.worktreeinclude` file (e.g. `.env`) are copied in. When the agent finishes, an
+**unchanged worktree is removed** with its branch; otherwise its path, branch and change summary are
+attached to the report, and the agent's details tab (or the tree view's context menu) offers **Apply
+to workspace** (as uncommitted changes, all or nothing — it is checked first and refused if your
+files changed in between; nothing is ever committed), **Open in new window** and **Remove
+worktree**. While an agent works, its worktree is `git worktree lock`ed, so cleanups — including
+those of other VS Code windows on the same repository — never touch it; unchanged agent worktrees
+left by a previous window are cleaned up at startup. A worktree started from a sub-folder or from a
+linked worktree applies back to that checkout.
+
+**Recommended prompt addition** (`customcopilot.recommendedPrompt`, on by default — a checkbox in
+Global Settings → System prompt, with a preview of the exact text). In agent mode the main chat's
+system prompt is the one **Copilot** assembles for the model family; this adds the extension's
+recommended part to it so any model works like Claude Code: read before editing, change only what
+was asked, diagnose failures instead of retrying blindly, ask before destructive or shared-state
+actions, dedicated tools over shell commands, independent tool calls in parallel, concise answers —
+and, when the delegate tool is available, the **background-agents guide**: agent types, every agent
+action with JSON examples, how to brief an agent like a colleague, the *start → end turn → report*
+flow with an example, never invent an agent's result. Model-agnostic, static (prompt-cache friendly,
+≈2–3k tokens), applied after the prompt override, only to requests with tools.
+
+**Prompts.** Every subagent gets a real system prompt (our provider moves it into a system message):
+its type's prompt, access/limits, how to coordinate with other agents, notes (absolute paths, concise
+report, record what matters before compaction), its worktree and an environment block (folders, git
+branch, platform, shell, date, model). The main chat's system prompt gets a **background-agents
+guide** whenever the delegate tool is available — agent types, when (not) to delegate, how to brief
+an agent like a colleague, never invent an agent's result, the chat pause (part of the
+recommended prompt addition above).
+
+**Same tools as the chat.** Agents get the workspace tools the main chat has enabled in its tool
+picker (MCP and extension tools follow the picker; Copilot's own read tools are always included):
+read/search tools (recognised by name) for every agent, all other tools only with write access.
+Copilot's own edit/terminal tools only work inside Copilot's agent loop, so agents use their own
+edit / create / terminal tools instead.
+
+**In the chat.** The delegate call's line in the chat shows the agent with its type and **Details ·
+Stop · Agent map** links.
+
 **Terminals and approvals.** Every agent runs shell commands in **its own VS Code terminal**
 ("Agent a7 …", via shell integration), so you can watch what it executes. Read-only agents may
 only use non-modifying commands. Commands need approval through a non-modal notification —
@@ -333,6 +394,30 @@ with `{"action": "wait"}`) — so a model can't fall into an endless *agent → 
 (trivial lookups, tests of the tool, reacting to an agent update).
 
 Agents live in memory: reloading the window stops them.
+
+### ⏰ Scheduled wake-ups & reminders
+
+Like Claude Code's `ScheduleWakeup` / cron: the **`#schedule`** tool
+(`customcopilot_scheduleWakeup`) lets the chat agent post a prompt into **this chat later** — once
+(`delaySeconds`, or `at` "14:30" / an ISO date-time) or **repeatedly** (`everySeconds`, optional
+`maxRuns`) — and continue from it. Typical uses: check a CI run / deploy / long build after a delay
+matched to it, "remind me…", "check again in an hour", "every morning triage new issues". It is not
+for waiting on background agents (their reports arrive by themselves).
+
+- A due wake-up is posted as a **⏰ Scheduled wake-up** message once the chat is idle (never in the
+  middle of a turn); if you pressed **Stop**, a notification asks first (Post now / Snooze / Cancel).
+- Wake-ups **survive a window reload**. Ones that came due while VS Code was closed are offered
+  (*Run now* / *Show* / *Dismiss*); recurring ones skip the missed runs.
+- **See and manage them**: the **Scheduled** view in the extension sidebar (countdowns, history,
+  inline *Run now* / *Cancel*, *Snooze* / *Edit* in the context menu, **+** for a new reminder), the
+  **Schedule** panel (timeline with live countdowns, *Run now / +10 min / +1 hour / Edit / Cancel*,
+  history, a form to add reminders) and a **status-bar clock** with the next wake-up (hover: run /
+  snooze / cancel links). In the chat, the tool call shows *Run now · Cancel · Schedule* links.
+- **Loop guards**: the agent's earliest wake-up / shortest interval is
+  `customcopilot.schedule.minDelaySeconds` (60 s), at most `customcopilot.schedule.maxPending`
+  pending (20), and after `customcopilot.schedule.maxChain` (25) automatic turns in a row (wake-ups,
+  agent reports) without a message from you it may not schedule more. `customcopilot.schedule.enabled`
+  pauses firing. All of these are in Global Settings → *Scheduled wake-ups*.
 
 ### 🟦 Z.AI / GLM extras
 

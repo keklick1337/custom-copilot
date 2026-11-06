@@ -344,3 +344,59 @@ export function applyPromptOverride(
 		return messages;
 	}
 }
+/**
+ * Append `text` to the system prompt (the first system message; a new one is
+ * prepended when there is none). Used for the background-agents guide.
+ */
+export function appendToSystemPrompt(
+	messages: readonly LanguageModelChatRequestMessage[],
+	text: string
+): readonly LanguageModelChatRequestMessage[] {
+	if (!text.trim()) {
+		return messages;
+	}
+	const index = messages.findIndex(isSystemMessage);
+	if (index === -1) {
+		return [makeSystemMessage(text), ...messages];
+	}
+	const current = getMessageText(messages[index]);
+	if (current.includes(text)) {
+		return messages;
+	}
+	const out = [...messages];
+	out[index] = makeSystemMessage(`${current}${current.trim() ? "\n\n" : ""}${text}`, messages[index]);
+	return out;
+}
+
+/**
+ * Subagent requests carry their system prompt in the first user message
+ * (`start` … `end` markers — the stable LM API has no system role); move it
+ * into a real system message so the model treats it as one.
+ */
+export function liftEmbeddedSystemPrompt(
+	messages: readonly LanguageModelChatRequestMessage[],
+	start: string,
+	end: string
+): readonly LanguageModelChatRequestMessage[] {
+	const index = messages.findIndex((m) => (m.role as unknown as number) === ROLE_USER);
+	if (index === -1) {
+		return messages;
+	}
+	const msg = messages[index];
+	const partIndex = msg.content.findIndex((p) => p instanceof vscode.LanguageModelTextPart);
+	const part = msg.content[partIndex] as vscode.LanguageModelTextPart | undefined;
+	if (!part || !part.value.startsWith(start)) {
+		return messages;
+	}
+	const endAt = part.value.indexOf(end);
+	if (endAt === -1) {
+		return messages;
+	}
+	const system = part.value.slice(start.length, endAt).trim();
+	const rest = part.value.slice(endAt + end.length).replace(/^\s+/, "");
+	const content = [...msg.content];
+	content[partIndex] = new vscode.LanguageModelTextPart(rest || "(see the system prompt)");
+	const out = [...messages];
+	out[index] = { role: msg.role, name: msg.name, content } as unknown as LanguageModelChatRequestMessage;
+	return appendToSystemPrompt(out, system);
+}

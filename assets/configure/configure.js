@@ -77,7 +77,6 @@ const el = {
 	chatRetries: $("chatRetries"),
 	chatRetryInterval: $("chatRetryInterval"),
 	chatRetryJitter: $("chatRetryJitter"),
-	subagentMaxConcurrent: $("subagentMaxConcurrent"),
 	// Chat Generator
 	chatGenTemplate: $("chatGenTemplate"),
 	chatGenToken: $("chatGenToken"),
@@ -1809,18 +1808,6 @@ if (el.chatRetries) {
 	});
 }
 
-if (el.subagentMaxConcurrent) {
-	el.subagentMaxConcurrent.addEventListener("change", () => {
-		let value = parseInt(el.subagentMaxConcurrent.value, 10);
-		if (!Number.isFinite(value)) {
-			value = 4;
-		}
-		value = Math.min(16, Math.max(1, value));
-		el.subagentMaxConcurrent.value = String(value);
-		vscode.postMessage({ type: "setSubagentMaxConcurrent", value });
-	});
-}
-
 if (el.chatRetryInterval) {
 	el.chatRetryInterval.addEventListener("change", () => {
 		let value = parseInt(el.chatRetryInterval.value, 10);
@@ -2977,6 +2964,17 @@ window.addEventListener("message", async ({ data: msg }) => {
 		return;
 	}
 	switch (msg.type) {
+		case "recommendedPrompt": {
+			const box = $("recommendedPromptText");
+			if (box) {
+				box.value = msg.text || "";
+				const info = $("recommendedPromptInfo");
+				if (info) {
+					info.textContent = `${box.value.length.toLocaleString()} chars ≈ ${Math.round(box.value.length / 4).toLocaleString()} tokens per agent-mode request (cached by most providers)`;
+				}
+			}
+			break;
+		}
 		case "init": {
 			const p = msg.payload;
 			state.models = p.models || [];
@@ -3031,9 +3029,7 @@ window.addEventListener("message", async ({ data: msg }) => {
 			if (el.chatRetryJitter) {
 				el.chatRetryJitter.value = String(p.chatRetryJitter != null ? p.chatRetryJitter : 0);
 			}
-			if (el.subagentMaxConcurrent) {
-				el.subagentMaxConcurrent.value = String(p.subagentMaxConcurrent != null ? p.subagentMaxConcurrent : 4);
-			}
+			applySubagentSettings(p.subagentSettings || {});
 
 			// Refresh sidebar
 			renderSidebar();
@@ -3312,3 +3308,168 @@ function renderPromptOverrideTest(msg) {
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 
 vscode.postMessage({ type: "requestInit" });
+
+// ── Global Settings: background agents, search, collapsible categories ──
+
+/** Inputs bound to `customcopilot.subagent.<key>` (data-subagent="<key>"). */
+function subagentInputs() {
+	return Array.from(document.querySelectorAll("[data-subagent]"));
+}
+
+function applySubagentSettings(values) {
+	for (const input of subagentInputs()) {
+		if (document.activeElement === input) {
+			continue;
+		}
+		const v = values[input.dataset.subagent];
+		if (input.type === "checkbox") {
+			input.checked = v !== false;
+		} else if (input.dataset.kind === "list") {
+			input.value = Array.isArray(v) ? v.join(", ") : "";
+		} else if (v !== undefined && v !== null) {
+			input.value = String(v);
+		}
+	}
+}
+
+for (const input of subagentInputs()) {
+	input.addEventListener("change", () => {
+		let value;
+		if (input.type === "checkbox") {
+			value = input.checked;
+		} else if (input.type === "number") {
+			value = Number(input.value);
+			if (!Number.isFinite(value)) {
+				return;
+			}
+			const min = input.min !== "" ? Number(input.min) : -Infinity;
+			const max = input.max !== "" ? Number(input.max) : Infinity;
+			value = Math.min(max, Math.max(min, value));
+			input.value = String(value);
+		} else if (input.dataset.kind === "list") {
+			value = input.value
+				.split(",")
+				.map((x) => x.trim())
+				.filter(Boolean);
+		} else {
+			value = input.value.trim();
+		}
+		vscode.postMessage({ type: "setSubagentSetting", key: input.dataset.subagent, value });
+	});
+}
+
+for (const btn of document.querySelectorAll("[data-command]")) {
+	btn.addEventListener("click", () => vscode.postMessage({ type: "runCommand", command: btn.dataset.command }));
+}
+
+const settingsGroups = Array.from(document.querySelectorAll("#integrationSection details.group"));
+
+function saveGroupState() {
+	const state = vscode.getState() || {};
+	state.openGroups = settingsGroups.filter((g) => g.open).map((g) => g.dataset.group);
+	vscode.setState(state);
+}
+
+(function restoreGroupState() {
+	const open = (vscode.getState() || {}).openGroups;
+	if (Array.isArray(open)) {
+		for (const g of settingsGroups) {
+			g.open = open.includes(g.dataset.group);
+		}
+	}
+	for (const g of settingsGroups) {
+		const count = g.querySelectorAll(".setting").length;
+		const badge = g.querySelector(".group-count");
+		if (badge) {
+			badge.textContent = String(count);
+		}
+		g.addEventListener("toggle", () => {
+			if (!filterActive) {
+				saveGroupState();
+			}
+		});
+	}
+})();
+
+const expandAll = $("settingsExpandAll");
+const collapseAll = $("settingsCollapseAll");
+if (expandAll) {
+	expandAll.addEventListener("click", () => {
+		settingsGroups.forEach((g) => (g.open = true));
+		saveGroupState();
+	});
+}
+if (collapseAll) {
+	collapseAll.addEventListener("click", () => {
+		settingsGroups.forEach((g) => (g.open = false));
+		saveGroupState();
+	});
+}
+
+let filterActive = false;
+const settingsFilter = $("settingsFilter");
+if (settingsFilter) {
+	settingsFilter.addEventListener("input", () => {
+		const q = settingsFilter.value.trim().toLowerCase();
+		filterActive = q.length > 0;
+		let total = 0;
+		for (const g of settingsGroups) {
+			let hits = 0;
+			for (const item of g.querySelectorAll(".setting")) {
+				const text = `${item.dataset.search || ""} ${item.textContent}`.toLowerCase();
+				const match = !q || text.includes(q);
+				item.classList.toggle("filtered-out", !match);
+				if (match) {
+					hits++;
+				}
+			}
+			g.classList.toggle("filtered-out", !!q && hits === 0);
+			const badge = g.querySelector(".group-count");
+			if (badge) {
+				badge.textContent = q ? `${hits}` : String(g.querySelectorAll(".setting").length);
+			}
+			if (q) {
+				g.open = hits > 0;
+			}
+			total += hits;
+		}
+		const none = $("settingsNoMatch");
+		if (none) {
+			none.hidden = !q || total > 0;
+		}
+		if (!q) {
+			const open = (vscode.getState() || {}).openGroups;
+			if (Array.isArray(open)) {
+				settingsGroups.forEach((g) => (g.open = open.includes(g.dataset.group)));
+			}
+		}
+	});
+}
+
+// ── Recommended prompt preview ─────────────────────────────────────────────
+
+const recommendedPreview = $("recommendedPromptPreview");
+if (recommendedPreview) {
+	recommendedPreview.addEventListener("toggle", () => {
+		if (recommendedPreview.open) {
+			vscode.postMessage({ type: "requestRecommendedPrompt" });
+		}
+	});
+}
+const recommendedCopy = $("recommendedPromptCopy");
+if (recommendedCopy) {
+	recommendedCopy.addEventListener("click", async () => {
+		const box = $("recommendedPromptText");
+		if (!box || !box.value) {
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(box.value);
+		} catch {
+			box.select();
+			document.execCommand("copy");
+		}
+		recommendedCopy.textContent = "Copied";
+		setTimeout(() => (recommendedCopy.textContent = "Copy"), 1200);
+	});
+}

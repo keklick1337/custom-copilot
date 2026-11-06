@@ -178,216 +178,349 @@
 							</div>
 						</div>
 					</section>
-					<section id="integrationSection">
+					<section id="integrationSection" class="settings-page">
 						<div class="section-header">
 							<h2>Global Settings</h2>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="allowAnonymousAccess" type="checkbox" />
-									Use Copilot Chat without a GitHub account
-								</label>
-								<div class="field-description">
-									<strong>You don't need this</strong> — registering custom models (BYOK) already lets you use Copilot Chat
-									while signed out of GitHub. This toggle sets VS Code's experimental <code>chat.allowAnonymousAccess</code>
-									setting, which is hidden, experiment-gated, and marked for removal; it may not be available in your VS
-									Code version. Leave it off unless you know you need it.
-								</div>
+							<div class="section-actions">
+								<button id="settingsExpandAll" class="secondary small" type="button" title="Expand all categories">Expand all</button>
+								<button id="settingsCollapseAll" class="secondary small" type="button" title="Collapse all categories">Collapse all</button>
 							</div>
 						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="restoreChatSessions" type="checkbox" />
-									Save &amp; restore chat sessions across restarts
-								</label>
-								<div class="field-description">
-									By default VS Code clears the open chat panel on a fresh start, so your conversations disappear after
-									restarting (especially when signed out of GitHub). Enabling this sets
-									<code>chat.restoreLastPanelSession</code> to <code>true</code>
-									so the last chat session is restored from disk on startup. Chat history files are always written to
-									disk; this only controls whether they are re-opened.
-								</div>
-							</div>
+						<div class="settings-search">
+							<input id="settingsFilter" type="search" placeholder="Search settings…" aria-label="Search settings" />
 						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="agentHostByokEnabled" type="checkbox" />
-									Show my models in the Agents panel (Copilot CLI sessions)
-								</label>
-								<div class="field-description">
-									<strong>Recommended.</strong> The new Agents view only shows models targeting its session type — your
-									BYOK models are hidden there by default. Enabling this sets VS Code's
-									<code>chat.agentHost.byokModels.enabled</code>, which bridges this extension's models into
-									Copilot-CLI agent sessions (with a local proxy so they can actually execute). Requires a reload.
-								</div>
-							</div>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="telemetryDisabled" type="checkbox" />
-									Disable VS Code telemetry (keep your providers private)
-								</label>
-								<div class="field-description">
-									VS Code reports the selected model id in its core chat telemetry
-									(<code>interactiveSessionProviderInvoked</code>), which can reveal which third-party API providers and
-									models you use. Enabling this sets
-									<code>telemetry.telemetryLevel</code> to <code>off</code>. Recommended for anonymity.
-								</div>
-							</div>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="debugRequestLogging" type="checkbox" />
-									Debug request logging (curl + response on errors)
-								</label>
-								<div class="field-description">
-									When a request to a provider fails, print a reproducible <code>curl</code> command and the server's
-									response body to the Developer Tools console (Help &gt; Toggle Developer Tools). Sensitive headers
-									(API keys, tokens) are masked. Sets <code>customcopilot.debugRequestLogging</code>. Useful for
-									debugging request/response problems.
-								</div>
-							</div>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label class="checkbox-label">
-									<input id="promptOverrideEnabled" type="checkbox" />
-									Override the system prompt (all models)
-								</label>
-								<div class="field-description">
-									This extension is a provider: Copilot Chat builds the full system prompt (its identity, safety
-									rules, tool instructions) and sends it here. Enable this to rewrite that system prompt before it is
-									forwarded to your endpoint — replace or extend the default prompt and its parts (e.g. stricter safety
-									rules) for all models. Sets <code>customcopilot.promptOverride.*</code>.
-								</div>
-							</div>
-						</div>
-						<div id="promptOverrideBody">
-							<div class="row">
-								<div class="field field-wide">
-									<label>Default system prompt (captured)</label>
-									<div class="field-description">
-										The original system prompt Copilot Chat assembled and sent on the most recent request. Send a
-										chat message first, then refresh to capture it. Copy it here as a starting point, then paste into
-										the box below and switch the mode to "Replace" to fully rewrite it.
+						<details class="group" data-group="privacy" open>
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#128274;</span>
+								<span class="group-heading"><span class="group-title">Privacy &amp; account</span><span class="group-sub">Telemetry, Agents panel, anonymous access</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="setting setting-toggle" data-search="disable vs code telemetry">
+									<div class="setting-text">
+										<label class="setting-title" for="telemetryDisabled">Disable VS Code telemetry</label>
+										<div class="field-description">VS Code reports the selected model id in its core chat telemetry (<code>interactiveSessionProviderInvoked</code>), which can reveal which third-party providers and models you use. Sets <code>telemetry.telemetryLevel</code> to <code>off</code>. Recommended for anonymity.</div>
 									</div>
-									<div class="row" style="gap: 8px; margin: 0">
-										<button id="promptCaptureRefresh" class="secondary-btn" type="button">Refresh captured prompt</button>
-										<button id="promptCaptureCopy" class="secondary-btn" type="button">Copy</button>
-										<button id="promptCaptureUseAsText" class="secondary-btn" type="button">Use as override text</button>
-										<span id="promptCaptureStatus" class="field-description" style="align-self: center"></span>
+									<label class="switch" title="Disable VS Code telemetry"><input id="telemetryDisabled" type="checkbox" /><span class="slider"></span></label>
+								</div>
+								<div class="setting setting-toggle" data-search="show my models in the agents panel">
+									<div class="setting-text">
+										<label class="setting-title" for="agentHostByokEnabled">Show my models in the Agents panel</label>
+										<div class="field-description"><strong>Recommended.</strong> The Agents view (Copilot CLI sessions) hides BYOK models by default. Sets <code>chat.agentHost.byokModels.enabled</code>, bridging this extension's models into those sessions via a local proxy. Requires a reload.</div>
 									</div>
-									<textarea
-										id="promptCaptureText"
-										rows="8"
-										readonly
-										placeholder="No prompt captured yet. Send a chat message to one of your models, then click Refresh."
-									></textarea>
+									<label class="switch" title="Show my models in the Agents panel"><input id="agentHostByokEnabled" type="checkbox" /><span class="slider"></span></label>
+								</div>
+								<div class="setting setting-toggle" data-search="use copilot chat without a github account">
+									<div class="setting-text">
+										<label class="setting-title" for="allowAnonymousAccess">Use Copilot Chat without a GitHub account</label>
+										<div class="field-description"><strong>Usually not needed</strong> — registering custom models already lets Copilot Chat work while signed out. Sets the experimental, hidden <code>chat.allowAnonymousAccess</code>, which may be unavailable in your VS Code version.</div>
+									</div>
+									<label class="switch" title="Use Copilot Chat without a GitHub account"><input id="allowAnonymousAccess" type="checkbox" /><span class="slider"></span></label>
 								</div>
 							</div>
-							<div class="row">
-								<div class="field">
-									<label for="promptOverrideMode">Combine mode</label>
-									<div class="field-description">
-										How your text below is combined with Copilot's system prompt.
+						</details>
+						<details class="group" data-group="chat" open>
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#128172;</span>
+								<span class="group-heading"><span class="group-title">Chat</span><span class="group-sub">Session restore and automatic retries</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="setting setting-toggle" data-search="save &amp; restore chat sessions">
+									<div class="setting-text">
+										<label class="setting-title" for="restoreChatSessions">Save &amp; restore chat sessions</label>
+										<div class="field-description">VS Code clears the chat panel on a fresh start (especially when signed out). Sets <code>chat.restoreLastPanelSession</code> so the last session is re-opened from disk.</div>
 									</div>
-									<select id="promptOverrideMode">
-										<option value="off">Off (only run find/replace rules)</option>
-										<option value="append">Append (Copilot's prompt, then your text)</option>
-										<option value="prepend">Prepend (your text, then Copilot's prompt)</option>
-										<option value="replace">Replace (use only your text)</option>
+									<label class="switch" title="Save &amp; restore chat sessions"><input id="restoreChatSessions" type="checkbox" /><span class="slider"></span></label>
+								</div>
+								<div class="setting-grid">
+								<div class="setting" data-search="automatic retries">
+									<label class="setting-title" for="chatRetries">Automatic retries</label>
+									<div class="field-description">Auto "Try Again" when a request fails before any output. <code>0</code> off, <code>-1</code> infinite.</div>
+									<input id="chatRetries" type="number" min="-1" step="1" value="0" />
+								</div>
+								<div class="setting" data-search="retry interval (ms)">
+									<label class="setting-title" for="chatRetryInterval">Retry interval (ms)</label>
+									<div class="field-description">Delay between automatic retries.</div>
+									<input id="chatRetryInterval" type="number" min="0" step="100" value="1000" />
+								</div>
+								<div class="setting" data-search="retry jitter (ms)">
+									<label class="setting-title" for="chatRetryJitter">Retry jitter (ms)</label>
+									<div class="field-description">Random extra delay (0–value) so failed chats don't retry in lockstep.</div>
+									<input id="chatRetryJitter" type="number" min="0" step="100" value="0" />
+								</div>
+								</div>
+							</div>
+						</details>
+						<details class="group" data-group="agents" open>
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#129302;</span>
+								<span class="group-heading"><span class="group-title">Background agents</span><span class="group-sub">Subagents, chat pause, approvals, worktrees</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="group-actions">
+									<button class="secondary small" type="button" data-command="customcopilot.showAgentMap">Agent map</button>
+									<button class="secondary small" type="button" data-command="customcopilot.newAgentDefinition">New agent type…</button>
+									<button class="secondary small" type="button" data-command="customcopilot.cleanupAgentWorktrees">Remove unchanged worktrees</button>
+								</div>
+								<h4 class="sub-heading">Limits</h4>
+								<div class="setting-grid">
+								<div class="setting" data-search="max concurrent agents">
+									<label class="setting-title" for="subagentMaxConcurrent">Max concurrent agents</label>
+									<div class="field-description">Subagents running at once, all nesting levels (1–16).</div>
+									<input id="subagentMaxConcurrent" type="number" min="1" max="16" step="1" value="4" data-subagent="maxConcurrent" />
+								</div>
+								<div class="setting" data-search="rounds per agent">
+									<label class="setting-title" for="sub_maxSteps">Rounds per agent</label>
+									<div class="field-description">Tool-calling rounds an agent may use (1–60).</div>
+									<input id="sub_maxSteps" type="number" min="1" max="60" step="1" value="15" data-subagent="maxSteps" />
+								</div>
+								<div class="setting" data-search="nesting depth">
+									<label class="setting-title" for="sub_maxDepth">Nesting depth</label>
+									<div class="field-description">How deep agents may start their own sub-agents (1–6).</div>
+									<input id="sub_maxDepth" type="number" min="1" max="6" step="1" value="3" data-subagent="maxDepth" />
+								</div>
+								<div class="setting" data-search="starts per chat turn">
+									<label class="setting-title" for="sub_maxStartsPerTurn">Starts per chat turn</label>
+									<div class="field-description">Runaway guard: agents the main chat may start in one turn.</div>
+									<input id="sub_maxStartsPerTurn" type="number" min="1" max="50" step="1" value="6" data-subagent="maxStartsPerTurn" />
+								</div>
+								<div class="setting" data-search="auto-compact at">
+									<label class="setting-title" for="sub_compactThreshold">Auto-compact at</label>
+									<div class="field-description">Fraction of the context window that triggers auto-compaction (0.3–0.95).</div>
+									<input id="sub_compactThreshold" type="number" min="0.3" max="0.95" step="0.05" value="0.8" data-subagent="compactThreshold" />
+								</div>
+								</div>
+								<h4 class="sub-heading">Chat flow</h4>
+								<div class="setting setting-toggle" data-search="pause the chat while agents work">
+									<div class="setting-text">
+										<label class="setting-title" for="sub_pauseChat">Pause the chat while agents work</label>
+										<div class="field-description">The turn that started background agents ends with a <em>Chat paused</em> note; wait / poll / sleep calls are not executed. Reports continue the chat.</div>
+									</div>
+									<label class="switch" title="Pause the chat while agents work"><input id="sub_pauseChat" type="checkbox" data-subagent="pauseChat" /><span class="slider"></span></label>
+								</div>
+								<div class="setting setting-toggle" data-search="post reports into the chat">
+									<div class="setting-text">
+										<label class="setting-title" for="sub_autoResume">Post reports into the chat</label>
+										<div class="field-description">When an agent finishes after the turn ended, its report is posted as a new message to the chat that started it.</div>
+									</div>
+									<label class="switch" title="Post reports into the chat"><input id="sub_autoResume" type="checkbox" data-subagent="autoResume" /><span class="slider"></span></label>
+								</div>
+								<div class="setting" data-search="idle time before posting (ms)">
+									<label class="setting-title" for="sub_autoResumeIdleMs">Idle time before posting (ms)</label>
+									<div class="field-description">How long the chat must be idle before a report is posted (min 1000).</div>
+									<input id="sub_autoResumeIdleMs" type="number" min="1000" step="500" value="5000" data-subagent="autoResumeIdleMs" />
+								</div>
+								<h4 class="sub-heading">Commands &amp; worktrees</h4>
+								<div class="setting" data-search="approve shell commands">
+									<label class="setting-title" for="sub_autoApproveCommands">Approve agents' shell commands</label>
+									<div class="field-description">When commands of background agents run without asking.</div>
+									<select id="sub_autoApproveCommands" data-subagent="autoApproveCommands">
+										<option value="autopilot">Only in Autopilot / global auto-approve</option>
+										<option value="always">Always (never ask)</option>
+										<option value="never">Never (always ask)</option>
 									</select>
 								</div>
-							</div>
-							<div class="row">
-								<div class="field field-wide">
-									<label for="promptOverrideText">Custom system prompt text</label>
-									<div class="field-description">
-										Combined with the original prompt per the mode above. Use it to add stricter rules, change the
-										assistant's identity, or fully replace the default prompt.
+								<div class="setting setting-toggle" data-search="commands in a visible terminal">
+									<div class="setting-text">
+										<label class="setting-title" for="sub_commandsInTerminal">Commands in a visible terminal</label>
+										<div class="field-description">Each agent runs its shell commands in its own VS Code terminal ("Agent a7 …") via shell integration.</div>
 									</div>
-									<textarea
-										id="promptOverrideText"
-										rows="6"
-										placeholder="You are a senior engineer. Follow these stricter rules: ..."
-									></textarea>
+									<label class="switch" title="Commands in a visible terminal"><input id="sub_commandsInTerminal" type="checkbox" data-subagent="commandsInTerminal" /><span class="slider"></span></label>
 								</div>
-							</div>
-							<div class="row">
-								<div class="field field-wide">
-									<label for="promptOverrideReplacements">Find / replace rules (rewrite parts)</label>
-									<div class="field-description">
-										One JSON object per line to rewrite individual parts of the prompt — e.g. swap the safety block.
-										Keys: <code>find</code> (required), <code>replace</code>, <code>isRegex</code> (true/false),
-										<code>flags</code> (default "g"). Applied in order, after the combine step.
-										Example: <code>{"find":"Keep your answers short and impersonal.","replace":"Be thorough and detailed."}</code>
+								<div class="setting-grid">
+									<div class="setting" data-search="worktree folder">
+										<label class="setting-title" for="sub_worktreeDir">Worktree folder</label>
+										<div class="field-description">For <code>isolation: "worktree"</code> agents — relative to the repo root (git-excluded) or absolute.</div>
+										<input id="sub_worktreeDir" type="text" placeholder=".worktrees" data-subagent="worktreeDir" />
 									</div>
-									<textarea
-										id="promptOverrideReplacements"
-										rows="5"
-										placeholder='{"find":"Sorry, I can&apos;t assist with that.","replace":"I will not help with that request."}'
-									></textarea>
-									<div id="promptOverrideReplacementsError" class="field-description" style="display: none; color: var(--vscode-errorForeground)"></div>
+									<div class="setting" data-search="worktree symlinks node_modules">
+										<label class="setting-title" for="sub_worktreeSymlinks">Symlink into worktrees</label>
+										<div class="field-description">Comma-separated folders linked from the main checkout, e.g. <code>node_modules, .venv</code>.</div>
+										<input id="sub_worktreeSymlinks" type="text" placeholder="node_modules" data-subagent="worktreeSymlinks" data-kind="list" />
+									</div>
+								</div>
+								<div class="setting" data-search="fallback model">
+									<label class="setting-title" for="sub_model">Fallback model</label>
+									<div class="field-description">Only used when the chat's own model is unavailable — an id or name substring. Empty = automatic.</div>
+									<input id="sub_model" type="text" placeholder="e.g. glm-5.3" data-subagent="model" />
 								</div>
 							</div>
-							<div class="row">
-								<div class="field field-wide">
-									<button id="promptOverrideSave" class="secondary-btn" type="button">Save prompt override</button>
-									<button id="promptOverrideTest" class="secondary-btn" type="button">Test (preview diff)</button>
-									<span id="promptOverrideStatus" class="field-description" style="margin-left: 8px"></span>
+						</details>
+						<details class="group" data-group="schedule">
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#9200;</span>
+								<span class="group-heading"><span class="group-title">Scheduled wake-ups</span><span class="group-sub">Reminders and delayed / recurring prompts (#schedule)</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="group-actions">
+									<button class="secondary small" type="button" data-command="customcopilot.showSchedule">Open schedule</button>
+									<button class="secondary small" type="button" data-command="customcopilot.newReminder">New reminder…</button>
+								</div>
+								<div class="setting setting-toggle" data-search="scheduled wake-ups reminders enabled">
+									<div class="setting-text">
+										<label class="setting-title" for="set_scheduleEnabled">Fire scheduled wake-ups</label>
+										<div class="field-description">A wake-up posts its prompt into the chat when it comes due (once the chat is idle) and the agent continues from it. When off, due wake-ups wait. Sets <code>customcopilot.schedule.enabled</code>.</div>
+									</div>
+									<label class="switch" title="Fire scheduled wake-ups"><input id="set_scheduleEnabled" type="checkbox" data-subagent="customcopilot.schedule.enabled" /><span class="slider"></span></label>
+								</div>
+								<div class="setting-grid">
+									<div class="setting" data-search="minimum delay wake-up">
+										<label class="setting-title" for="set_scheduleMinDelay">Earliest agent wake-up (s)</label>
+										<div class="field-description">Shortest delay / repeat interval the chat agent may schedule.</div>
+										<input id="set_scheduleMinDelay" type="number" min="10" max="3600" step="10" value="60" data-subagent="customcopilot.schedule.minDelaySeconds" />
+									</div>
+									<div class="setting" data-search="pending wake-ups limit">
+										<label class="setting-title" for="set_scheduleMaxPending">Max pending</label>
+										<div class="field-description">Wake-ups the agent may have pending at once.</div>
+										<input id="set_scheduleMaxPending" type="number" min="1" max="200" step="1" value="20" data-subagent="customcopilot.schedule.maxPending" />
+									</div>
+									<div class="setting" data-search="loop guard chain automatic turns">
+										<label class="setting-title" for="set_scheduleMaxChain">Loop guard</label>
+										<div class="field-description">Automatic turns in a row (wake-ups, agent reports) after which the agent may not schedule more.</div>
+										<input id="set_scheduleMaxChain" type="number" min="1" max="500" step="1" value="25" data-subagent="customcopilot.schedule.maxChain" />
+									</div>
 								</div>
 							</div>
-							<div class="row" id="promptOverrideTestRow" style="display: none">
-								<div class="field field-wide">
-									<label>Test result</label>
-									<div id="promptOverrideTestSummary" class="field-description"></div>
-									<div id="promptOverrideDiff" class="prompt-diff"></div>
+						</details>
+						<details class="group" data-group="prompt" open>
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#128221;</span>
+								<span class="group-heading"><span class="group-title">System prompt</span><span class="group-sub">Recommended addition and full override of the prompt Copilot sends</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="setting setting-toggle recommended" data-search="recommended prompt claude code subagents agents tools">
+									<div class="setting-text">
+										<label class="setting-title" for="set_recommendedPrompt">Recommended prompt addition <span class="pill">Recommended</span></label>
+										<div class="field-description">
+											Copilot builds the system prompt for your models; this adds the extension's recommended part to it so any model works like
+											Claude Code: careful, minimal, verified changes, dedicated tools and parallel calls, concise answers — and knows every
+											background-agent tool (types, actions with examples, briefing, the start → end turn → report flow). Agent mode only.
+											Sets <code>customcopilot.recommendedPrompt</code>.
+										</div>
+									</div>
+									<label class="switch" title="Recommended prompt addition"><input id="set_recommendedPrompt" type="checkbox" data-subagent="customcopilot.recommendedPrompt" /><span class="slider"></span></label>
+								</div>
+								<details class="preview" id="recommendedPromptPreview">
+									<summary>Show the text that is added</summary>
+									<div class="preview-actions">
+										<button id="recommendedPromptCopy" class="secondary small" type="button">Copy</button>
+										<span id="recommendedPromptInfo" class="field-description"></span>
+									</div>
+									<textarea id="recommendedPromptText" rows="14" readonly></textarea>
+								</details>
+								<div class="setting setting-toggle" data-search="override the system prompt (all models)">
+									<div class="setting-text">
+										<label class="setting-title" for="promptOverrideEnabled">Override the system prompt (all models)</label>
+										<div class="field-description">Copilot Chat builds the full system prompt and sends it here. Enable to replace or extend it — and rewrite parts of it (e.g. stricter rules) — before it reaches your endpoint. Sets <code>customcopilot.promptOverride.*</code>.</div>
+									</div>
+									<label class="switch" title="Override the system prompt (all models)"><input id="promptOverrideEnabled" type="checkbox" /><span class="slider"></span></label>
+								</div>
+								<div id="promptOverrideBody">
+									<div class="row">
+										<div class="field field-wide">
+											<label>Default system prompt (captured)</label>
+											<div class="field-description">
+												The original system prompt Copilot Chat assembled and sent on the most recent request. Send a
+												chat message first, then refresh to capture it. Copy it here as a starting point, then paste into
+												the box below and switch the mode to "Replace" to fully rewrite it.
+											</div>
+											<div class="row" style="gap: 8px; margin: 0">
+												<button id="promptCaptureRefresh" class="secondary-btn" type="button">Refresh captured prompt</button>
+												<button id="promptCaptureCopy" class="secondary-btn" type="button">Copy</button>
+												<button id="promptCaptureUseAsText" class="secondary-btn" type="button">Use as override text</button>
+												<span id="promptCaptureStatus" class="field-description" style="align-self: center"></span>
+											</div>
+											<textarea
+												id="promptCaptureText"
+												rows="8"
+												readonly
+												placeholder="No prompt captured yet. Send a chat message to one of your models, then click Refresh."
+											></textarea>
+										</div>
+									</div>
+									<div class="row">
+										<div class="field">
+											<label for="promptOverrideMode">Combine mode</label>
+											<div class="field-description">
+												How your text below is combined with Copilot's system prompt.
+											</div>
+											<select id="promptOverrideMode">
+												<option value="off">Off (only run find/replace rules)</option>
+												<option value="append">Append (Copilot's prompt, then your text)</option>
+												<option value="prepend">Prepend (your text, then Copilot's prompt)</option>
+												<option value="replace">Replace (use only your text)</option>
+											</select>
+										</div>
+									</div>
+									<div class="row">
+										<div class="field field-wide">
+											<label for="promptOverrideText">Custom system prompt text</label>
+											<div class="field-description">
+												Combined with the original prompt per the mode above. Use it to add stricter rules, change the
+												assistant's identity, or fully replace the default prompt.
+											</div>
+											<textarea
+												id="promptOverrideText"
+												rows="6"
+												placeholder="You are a senior engineer. Follow these stricter rules: ..."
+											></textarea>
+										</div>
+									</div>
+									<div class="row">
+										<div class="field field-wide">
+											<label for="promptOverrideReplacements">Find / replace rules (rewrite parts)</label>
+											<div class="field-description">
+												One JSON object per line to rewrite individual parts of the prompt — e.g. swap the safety block.
+												Keys: <code>find</code> (required), <code>replace</code>, <code>isRegex</code> (true/false),
+												<code>flags</code> (default "g"). Applied in order, after the combine step.
+												Example: <code>{"find":"Keep your answers short and impersonal.","replace":"Be thorough and detailed."}</code>
+											</div>
+											<textarea
+												id="promptOverrideReplacements"
+												rows="5"
+												placeholder='{"find":"Sorry, I can&apos;t assist with that.","replace":"I will not help with that request."}'
+											></textarea>
+											<div id="promptOverrideReplacementsError" class="field-description" style="display: none; color: var(--vscode-errorForeground)"></div>
+										</div>
+									</div>
+									<div class="row">
+										<div class="field field-wide">
+											<button id="promptOverrideSave" class="secondary-btn" type="button">Save prompt override</button>
+											<button id="promptOverrideTest" class="secondary-btn" type="button">Test (preview diff)</button>
+											<span id="promptOverrideStatus" class="field-description" style="margin-left: 8px"></span>
+										</div>
+									</div>
+									<div class="row" id="promptOverrideTestRow" style="display: none">
+										<div class="field field-wide">
+											<label>Test result</label>
+											<div id="promptOverrideTestSummary" class="field-description"></div>
+											<div id="promptOverrideDiff" class="prompt-diff"></div>
+										</div>
+									</div>
 								</div>
 							</div>
-						</div>
-						<div class="row">
-							<div class="field">
-								<label for="chatRetries">Automatic chat retries</label>
-								<div class="field-description">
-									Auto "Try Again" when a chat request fails before any content is streamed.
-									<code>0</code> = off, <code>-1</code> = infinite, or the max number of extra attempts. Output already
-									streamed is never duplicated. Sets <code>customcopilot.chatRetries</code>.
+						</details>
+						<details class="group" data-group="diagnostics">
+							<summary>
+								<span class="group-icon" aria-hidden="true">&#128270;</span>
+								<span class="group-heading"><span class="group-title">Diagnostics</span><span class="group-sub">Request logging for debugging</span></span>
+								<span class="group-count"></span>
+							</summary>
+							<div class="group-body">
+								<div class="setting setting-toggle" data-search="debug request logging">
+									<div class="setting-text">
+										<label class="setting-title" for="debugRequestLogging">Debug request logging</label>
+										<div class="field-description">On failed requests, print a reproducible <code>curl</code> command and the response body to the Developer Tools console. Sensitive headers are masked. Sets <code>customcopilot.debugRequestLogging</code>.</div>
+									</div>
+									<label class="switch" title="Debug request logging"><input id="debugRequestLogging" type="checkbox" /><span class="slider"></span></label>
 								</div>
-								<input id="chatRetries" type="number" min="-1" step="1" value="0" />
 							</div>
-							<div class="field">
-								<label for="chatRetryInterval">Retry interval (ms)</label>
-								<div class="field-description">Delay between automatic chat retries.</div>
-								<input id="chatRetryInterval" type="number" min="0" step="100" value="1000" />
-							</div>
-						</div>
-						<div class="row">
-							<div class="field field-wide">
-								<label for="chatRetryJitter">Retry jitter (ms)</label>
-								<div class="field-description">
-									Optional random extra delay (<code>0</code>–this value) added before each retry. Spreads out retries
-									so a batch of chats that failed together don't all hit the endpoint at once. <code>0</code> disables
-									jitter. Sets <code>customcopilot.chatRetryJitter</code>.
-								</div>
-								<input id="chatRetryJitter" type="number" min="0" step="100" value="0" />
-							</div>
-						</div>
-						<div class="row">
-							<div class="field">
-								<label for="subagentMaxConcurrent">Max concurrent background agents</label>
-								<div class="field-description">
-									How many subagents (<code>#delegate</code>, all nesting levels together) may run at the same time
-									(1–16). Further starts are refused until one finishes. Applies to the next start, no reload needed.
-									Sets <code>customcopilot.subagent.maxConcurrent</code>.
-								</div>
-								<input id="subagentMaxConcurrent" type="number" min="1" max="16" step="1" value="4" />
-							</div>
-						</div>
+						</details>
+						<div id="settingsNoMatch" class="empty-hint" hidden>No settings match your search.</div>
 					</section>
 					<section id="chatGenSection">
 						<div class="section-header">
@@ -783,140 +916,153 @@
 									<span id="toggleAdvancedLabel">▶ Advanced</span>
 								</div>
 								<div id="advancedSettingsContent" class="advanced-content" style="display: none">
-									<div class="row">
-										<div class="field">
-											<label for="modelTemperature">Temperature</label>
-											<input id="modelTemperature" type="number" min="0" max="2" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelTopP">Top P</label>
-											<input id="modelTopP" type="number" min="0" max="1" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelFamily">Family</label>
-											<input id="modelFamily" type="text" placeholder="gpt-4" />
-										</div>
-										<div class="field">
-											<label for="modelTopK">Top K</label>
-											<input id="modelTopK" type="number" min="1" />
-										</div>
-										<div class="field">
-											<label for="modelMinP">Min P</label>
-											<input id="modelMinP" type="number" min="0" max="1" step="0.01" />
-										</div>
-									</div>
-									<div class="row">
-										<div class="field">
-											<label for="modelFrequencyPenalty">Freq. Penalty</label>
-											<input id="modelFrequencyPenalty" type="number" min="-2" max="2" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelPresencePenalty">Pres. Penalty</label>
-											<input id="modelPresencePenalty" type="number" min="-2" max="2" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelRepetitionPenalty">Rep. Penalty</label>
-											<input id="modelRepetitionPenalty" type="number" min="0" step="0.01" />
-										</div>
-										<div class="field">
-											<label for="modelEnableThinking">Enable Thinking</label>
-											<select id="modelEnableThinking">
-												<option value=""></option>
-												<option value="true">True</option>
-												<option value="false">False</option>
-											</select>
-										</div>
-										<div class="field">
-											<label for="modelThinkingBudget">Thinking Budget</label>
-											<input id="modelThinkingBudget" type="number" min="128" />
-										</div>
-										<div class="field">
-											<label for="modelPromptCache" title="Anthropic prompt caching (cache_control). Empty = default (global TTL for Claude / MiniMax-M2, off otherwise).">Prompt Cache</label>
-											<select id="modelPromptCache">
-												<option value=""></option>
-												<option value="5m">5 min</option>
-												<option value="1h">1 hour</option>
-												<option value="off">Off</option>
-											</select>
-										</div>
-										<div class="field">
-											<label for="modelFastMode" title="Anthropic fast mode (speed: fast) — up to 2.5x output speed at premium pricing. Opus 5.5 / Opus 5 / Opus 4.8. Falls back to standard speed on 429/529.">Fast Mode</label>
-											<select id="modelFastMode">
-												<option value=""></option>
-												<option value="true">On</option>
-												<option value="false">Off</option>
-											</select>
-										</div>
-									</div>
-									<div class="row">
-										<div class="field">
-											<label for="modelIncludeReasoning">Include Reasoning</label>
-											<select id="modelIncludeReasoning">
-												<option value=""></option>
-												<option value="true">True</option>
-												<option value="false">False</option>
-											</select>
-										</div>
-										<div class="field">
-											<label for="modelThinkingType">Thinking Type</label>
-											<select id="modelThinkingType">
-												<option value=""></option>
-												<option value="enabled">Enabled</option>
-												<option value="adaptive">Adaptive</option>
-												<option value="disabled">Disabled</option>
-											</select>
-										</div>
-									</div>
-									<div class="subsection" id="openRouterReasoningSection">
-										<h3>OpenRouter Reasoning</h3>
-										<div class="row">
-											<div class="field">
-												<label for="modelReasoningEnabled">Enabled</label>
-												<select id="modelReasoningEnabled">
-													<option value=""></option>
-													<option value="true">True</option>
-													<option value="false">False</option>
-												</select>
+										<details class="group compact" open>
+											<summary><span class="group-heading"><span class="group-title">Sampling</span><span class="group-sub">Temperature, nucleus / top-k sampling, penalties</span></span></summary>
+											<div class="group-body">
+												<div class="row">
+													<div class="field">
+														<label for="modelTemperature">Temperature</label>
+														<input id="modelTemperature" type="number" min="0" max="2" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelTopP">Top P</label>
+														<input id="modelTopP" type="number" min="0" max="1" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelTopK">Top K</label>
+														<input id="modelTopK" type="number" min="1" />
+													</div>
+													<div class="field">
+														<label for="modelMinP">Min P</label>
+														<input id="modelMinP" type="number" min="0" max="1" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelFrequencyPenalty">Freq. Penalty</label>
+														<input id="modelFrequencyPenalty" type="number" min="-2" max="2" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelPresencePenalty">Pres. Penalty</label>
+														<input id="modelPresencePenalty" type="number" min="-2" max="2" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelRepetitionPenalty">Rep. Penalty</label>
+														<input id="modelRepetitionPenalty" type="number" min="0" step="0.01" />
+													</div>
+													<div class="field">
+														<label for="modelFamily">Family</label>
+														<input id="modelFamily" type="text" placeholder="gpt-4" />
+													</div>
+												</div>
 											</div>
-											<div class="field">
-												<label for="modelReasoningEffortOR">Effort</label>
-												<select id="modelReasoningEffortOR">
-													<option value="">Default (provider decides)</option>
-													<option value="none">None — disable thinking</option>
-													<option value="minimal">Minimal</option>
-													<option value="low">Low</option>
-													<option value="medium">Medium</option>
-													<option value="high">High</option>
-													<option value="xhigh">XHigh</option>
-													<option value="max">Max</option>
-													<option value="ultra">Ultra</option>
-													<option value="auto">Auto</option>
-												</select>
+										</details>
+										<details class="group compact" open>
+											<summary><span class="group-heading"><span class="group-title">Thinking &amp; caching</span><span class="group-sub">Reasoning switches, budgets, prompt cache, fast mode</span></span></summary>
+											<div class="group-body">
+												<div class="row">
+													<div class="field">
+														<label for="modelEnableThinking">Enable Thinking</label>
+														<select id="modelEnableThinking">
+															<option value=""></option>
+															<option value="true">True</option>
+															<option value="false">False</option>
+														</select>
+													</div>
+													<div class="field">
+														<label for="modelThinkingType">Thinking Type</label>
+														<select id="modelThinkingType">
+															<option value=""></option>
+															<option value="enabled">Enabled</option>
+															<option value="adaptive">Adaptive</option>
+															<option value="disabled">Disabled</option>
+														</select>
+													</div>
+													<div class="field">
+														<label for="modelThinkingBudget">Thinking Budget</label>
+														<input id="modelThinkingBudget" type="number" min="128" />
+													</div>
+													<div class="field">
+														<label for="modelIncludeReasoning">Include Reasoning</label>
+														<select id="modelIncludeReasoning">
+															<option value=""></option>
+															<option value="true">True</option>
+															<option value="false">False</option>
+														</select>
+													</div>
+													<div class="field">
+														<label for="modelPromptCache" title="Anthropic prompt caching (cache_control). Empty = default (global TTL for Claude / MiniMax-M2, off otherwise).">Prompt Cache</label>
+														<select id="modelPromptCache">
+															<option value=""></option>
+															<option value="5m">5 min</option>
+															<option value="1h">1 hour</option>
+															<option value="off">Off</option>
+														</select>
+													</div>
+													<div class="field">
+														<label for="modelFastMode" title="Anthropic fast mode (speed: fast) — up to 2.5x output speed at premium pricing. Opus 5.5 / Opus 5 / Opus 4.8. Falls back to standard speed on 429/529.">Fast Mode</label>
+														<select id="modelFastMode">
+															<option value=""></option>
+															<option value="true">On</option>
+															<option value="false">Off</option>
+														</select>
+													</div>
+												</div>
+												<div class="subsection" id="openRouterReasoningSection">
+													<h3>OpenRouter Reasoning</h3>
+													<div class="row">
+														<div class="field">
+															<label for="modelReasoningEnabled">Enabled</label>
+															<select id="modelReasoningEnabled">
+																<option value=""></option>
+																<option value="true">True</option>
+																<option value="false">False</option>
+															</select>
+														</div>
+														<div class="field">
+															<label for="modelReasoningEffortOR">Effort</label>
+															<select id="modelReasoningEffortOR">
+																<option value="">Default (provider decides)</option>
+																<option value="none">None — disable thinking</option>
+																<option value="minimal">Minimal</option>
+																<option value="low">Low</option>
+																<option value="medium">Medium</option>
+																<option value="high">High</option>
+																<option value="xhigh">XHigh</option>
+																<option value="max">Max</option>
+																<option value="ultra">Ultra</option>
+																<option value="auto">Auto</option>
+															</select>
+														</div>
+														<div class="field">
+															<label for="modelReasoningExclude">Exclude</label>
+															<select id="modelReasoningExclude">
+																<option value=""></option>
+																<option value="true">True</option>
+																<option value="false">False</option>
+															</select>
+														</div>
+														<div class="field">
+															<label for="modelReasoningMaxTokens">Max Tokens</label>
+															<input id="modelReasoningMaxTokens" type="number" min="1" />
+														</div>
+													</div>
+												</div>
 											</div>
-											<div class="field">
-												<label for="modelReasoningExclude">Exclude</label>
-												<select id="modelReasoningExclude">
-													<option value=""></option>
-													<option value="true">True</option>
-													<option value="false">False</option>
-												</select>
+										</details>
+										<details class="group compact" open>
+											<summary><span class="group-heading"><span class="group-title">Request</span><span class="group-sub">Extra headers and body parameters</span></span></summary>
+											<div class="group-body">
+												<div class="row">
+													<div class="field">
+														<label for="modelHeaders">Custom Headers (JSON)</label>
+														<textarea id="modelHeaders" rows="2" placeholder='{"X-API-Version": "v1"}'></textarea>
+													</div>
+													<div class="field">
+														<label for="modelExtra">Extra Params (JSON)</label>
+														<textarea id="modelExtra" rows="2" placeholder='{"key": "value"}'></textarea>
+													</div>
+												</div>
 											</div>
-											<div class="field">
-												<label for="modelReasoningMaxTokens">Max Tokens</label>
-												<input id="modelReasoningMaxTokens" type="number" min="1" />
-											</div>
-										</div>
-									</div>
-									<div class="row">
-										<div class="field">
-											<label for="modelHeaders">Custom Headers (JSON)</label>
-											<textarea id="modelHeaders" rows="2" placeholder='{"X-API-Version": "v1"}'></textarea>
-										</div>
-										<div class="field">
-											<label for="modelExtra">Extra Params (JSON)</label>
-											<textarea id="modelExtra" rows="2" placeholder='{"key": "value"}'></textarea>
-										</div>
-									</div>
+										</details>
 								</div>
 
 								<div id="modelError" class="error-message" style="display: none"></div>

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { beginMainActivity, currentTurnTitle, endMainActivity } from "../chatActivity";
 import { AgentDetailsPanel } from "./agentMap";
 import { MAIN_AGENT, agentManager, contextLabel, formatNotifications, resolveAgentAction, type DelegateTaskInput } from "./agentManager";
+import { resolveAgentType } from "./agentTypes";
 
 /**
  * Subagent language-model tools (see `agentManager.ts`):
@@ -34,6 +35,43 @@ function text(value: string): vscode.LanguageModelToolResult {
 	return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(value)]);
 }
 
+const CHAT_COMMANDS = ["customcopilot.showAgentDetails", "customcopilot.stopAgentById", "customcopilot.showAgentMap"];
+
+function cmd(command: string, ...args: unknown[]): string {
+	return `command:${command}${args.length ? `?${encodeURIComponent(JSON.stringify(args))}` : ""}`;
+}
+
+/**
+ * Controls shown IN THE CHAT on the tool call line (proposed
+ * `chatParticipantPrivate` → ExtendedLanguageModelToolResult.toolResultMessage,
+ * which replaces the "past tense" message): agent name and type, links to
+ * its details, Stop and the agent map. The model still gets the full text.
+ */
+function withChatControls(result: string): vscode.LanguageModelToolResult {
+	const out = text(result);
+	const md = new vscode.MarkdownString(undefined, true);
+	md.isTrusted = { enabledCommands: CHAT_COMMANDS };
+	const started = /^Started background agent (a\d+) "([^"]*)" \(([^)]*)\)/.exec(result);
+	const sync = /^\[Subagent (a\d+) "([^"]*)" \(([^)]*)\)[^\]]*?, (done|failed|stopped),/.exec(result);
+	const esc = (v: string) => v.replace(/[\\`*_[\]<>]/g, (c) => `\\${c}`);
+	if (started) {
+		const [, id, name, type] = started;
+		const wt = /in its own worktree /.test(result) ? " · worktree" : "";
+		md.appendMarkdown(
+			`$(hubot) Started agent **${esc(name)}** _(${esc(type)}${wt})_ — [Details](${cmd("customcopilot.showAgentDetails", id)}) · [Stop](${cmd("customcopilot.stopAgentById", id)}) · [Agent map](${cmd("customcopilot.showAgentMap")})`
+		);
+	} else if (sync) {
+		const [, id, name, type, status] = sync;
+		md.appendMarkdown(
+			`$(${status === "done" ? "check" : "error"}) Agent **${esc(name)}** _(${esc(type)})_ ${status} — [Details](${cmd("customcopilot.showAgentDetails", id)}) · [Agent map](${cmd("customcopilot.showAgentMap")})`
+		);
+	} else {
+		return out;
+	}
+	(out as unknown as { toolResultMessage?: vscode.MarkdownString }).toolResultMessage = md;
+	return out;
+}
+
 /** Wrap a main-chat tool call so it counts as main activity (auto-resume idle detection). */
 async function asMainActivity<T>(fn: () => Promise<T>): Promise<T> {
 	beginMainActivity();
@@ -64,8 +102,15 @@ export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskIn
 		const label = (options.input.name ?? "").trim();
 		const short = task.length > 120 ? `${task.slice(0, 117)}…` : task;
 		const bg = options.input.background !== false;
-		const base = { invocationMessage: `${bg ? "Starting background agent" : "Subagent"}${label ? ` "${label}"` : ""}: ${short}` };
-		if (options.input.allowWrite) {
+		const type = resolveAgentType(options.input.subagentType);
+		const isolated = String(options.input.isolation ?? type?.isolation ?? "").toLowerCase() === "worktree";
+		const kind = [type && type.name !== "general-purpose" ? type.name : "", isolated ? "worktree" : ""].filter(Boolean).join(", ");
+		const base = {
+			invocationMessage: `${bg ? "Starting background agent" : "Subagent"}${label ? ` "${label}"` : ""}${kind ? ` (${kind})` : ""}: ${short}`,
+		};
+		// Edits in the user's checkout need consent; a worktree keeps them isolated.
+		const writes = !type?.readOnly && (options.input.allowWrite === true || type?.write === true);
+		if (writes && !isolated) {
 			return {
 				...base,
 				confirmationMessages: {
@@ -88,7 +133,7 @@ export class DelegateTaskTool implements vscode.LanguageModelTool<DelegateTaskIn
 			agentManager.noteActiveSession(session);
 			const chatModel = mainChatModel(options);
 			agentManager.noteSession(session, currentTurnTitle(), chatModel?.name);
-			return text(
+			return withChatControls(
 				await agentManager.control(MAIN_AGENT, options.input, chatModel, {
 					toolInvocationToken: options.toolInvocationToken,
 					session,
@@ -322,3 +367,107 @@ export async function showAgentDetails(id: string): Promise<void> {
 	AgentDetailsPanel.show(id);
 }
 
+
+// ── Worktree / agent-type commands (tree view, details panel, palette) ──
+
+export async function openAgentWorktree(id: string): Promise<void> {
+	const wt = agentManager.worktreeOf(id);
+	if (!wt || wt.removed) {
+		vscode.window.showInformationMessage("This agent has no worktree (it had no changes or was removed).");
+		return;
+	}
+	await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(wt.path), { forceNewWindow: true });
+}
+
+export async function applyAgentWorktree(id: string): Promise<void> {
+	const wt = agentManager.worktreeOf(id);
+	if (!wt || wt.removed) {
+		vscode.window.showInformationMessage("This agent has no worktree to apply.");
+		return;
+	}
+	const ok = await vscode.window.showWarningMessage(
+		`Apply the changes of agent ${id} (branch ${wt.branch}) to ${wt.checkoutRoot}?`,
+		{ modal: true, detail: "They are applied as uncommitted working-tree changes; conflicting files get conflict markers. Nothing is committed." },
+		"Apply"
+	);
+	if (ok !== "Apply") {
+		return;
+	}
+	try {
+		const summary = await agentManager.applyWorktree(id);
+		const choice = await vscode.window.showInformationMessage(summary, "Remove worktree", "Open Source Control");
+		if (choice === "Remove worktree") {
+			await agentManager.removeWorktree(id);
+		} else if (choice === "Open Source Control") {
+			await vscode.commands.executeCommand("workbench.view.scm");
+		}
+	} catch (err) {
+		vscode.window.showErrorMessage(`Could not apply the worktree: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+export async function removeAgentWorktreeFromUi(id: string): Promise<void> {
+	const wt = agentManager.worktreeOf(id);
+	if (!wt || wt.removed) {
+		return;
+	}
+	const ok = await vscode.window.showWarningMessage(
+		`Delete the worktree of agent ${id} and its branch ${wt.branch}?`,
+		{ modal: true, detail: `${wt.path}\n\nChanges that were not applied or merged are lost.` },
+		"Delete"
+	);
+	if (ok !== "Delete") {
+		return;
+	}
+	try {
+		if (!(await agentManager.removeWorktree(id))) {
+			vscode.window.showWarningMessage("git could not remove the worktree — see the log for details.");
+		}
+	} catch (err) {
+		vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+	}
+}
+
+const AGENT_TEMPLATE = (name: string) => `---
+name: ${name}
+description: Use this agent when … (say WHEN the main agent should pick it — it reads this to decide)
+# tools: [Read, Grep, Glob, Bash]   # omit = all tools; without Edit/Write the agent is read-only
+# model: inherit                    # or an id/name substring of one of your models
+# maxTurns: 20
+# isolation: worktree               # run in its own git worktree
+---
+
+You are a … specialist. Your job is to …
+
+## Process
+1. …
+2. …
+
+## Report
+End with …
+`;
+
+/** Create `.claude/agents/<name>.md` from a template and open it. */
+export async function newAgentDefinition(): Promise<void> {
+	const folder = vscode.workspace.workspaceFolders?.[0];
+	if (!folder) {
+		vscode.window.showWarningMessage("Open a folder first — custom agents live in <workspace>/.claude/agents.");
+		return;
+	}
+	const name = await vscode.window.showInputBox({
+		title: "New custom agent type",
+		prompt: "Name (used as subagentType)",
+		placeHolder: "code-reviewer",
+		validateInput: (v) => (/^[A-Za-z0-9][\w.-]{0,63}$/.test(v.trim()) ? undefined : "Letters, digits, dots, dashes and underscores only."),
+	});
+	if (!name) {
+		return;
+	}
+	const uri = vscode.Uri.joinPath(folder.uri, ".claude", "agents", `${name.trim()}.md`);
+	try {
+		await vscode.workspace.fs.stat(uri);
+	} catch {
+		await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(AGENT_TEMPLATE(name.trim())));
+	}
+	await vscode.window.showTextDocument(uri);
+}

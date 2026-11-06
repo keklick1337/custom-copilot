@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.7",
+	"version": "1.2.11",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -76,6 +76,11 @@
 					"id": "customcopilot.agentsView",
 					"name": "Background Agents",
 					"icon": "$(organization)"
+				},
+				{
+					"id": "customcopilot.scheduleView",
+					"name": "Scheduled",
+					"icon": "$(clock)"
 				}
 			]
 		},
@@ -256,6 +261,78 @@
 				"title": "Show Agent Map",
 				"category": "Copilot Custom Models Endpoint",
 				"icon": "$(type-hierarchy)"
+			},
+			{
+				"command": "customcopilot.openAgentWorktree",
+				"title": "Open Agent Worktree in New Window",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(folder-opened)"
+			},
+			{
+				"command": "customcopilot.applyAgentWorktree",
+				"title": "Apply Agent Worktree Changes to Workspace",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(git-pull-request-go-to-changes)"
+			},
+			{
+				"command": "customcopilot.removeAgentWorktree",
+				"title": "Remove Agent Worktree",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(trash)"
+			},
+			{
+				"command": "customcopilot.newAgentDefinition",
+				"title": "New Custom Agent Type…",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(add)"
+			},
+			{
+				"command": "customcopilot.cleanupAgentWorktrees",
+				"title": "Remove Unchanged Agent Worktrees",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(clear-all)"
+			},
+			{
+				"command": "customcopilot.showSchedule",
+				"title": "Show Schedule",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(calendar)"
+			},
+			{
+				"command": "customcopilot.newReminder",
+				"title": "New Scheduled Wake-up / Reminder…",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(add)"
+			},
+			{
+				"command": "customcopilot.runScheduledNow",
+				"title": "Run Scheduled Wake-up Now",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(play)"
+			},
+			{
+				"command": "customcopilot.snoozeScheduled",
+				"title": "Snooze Scheduled Wake-up 10 min",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(history)"
+			},
+			{
+				"command": "customcopilot.editScheduled",
+				"title": "Edit Scheduled Wake-up…",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(edit)"
+			},
+			{
+				"command": "customcopilot.cancelScheduled",
+				"title": "Cancel Scheduled Wake-up",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(close)"
+			},
+			{
+				"command": "customcopilot.clearScheduleHistory",
+				"title": "Clear Schedule History",
+				"category": "Copilot Custom Models Endpoint",
+				"icon": "$(clear-all)"
 			}
 		],
 		"menus": {
@@ -291,22 +368,90 @@
 				{
 					"command": "customcopilot.resumeAgentById",
 					"when": "false"
+				},
+				{
+					"command": "customcopilot.openAgentWorktree",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.applyAgentWorktree",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.removeAgentWorktree",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.runScheduledNow",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.snoozeScheduled",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.editScheduled",
+					"when": "false"
+				},
+				{
+					"command": "customcopilot.cancelScheduled",
+					"when": "false"
 				}
 			],
 			"view/item/context": [
 				{
 					"command": "customcopilot.stopAgentById",
-					"when": "view == customcopilot.agentsView && viewItem == agentRunning",
+					"when": "view == customcopilot.agentsView && viewItem =~ /^agentRunning/",
 					"group": "inline"
 				},
 				{
 					"command": "customcopilot.resumeAgentById",
-					"when": "view == customcopilot.agentsView && viewItem == agentFinished",
+					"when": "view == customcopilot.agentsView && viewItem =~ /^agentFinished/",
 					"group": "inline"
+				},
+				{
+					"command": "customcopilot.applyAgentWorktree",
+					"when": "view == customcopilot.agentsView && viewItem == agentFinished.worktree",
+					"group": "worktree@1"
+				},
+				{
+					"command": "customcopilot.openAgentWorktree",
+					"when": "view == customcopilot.agentsView && viewItem =~ /\\.worktree$/",
+					"group": "worktree@2"
+				},
+				{
+					"command": "customcopilot.removeAgentWorktree",
+					"when": "view == customcopilot.agentsView && viewItem == agentFinished.worktree",
+					"group": "worktree@3"
 				},
 				{
 					"command": "customcopilot.showAgentDetails",
 					"when": "view == customcopilot.agentsView",
+					"group": "inline"
+				},
+				{
+					"command": "customcopilot.runScheduledNow",
+					"when": "view == customcopilot.scheduleView && viewItem == schedulePending",
+					"group": "inline@1"
+				},
+				{
+					"command": "customcopilot.cancelScheduled",
+					"when": "view == customcopilot.scheduleView && viewItem == schedulePending",
+					"group": "inline@2"
+				},
+				{
+					"command": "customcopilot.snoozeScheduled",
+					"when": "view == customcopilot.scheduleView && viewItem == schedulePending",
+					"group": "schedule@1"
+				},
+				{
+					"command": "customcopilot.editScheduled",
+					"when": "view == customcopilot.scheduleView && viewItem == schedulePending",
+					"group": "schedule@2"
+				},
+				{
+					"command": "customcopilot.clearScheduleHistory",
+					"when": "view == customcopilot.scheduleView && viewItem == scheduleHistory",
 					"group": "inline"
 				}
 			],
@@ -320,6 +465,31 @@
 					"command": "customcopilot.stopAllAgents",
 					"when": "view == customcopilot.agentsView",
 					"group": "navigation"
+				},
+				{
+					"command": "customcopilot.newAgentDefinition",
+					"when": "view == customcopilot.agentsView",
+					"group": "agents@1"
+				},
+				{
+					"command": "customcopilot.cleanupAgentWorktrees",
+					"when": "view == customcopilot.agentsView",
+					"group": "agents@2"
+				},
+				{
+					"command": "customcopilot.newReminder",
+					"when": "view == customcopilot.scheduleView",
+					"group": "navigation@1"
+				},
+				{
+					"command": "customcopilot.showSchedule",
+					"when": "view == customcopilot.scheduleView",
+					"group": "navigation@2"
+				},
+				{
+					"command": "customcopilot.clearScheduleHistory",
+					"when": "view == customcopilot.scheduleView",
+					"group": "schedule@1"
 				}
 			]
 		},
@@ -854,6 +1024,24 @@
 					"default": true,
 					"markdownDescription": "When a background agent finishes (or messages the main agent) after the main chat turn has ended, post its report as a new message to **the chat session that started it**, so the main agent continues working. When the main agent is blocked in `waitForAgents` it is woken directly instead. After 3 consecutive turns started by such posts (no user message in between), newly started agents no longer auto-post (their reports stay readable via `wait`), so agents → report → agents loops cannot run forever. If you pressed **Stop** in the chat, reports are not posted automatically (VS Code would ask about your queued messages) — a notification offers to post them instead."
 				},
+				"customcopilot.recommendedPrompt": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "**Recommended.** Add the extension's recommended prompt to the system prompt Copilot assembles for your models in agent mode (requests with tools): Claude Code–style working rules (read before editing, minimal changes, care with destructive actions, dedicated tools over shell, parallel tool calls, concise answers) and — when the delegate tool is available — the background-agents guide (agent types, every agent action with examples, how to brief an agent, the start → end turn → report flow, never invent agent results). Model-agnostic; applied after `#customcopilot.promptOverride.enabled#`. Titles and summaries are untouched. Preview it in the configuration view → Global Settings → System prompt."
+				},
+				"customcopilot.subagent.worktreeDir": {
+					"type": "string",
+					"default": ".worktrees",
+					"markdownDescription": "Where `isolation: \"worktree\"` agents get their git worktrees: a folder relative to the repository root (added to `.git/info/exclude`, never to a tracked file), or an absolute folder (a sub-folder per repository). Worktrees are named `agent-<id>-<rand>` on branch `worktree-agent-<id>-<rand>`. Unchanged ones are removed when the agent finishes (and at startup); changed ones are kept until you apply or remove them from the agent's details."
+				},
+				"customcopilot.subagent.worktreeSymlinks": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"markdownDescription": "Folders (relative to the repository root) to symlink from the main checkout into every agent worktree instead of leaving them missing — e.g. `node_modules`, `.venv`. Git-ignored files listed in a `.worktreeinclude` file at the repository root (e.g. `.env`) are copied in."
+				},
 				"customcopilot.subagent.pauseChat": {
 					"type": "boolean",
 					"default": true,
@@ -864,6 +1052,32 @@
 					"default": 5000,
 					"minimum": 1000,
 					"markdownDescription": "How long (ms) the main chat must be idle (no model request or agent tool call) before an agent report is auto-posted to it."
+				},
+				"customcopilot.schedule.enabled": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Fire scheduled wake-ups / reminders (`#schedule`). When off, due wake-ups wait (they are not lost) until it is turned on again."
+				},
+				"customcopilot.schedule.minDelaySeconds": {
+					"type": "number",
+					"default": 60,
+					"minimum": 10,
+					"maximum": 3600,
+					"markdownDescription": "Earliest wake-up (and shortest repeat interval) the chat agent may schedule, in seconds. Reminders you create yourself may be sooner."
+				},
+				"customcopilot.schedule.maxPending": {
+					"type": "number",
+					"default": 20,
+					"minimum": 1,
+					"maximum": 200,
+					"markdownDescription": "How many wake-ups the chat agent may have pending at once."
+				},
+				"customcopilot.schedule.maxChain": {
+					"type": "number",
+					"default": 25,
+					"minimum": 1,
+					"maximum": 500,
+					"markdownDescription": "Loop guard: the chat agent may not schedule new wake-ups after this many consecutive automatic turns (wake-ups / agent reports) without a message from you. Recurring wake-ups you approved keep running."
 				},
 				"customcopilot.imageMaxDimension": {
 					"type": "number",
@@ -934,7 +1148,7 @@
 				"toolReferenceName": "delegate",
 				"displayName": "Run / Manage Subagents",
 				"icon": "$(organization)",
-				"modelDescription": "Start and manage SUBAGENTS — independent agent loops on the same model as this chat, each in a FRESH context (they cannot see this conversation), with their own tools and their own terminal; each returns ONE final report.\n\n`action` selects the operation (this one tool does everything — you never need any other agent tool). Shortcut: {\"task\": \"wait\"} or {\"task\": \"status\"} without `action` work too:\n- \"start\" (default): start an agent. Requires `task` (self-contained: goal, exact paths/symbols, constraints, what is known, what NOT to do), `name` (3-7 word title) and `expectedOutput` (report format). Runs in the BACKGROUND and returns immediately with the agent id.\n- \"wait\": return pending reports. While the chat is paused for its agents (the default) it does NOT block — end your turn instead; for agents that do not post to the chat it BLOCKS until one finishes or messages you. Never poll with no-op commands or placeholder agents. `ids` limits it to specific agents; `timeoutSeconds` (default 600; 0 = just read what is ready).\n- \"status\": list agents as a tree (status, activity, context, rounds); with `id` the full details and report of one agent.\n- \"message\": send `message` to the running agent `id` (read at its next round) — steer it, answer its question.\n- \"stop\": stop agent `id` (or \"all\") with its sub-agents.\n- \"resume\": continue a finished/stopped agent `id` with a follow-up `message`; it keeps its full previous context.\n\nWHEN TO START AGENTS: substantial, self-contained work that would flood your context or can run in parallel — broad codebase exploration, multi-file research, reading long logs/docs, reviewing/auditing, independent implementation chunks (allowWrite=true).\nNEVER start an agent for: trivial work (one read/search/answer — do it yourself), tests or demos of this tool, placeholders, acknowledging or reacting to an agent report, waiting (use action \"wait\"), work needing the user's input, or work an agent already does (check action \"status\").\n\nWHILE AGENTS RUN the chat PAUSES: start all agents you need, then END YOUR TURN with a short status message to the user — waiting, polling, sleep and todo updates are not executed in that turn. Each report is posted into this chat as a message when its agent finishes and you continue the user's task then (this is the normal flow). Never poll with shell commands, sleep, todo updates or placeholder calls. Agents get read-only workspace tools plus a terminal; allowWrite=true adds file edit/create (the user confirms the start). Limits: customcopilot.subagent.maxConcurrent running, maxStartsPerTurn per turn.",
+				"modelDescription": "Start and manage SUBAGENTS — independent agent loops on the same model as this chat, each in a FRESH context (they cannot see this conversation), with this chat's workspace tools, their own terminal and (allowWrite / worktree) their own edit tools; each returns ONE final report.\n\n`action` selects the operation (this one tool does everything). Shortcut: {\"task\": \"wait\"} or {\"task\": \"status\"} without `action` work too:\n- \"start\" (default): start an agent. Requires `task` (self-contained briefing: goal and why, exact paths/symbols, what is known or ruled out, constraints, whether to write code or only research), `name` (3-7 word title) and `expectedOutput` (report format/length). Optional `subagentType` (general-purpose | Explore | Plan | custom — see action \"types\") and `isolation: \"worktree\"` (own git working copy; edits never touch the user's files). Runs in the BACKGROUND and returns immediately with the agent id; launch independent agents in the same response so they run in parallel.\n- \"wait\": return pending reports. While the chat is paused for its agents (the default) it does NOT block — end your turn instead; for agents that do not post to the chat it BLOCKS until one finishes or messages you. Never poll with no-op commands or placeholder agents.\n- \"status\": list agents as a tree (type, status, activity, context, rounds, worktree); with `id` the full details and report of one agent.\n- \"message\": send `message` to the running agent `id` (read at its next round) — steer it, answer its question.\n- \"stop\": stop agent `id` (or \"all\") with its sub-agents.\n- \"resume\": continue a finished/stopped agent `id` with a follow-up `message`; it keeps its full previous context (and worktree).\n- \"types\": list the agent types with their descriptions.\n\nWHEN TO START AGENTS: substantial, self-contained work that would flood your context or can run in parallel — broad codebase exploration (Explore), implementation planning (Plan), multi-file research, reviews, independent implementation chunks (allowWrite, ideally isolation \"worktree\").\nNEVER start an agent for: trivial work (one read/search/answer — do it yourself), tests or demos of this tool, placeholders, acknowledging or reacting to an agent report, waiting (use action \"wait\"), work needing the user's input, or work an agent already does (check action \"status\"). Never delegate understanding (\"based on your findings, fix it\") — include paths, lines and what to change.\n\nWHILE AGENTS RUN the chat PAUSES: start all agents you need, then END YOUR TURN with a short status message to the user — waiting, polling, sleep and todo updates are not executed in that turn. Never predict or invent an agent's results. Each report is posted into this chat as a message when its agent finishes and you continue the user's task then (this is the normal flow). Limits: customcopilot.subagent.maxConcurrent running, maxStartsPerTurn per turn.",
 				"userDescription": "Run a self-contained sub-task in a background agent on the same model; its report comes back when it finishes.",
 				"canBeReferencedInPrompt": true,
 				"inputSchema": {
@@ -948,9 +1162,21 @@
 								"status",
 								"message",
 								"stop",
-								"resume"
+								"resume",
+								"types"
 							],
-							"description": "Operation (default \"start\"). Use \"wait\" to wait for running agents' reports."
+							"description": "Operation (default \"start\"). \"types\" lists the available agent types (subagentType)."
+						},
+						"subagentType": {
+							"type": "string",
+							"description": "Agent type: \"general-purpose\" (default; research and multi-step work, edits with allowWrite), \"Explore\" (fast read-only codebase search — say \"quick\", \"medium\" or \"very thorough\" in the task), \"Plan\" (read-only architect: step-by-step plan + critical files), or a custom agent from .claude/agents / .github/agents (action \"types\" lists them)."
+						},
+						"isolation": {
+							"type": "string",
+							"enum": [
+								"worktree"
+							],
+							"description": "\"worktree\": run the agent in its own git worktree (separate working copy on its own branch) — its edits never touch the user's files; write tools are enabled there. An unchanged worktree is removed automatically; otherwise path, branch and change summary come with the report."
 						},
 						"task": {
 							"type": "string",
@@ -1272,6 +1498,57 @@
 						"description",
 						"body"
 					]
+				}
+			},
+			{
+				"name": "customcopilot_scheduleWakeup",
+				"toolReferenceName": "schedule",
+				"displayName": "Schedule Wake-up / Reminder",
+				"icon": "$(clock)",
+				"modelDescription": "Schedule a WAKE-UP: the `prompt` is posted into THIS chat later as a new message (once the chat is idle) and you continue from it — Claude Code ScheduleWakeup/cron style. Survives a window reload.\n\n- Once: {\"prompt\": \"<what to do then — self-contained>\", \"reason\": \"<short label>\", \"delaySeconds\": 900} or {\"at\": \"14:30\"} (or an ISO date-time).\n- Recurring: add \"everySeconds\" (≥ 60) and optionally \"maxRuns\".\n- {\"action\": \"list\"} — pending wake-ups; {\"action\": \"cancel\", \"id\": \"w3\"} — cancel one.\n\nUSE IT for state that changes outside this chat (CI runs, deploys, long builds, external queues — choose a delay matched to how fast it changes: one check after ~8 min for an 8-minute CI run, not many short polls), for follow-ups the user asked for (\"remind me…\", \"check again in an hour\", \"every morning…\"), and for loops the user explicitly requested.\nNEVER use it to wait for background agents (their reports arrive automatically) or for short polling. After scheduling, END YOUR TURN with a one-line status. A message starting with \"⏰ Scheduled wake-up\" is such a wake-up, not a user message: do what its prompt says; schedule the next one only if still needed, and cancel recurring ones you no longer need.",
+				"userDescription": "Post a prompt into this chat later (once or repeatedly) — reminders, CI checks, follow-ups.",
+				"canBeReferencedInPrompt": true,
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"action": {
+							"type": "string",
+							"enum": [
+								"schedule",
+								"list",
+								"cancel"
+							],
+							"description": "Default \"schedule\"."
+						},
+						"prompt": {
+							"type": "string",
+							"description": "Message posted into the chat when it fires — self-contained: what to check or do and why."
+						},
+						"reason": {
+							"type": "string",
+							"description": "Short label shown in the schedule (e.g. 'Check CI run #812')."
+						},
+						"delaySeconds": {
+							"type": "number",
+							"description": "Fire after this many seconds (≥ 60)."
+						},
+						"at": {
+							"type": "string",
+							"description": "Fire at a time: \"HH:MM\" (today, or tomorrow if past) or an ISO date-time."
+						},
+						"everySeconds": {
+							"type": "number",
+							"description": "Repeat interval in seconds (≥ 60). Without delaySeconds/at the first run is one interval from now."
+						},
+						"maxRuns": {
+							"type": "number",
+							"description": "Recurring: stop after this many runs."
+						},
+						"id": {
+							"type": "string",
+							"description": "Wake-up id for action \"cancel\"."
+						}
+					}
 				}
 			}
 		]
