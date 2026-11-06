@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.11",
+	"version": "1.2.12",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -966,10 +966,10 @@
 				},
 				"customcopilot.subagent.maxSteps": {
 					"type": "number",
-					"default": 15,
-					"minimum": 1,
-					"maximum": 60,
-					"markdownDescription": "Default maximum tool-calling rounds for a `#delegate` subagent before it must write its report (cap 60)."
+					"default": 0,
+					"minimum": 0,
+					"maximum": 500,
+					"markdownDescription": "Tool-calling rounds per agent run. **`0` = no limit (default, like Claude Code)**: an agent works until its task is done — its context is auto-compacted when it fills up, a loop detector stops it when it keeps repeating the same call, and a safety cap of 500 rounds stops runaways. Set a number to cap every agent; a single agent can still be capped with `maxSteps`, a custom agent type with `maxTurns`."
 				},
 				"customcopilot.subagent.maxConcurrent": {
 					"type": "number",
@@ -1223,7 +1223,7 @@
 						},
 						"maxSteps": {
 							"type": "number",
-							"description": "Max tool-calling rounds (default customcopilot.subagent.maxSteps, cap 60)."
+							"description": "Optional cap on tool-calling rounds. Default: no limit (the agent works until done; a loop detector and a 500-round safety cap guard against runaways). Set it only for tasks that must stay short."
 						}
 					},
 					"required": []

@@ -271,10 +271,10 @@
 									<div class="field-description">Subagents running at once, all nesting levels (1–16).</div>
 									<input id="subagentMaxConcurrent" type="number" min="1" max="16" step="1" value="4" data-subagent="maxConcurrent" />
 								</div>
-								<div class="setting" data-search="rounds per agent">
+								<div class="setting" data-search="rounds per agent limit">
 									<label class="setting-title" for="sub_maxSteps">Rounds per agent</label>
-									<div class="field-description">Tool-calling rounds an agent may use (1–60).</div>
-									<input id="sub_maxSteps" type="number" min="1" max="60" step="1" value="15" data-subagent="maxSteps" />
+									<div class="field-description"><code>0</code> = no limit (like Claude Code; a loop detector and a 500-round safety cap still apply).</div>
+									<input id="sub_maxSteps" type="number" min="0" max="500" step="1" value="0" data-subagent="maxSteps" />
 								</div>
 								<div class="setting" data-search="nesting depth">
 									<label class="setting-title" for="sub_maxDepth">Nesting depth</label>

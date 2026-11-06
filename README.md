@@ -385,8 +385,15 @@ The **Background Agents** view in
 the extension's sidebar shows the agents as a **tree of who started whom** with status, context
 usage and rounds, plus inline **Stop / Resume / Details** buttons. A status-bar item shows running
 agents and unread reports; **hover it** for the same tree with **Stop / Resume / Details** links, or
-click it / run **Show Background Agents**. Limits: `customcopilot.subagent.maxSteps` rounds per agent, `customcopilot.subagent.maxConcurrent`
-agents at once. `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
+click it / run **Show Background Agents**. `customcopilot.subagent.maxConcurrent` limits the agents
+running at once.
+
+**No round limit by default** (like Claude Code, where the built-in agents have no `maxTurns`):
+an agent works until its task is done — its context is auto-compacted when it fills up. Guards
+instead of a budget: a **loop detector** (the very same tool call 3× in a row → the agent is told to
+change approach, 6× → it must write its report; waiting on its own sub-agents does not count) and a
+**safety cap of 500 rounds**. A cap can still be set per agent (`maxSteps`), per custom agent type
+(`maxTurns` in its frontmatter) or for all agents (`customcopilot.subagent.maxSteps`, `0` = no limit). `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
 **Loop protection.** The main chat can start at most `customcopilot.subagent.maxStartsPerTurn`
 agents per turn (default 6), and after 3 consecutive turns started by auto-posted reports (no
 message from you in between) newly started agents no longer auto-post (their reports stay readable

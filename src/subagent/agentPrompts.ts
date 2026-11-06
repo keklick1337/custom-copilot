@@ -24,6 +24,7 @@ export interface SubagentPromptInput {
 	canSpawn: boolean;
 	allowWrite: boolean;
 	maxSteps: number;
+	stepLimit?: boolean;
 	modelName: string;
 	worktree?: AgentWorktree;
 	/** Whether the worktree belongs to an ancestor (inherited). */
@@ -84,7 +85,7 @@ export function subagentSystemPrompt(p: SubagentPromptInput): string {
 		"You are an agent for GitHub Copilot Chat in VS Code, working for the main coding agent. Given the task, use the tools available to complete it. Complete the task fully — don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.",
 		"You run in a fresh context: you only know what the task tells you plus what you discover with tools. Work autonomously — never ask the user questions; make reasonable decisions and state assumptions in your report.",
 		p.type.prompt,
-		`# Access and limits\n${access}\nAt most ${p.maxSteps} tool rounds — issue independent tool calls in the same round.`,
+		`# Access and limits\n${access}\n${p.stepLimit ? `At most ${p.maxSteps} tool rounds.` : "No fixed round limit: keep working until the task is fully done (your context is compacted automatically when it fills up) — but stop as soon as it is done, and never repeat the same call hoping for a different result."} Issue independent tool calls in the same round.`,
 		coordination,
 		[
 			"Notes:",

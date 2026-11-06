@@ -64,6 +64,7 @@ function summary(r: AgentRecord) {
 		contextExact: r.contextExact,
 		steps: r.steps,
 		maxSteps: r.maxSteps,
+		stepLimit: r.stepLimit,
 		toolCalls: r.toolCalls,
 		compactions: r.compactions,
 		resumes: r.resumes,
@@ -385,7 +386,7 @@ function render() {
       stat("Duration", fmtDur((d.endedAt || Date.now()) - d.startedAt)) +
       stat("Tokens used", fmtTok(d.totalTokens)) +
       stat("Context", (d.contextExact ? "" : "~") + fmtTok(d.contextTokens) + " / " + fmtTok(d.maxContextTokens) + " (" + ctxPct + "%)", ctxPct) +
-      stat("Rounds", d.steps + " / " + d.maxSteps, d.maxSteps ? d.steps / d.maxSteps * 100 : 0) +
+      (d.stepLimit ? stat("Rounds", d.steps + " / " + d.maxSteps, d.maxSteps ? d.steps / d.maxSteps * 100 : 0) : stat("Rounds", d.steps + ' <span style="color:var(--muted);font-size:11px">no limit</span>')) +
       stat("Tool calls", d.toolCalls + (d.compactions ? " · compacted " + d.compactions + "×" : "") + (d.resumes ? " · resumed " + d.resumes + "×" : "")) +
       stat("Type", esc(d.agentType || "general-purpose")) +
       stat("Access", d.allowWrite ? "read/write" + (d.autoApprove ? " · auto-approve" : "") : "read-only + terminal") +

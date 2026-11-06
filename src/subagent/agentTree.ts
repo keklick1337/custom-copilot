@@ -43,7 +43,7 @@ export class AgentTreeProvider implements vscode.TreeDataProvider<AgentRecord> {
 		);
 		item.id = a.id;
 		const ownWorktree = !!a.worktree && a.worktree.owner === a.id && !a.worktree.removed;
-		item.description = `${a.id}${a.agentType !== "general-purpose" ? ` · ${a.agentType}` : ""}${ownWorktree ? " · worktree" : ""} · ${a.status === "running" ? a.activity : a.status} · ${contextLabel(a)} · ${a.steps}/${a.maxSteps}`;
+		item.description = `${a.id}${a.agentType !== "general-purpose" ? ` · ${a.agentType}` : ""}${ownWorktree ? " · worktree" : ""} · ${a.status === "running" ? a.activity : a.status} · ${contextLabel(a)} · ${a.stepLimit ? `${a.steps}/${a.maxSteps}` : `${a.steps} rounds`}`;
 		item.iconPath =
 			a.status === "running"
 				? new vscode.ThemeIcon("sync~spin")

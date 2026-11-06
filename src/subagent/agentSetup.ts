@@ -5,7 +5,16 @@ import { AGENT_TOOL_NAMES } from "./agentNames";
 /** Shared by the main-chat tools and nested (agent → agent) spawning. */
 
 const OWN_VENDORS = new Set(VENDOR_MODES.map((v) => v.vendor));
-export const HARD_MAX_STEPS = 60;
+/**
+ * Safety cap on tool rounds per run. Like Claude Code, agents have NO round
+ * limit by default (they run until done; auto-compaction keeps the context
+ * in bounds) — this only stops a runaway loop. A limit can still be set per
+ * agent (`maxSteps`), per custom agent type (`maxTurns`) or globally.
+ */
+export const HARD_MAX_STEPS = 500;
+/** Identical tool rounds in a row before the agent is warned / stopped. */
+export const REPEAT_WARN = 3;
+export const REPEAT_STOP = 6;
 const OWN_AGENT_TOOLS = new Set<string>(Object.values(AGENT_TOOL_NAMES));
 
 /** Words (name split on _ / - / . / camelCase) that mark a read-only tool. */

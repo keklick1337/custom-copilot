@@ -3,7 +3,7 @@ import * as pathModule from "path";
 import { logger } from "../logger";
 import { autoResumeDepth, currentMainTurn, isAutopilotTurn, isMainChatIdle, noteMainCancelled, wasMainTurnCancelled } from "../chatActivity";
 import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER } from "./agentNames";
-import { HARD_MAX_STEPS, pickTools, selectModel } from "./agentSetup";
+import { HARD_MAX_STEPS, REPEAT_STOP, REPEAT_WARN, pickTools, selectModel } from "./agentSetup";
 import { agentCreateFile, agentEditFile, agentRunCommand, disposeAgentTerminal } from "./agentWriteTools";
 import { type AgentTypeDef, BUILT_IN_TYPES, describeAgentTypes, resolveAgentType } from "./agentTypes";
 import {
@@ -106,6 +106,8 @@ export interface AgentRecord {
 	status: AgentStatus;
 	allowWrite: boolean;
 	maxSteps: number;
+	/** A round limit was set explicitly (else `maxSteps` is only the safety cap). */
+	stepLimit: boolean;
 	steps: number;
 	toolCalls: number;
 	startedAt: number;
@@ -186,6 +188,8 @@ export interface StartAgentOptions {
 	model: vscode.LanguageModelChat;
 	allowWrite: boolean;
 	maxSteps: number;
+	/** `maxSteps` is a real limit (default true); false = only the safety cap. */
+	stepLimit?: boolean;
 	toolInvocationToken: vscode.ChatParticipantToolToken | undefined;
 	parentId?: string;
 	session?: string;
@@ -551,6 +555,7 @@ class AgentManager {
 			status: "running",
 			allowWrite: opts.allowWrite,
 			maxSteps: opts.maxSteps,
+			stepLimit: opts.stepLimit ?? true,
 			steps: 0,
 			toolCalls: 0,
 			startedAt: Date.now(),
@@ -774,8 +779,11 @@ class AgentManager {
 		if (!type) {
 			return `Error: unknown subagentType "${input.subagentType}". Available types:\n${describeAgentTypes()}`;
 		}
-		const defaultSteps = Math.max(1, setting("maxSteps", 15));
-		const maxSteps = Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(input.maxSteps ?? type.maxSteps ?? defaultSteps)));
+		// No round limit by default (Claude Code style); explicit limits win.
+		const configured = Math.max(0, Math.floor(Number(setting("maxSteps", 0)) || 0));
+		const requested = input.maxSteps ?? type.maxSteps ?? (configured > 0 ? configured : undefined);
+		const stepLimit = requested !== undefined && Number(requested) > 0;
+		const maxSteps = stepLimit ? Math.min(HARD_MAX_STEPS, Math.max(1, Math.floor(Number(requested)))) : HARD_MAX_STEPS;
 		const isolation = String(input.isolation ?? type.isolation ?? "").trim().toLowerCase() === "worktree";
 		// Write tools: asked for, implied by a custom type's tools, or an
 		// isolated worktree (edits cannot touch the user's checkout) — never
@@ -816,6 +824,7 @@ class AgentManager {
 			model,
 			allowWrite,
 			maxSteps,
+			stepLimit,
 			toolInvocationToken: ctx.toolInvocationToken,
 			parentId: caller,
 			session: ctx.session,
@@ -842,7 +851,7 @@ class AgentManager {
 			return `[Subagent ${started.id} "${started.name}" (${type.name}) — ${model.name}, ${done?.status}, ${done?.steps} rounds, ${done?.toolCalls} tool calls]\n\n${done?.report ?? done?.error ?? ""}${this.worktreeFooter(started)}`;
 		}
 		const head =
-			`Started background agent ${started.id} "${started.name}" (${type.name}) on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, up to ${maxSteps} rounds)` +
+			`Started background agent ${started.id} "${started.name}" (${type.name}) on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, ${stepLimit ? `up to ${maxSteps} rounds` : "no round limit"})` +
 			(worktree ? ` in its own worktree ${worktree.path} (branch ${worktree.branch}).` : ".");
 		if (caller !== MAIN_AGENT) {
 			return `${head} Its report arrives as a message at the start of one of your next rounds; {"action": "wait"} blocks until it does.`;
@@ -917,7 +926,8 @@ class AgentManager {
 			return `Error: ${maxConcurrent} agents are already running (customcopilot.subagent.maxConcurrent).`;
 		}
 		const text = (message ?? "").trim() || "Continue the task.";
-		const budget = Math.max(1, setting("maxSteps", 15));
+		const configuredBudget = Math.max(0, Math.floor(Number(setting("maxSteps", 0)) || 0));
+		const budget = r.stepLimit && configuredBudget > 0 ? configuredBudget : HARD_MAX_STEPS;
 		// Held until the agent is marked running (no double resume across the awaits below).
 		runtime.resuming = true;
 		// Let the end-of-run worktree bookkeeping finish first (it may remove it).
@@ -955,7 +965,7 @@ class AgentManager {
 		}
 		runtime.messages.push(
 			vscode.LanguageModelChatMessage.User(
-				`[Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}] ${text}\n\n(Up to ${budget} more tool rounds. Finish with an updated report.)${worktreeNote}`
+				`[Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}] ${text}\n\n(${r.stepLimit ? `Up to ${budget} more tool rounds. ` : ""}Finish with an updated report.)${worktreeNote}`
 			)
 		);
 		this.log(r, { kind: "resume", text: `Resumed by ${caller === MAIN_AGENT ? "the main agent" : `agent ${caller}`}: ${text}` });
@@ -1104,7 +1114,7 @@ class AgentManager {
 			const status = a.status === "running" ? `running — ${a.activity}` : a.status;
 			const indent = "  ".repeat(a.depth - 1);
 			const wt = a.worktree ? `, worktree ${a.worktree.removed ? "(removed)" : a.worktree.path}` : "";
-			return `${indent}- ${a.id} "${a.name}"${me} (${a.agentType}${wt}) [${status}] parent=${a.parentId}, model=${a.modelName} [${a.modelId}], ${contextLabel(a)}, ${a.steps}/${a.maxSteps} rounds, ${a.toolCalls} tool calls, ${age}${a.inbox.length ? `, ${a.inbox.length} unread msg` : ""}\n${indent}  task: ${a.task.length > 160 ? `${a.task.slice(0, 157)}…` : a.task}`;
+			return `${indent}- ${a.id} "${a.name}"${me} (${a.agentType}${wt}) [${status}] parent=${a.parentId}, model=${a.modelName} [${a.modelId}], ${contextLabel(a)}, ${a.stepLimit ? `${a.steps}/${a.maxSteps}` : a.steps} rounds, ${a.toolCalls} tool calls, ${age}${a.inbox.length ? `, ${a.inbox.length} unread msg` : ""}\n${indent}  task: ${a.task.length > 160 ? `${a.task.slice(0, 157)}…` : a.task}`;
 		});
 		const unread =
 			viewer === MAIN_AGENT && this.notifications.length
@@ -1456,6 +1466,7 @@ class AgentManager {
 				canSpawn,
 				allowWrite: r.allowWrite,
 				maxSteps: r.maxSteps,
+				stepLimit: r.stepLimit,
 				modelName: runtime.model.name,
 				worktree: r.worktree,
 				inheritedWorktree: !!r.worktree && r.worktree.owner !== r.id,
@@ -1468,6 +1479,9 @@ class AgentManager {
 		let finalText = "";
 		/** Rounds the model kept calling tools after the budget was exhausted. */
 		let overrun = 0;
+		/** Signature of the previous tool round and how often it repeated. */
+		let lastSignature = "";
+		let repeats = 0;
 		try {
 			for (;;) {
 				if (token.isCancellationRequested) {
@@ -1545,19 +1559,38 @@ class AgentManager {
 				r.steps++;
 				messages.push(assistantMessage(turn));
 				const results: Array<vscode.LanguageModelToolResultPart | vscode.LanguageModelTextPart> = [];
-				if (lastRound) {
+				// Loop detector (there is no round limit by default): the very same
+				// calls round after round mean the agent is stuck.
+				// Waiting on / checking sub-agents may legitimately repeat — not counted.
+				const coordinationOnly = calls.every(
+					(c) =>
+						c.name === AGENT_TOOL_NAMES.wait ||
+						c.name === AGENT_TOOL_NAMES.list ||
+						(c.name === AGENT_TOOL_NAMES.run && ["wait", "status", "list"].includes(resolveAgentAction(c.input as DelegateTaskInput, true)))
+				);
+				const signature = coordinationOnly ? "" : calls.map((c) => `${c.name}:${JSON.stringify(c.input ?? {})}`).join("|");
+				repeats = signature && signature === lastSignature ? repeats + 1 : signature ? 1 : 0;
+				lastSignature = signature;
+				const stuck = repeats >= REPEAT_STOP;
+				if (lastRound || stuck) {
 					// Budget exhausted: answer the calls without running them.
 					overrun++;
 					for (const call of calls) {
 						results.push(
 							new vscode.LanguageModelToolResultPart(call.callId, [
-								new vscode.LanguageModelTextPart("Not executed: the step budget is exhausted. Write your final report now."),
+								new vscode.LanguageModelTextPart(
+									stuck
+										? `Not executed: you made this exact call ${repeats} times in a row. Stop repeating it and write your final report now with what you have.`
+										: r.stepLimit
+											? "Not executed: the step budget is exhausted. Write your final report now."
+											: `Not executed: the safety cap of ${HARD_MAX_STEPS} rounds is reached. Write your final report now.`
+								),
 							])
 						);
 					}
 					messages.push(vscode.LanguageModelChatMessage.User(results));
 					if (overrun >= 2) {
-						finalText = text || "(no report — the step budget was exhausted while the agent kept calling tools)";
+						finalText = text || `(no report — ${stuck ? "the agent kept repeating the same tool call" : "the step budget was exhausted"} while it kept calling tools)`;
 						break;
 					}
 					continue;
@@ -1586,6 +1619,13 @@ class AgentManager {
 				}
 				if (r.inbox.length > 0) {
 					results.push(new vscode.LanguageModelTextPart(this.drainInbox(runtime)));
+				}
+				if (repeats >= REPEAT_WARN) {
+					results.push(
+						new vscode.LanguageModelTextPart(
+							`Note: this is the ${repeats}th time in a row you made exactly the same tool call(s) and got the same kind of result. Change your approach (other tool, other arguments, other hypothesis) or, if you are done, write your final report.`
+						)
+					);
 				}
 				if (r.steps >= r.maxSteps) {
 					results.push(new vscode.LanguageModelTextPart("Step budget reached. Write your final report now, without calling tools."));
