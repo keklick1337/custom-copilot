@@ -29,7 +29,7 @@
 		"type": "git",
 		"url": "https://github.com/keklick1337/custom-copilot"
 	},
-	"version": "1.2.12",
+	"version": "1.2.13",
 	"engines": {
 		"vscode": "^1.134.0"
 	},
@@ -1215,7 +1215,7 @@
 						},
 						"model": {
 							"type": "string",
-							"description": "Optional model override: an id/name substring (e.g. 'glm-4.7-flash') or 'fast'. Default: the same model as this chat."
+							"description": "Leave EMPTY — by default the agent runs on exactly this chat's model (same provider and config). Only if the user asks for another model: a name within the same provider (e.g. 'glm-4.5-air'), 'fast' (a smaller model of the same provider) or an exact model id."
 						},
 						"allowWrite": {
 							"type": "boolean",

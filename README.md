@@ -393,7 +393,12 @@ an agent works until its task is done — its context is auto-compacted when it 
 instead of a budget: a **loop detector** (the very same tool call 3× in a row → the agent is told to
 change approach, 6× → it must write its report; waiting on its own sub-agents does not count) and a
 **safety cap of 500 rounds**. A cap can still be set per agent (`maxSteps`), per custom agent type
-(`maxTurns` in its frontmatter) or for all agents (`customcopilot.subagent.maxSteps`, `0` = no limit). `customcopilot.subagent.model` is only a fallback when the chat's model is unavailable.
+(`maxTurns` in its frontmatter) or for all agents (`customcopilot.subagent.maxSteps`, `0` = no limit). **Which model an agent uses:** exactly the chat's selected model (same provider and config,
+e.g. `zai:1:glm-5.3::fast`); a sub-agent uses its parent's. If VS Code does not pass the chat's model
+to the tool, the model of the chat's last request is used. A `model` hint from the agent only picks
+another model **of the same provider** (`fast`, or a name) — another provider needs its exact id —
+so agents never silently land on an unrelated provider. `customcopilot.subagent.model` is only the
+last fallback. The start message says which model was chosen and why when it is not the chat's own.
 **Loop protection.** The main chat can start at most `customcopilot.subagent.maxStartsPerTurn`
 agents per turn (default 6), and after 3 consecutive turns started by auto-posted reports (no
 message from you in between) newly started agents no longer auto-post (their reports stay readable

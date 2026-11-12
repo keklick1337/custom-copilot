@@ -225,54 +225,94 @@ export function pickTools(
 	return [...workspace, ...coordination, ...ownTools];
 }
 
+/** Model last used by a main-chat request through our provider (exact id), the fallback for "the chat's model". */
+let lastMainModelId: string | undefined;
+
+/** Called by provider.ts for every main-chat agent-loop request. */
+export function noteMainModel(id: string): void {
+	lastMainModelId = id;
+}
+
+/** Provider group of a model: "zai" for our "zai:3:glm-5.3::fast", else its vendor. */
+function providerKey(m: vscode.LanguageModelChat): string {
+	return OWN_VENDORS.has(m.vendor) && m.id.includes(":") ? `${m.vendor}/${m.id.split(":")[0].toLowerCase()}` : m.vendor;
+}
+
+export interface ModelChoice {
+	model: vscode.LanguageModelChat | undefined;
+	/** Why this model (shown to the caller and logged). */
+	note: string;
+}
+
+/**
+ * The model for a subagent. Default: the caller's EXACT model (the main
+ * chat's selected model, incl. its config `provider:idx:id::configId`, or the
+ * parent agent's). When the tool call carries no model (older VS Code /
+ * proposed API unavailable), the model of the main chat's last request is
+ * used — never "some other provider". A `hint` from the model only selects
+ * within the SAME provider (an exact id may cross providers); `fast` /
+ * `strong` likewise. `customcopilot.subagent.model` is the last fallback.
+ */
+export async function selectModelDetailed(hint: string | undefined, chatModel: vscode.LanguageModelChat | undefined): Promise<ModelChoice> {
+	const wanted = (hint ?? "").trim().toLowerCase();
+	const configured = (vscode.workspace.getConfiguration().get<string>("customcopilot.subagent.model", "") || "").trim().toLowerCase();
+	let base = chatModel;
+	let baseNote = "the chat's model";
+	if (!base && lastMainModelId) {
+		base = (await vscode.lm.selectChatModels({ id: lastMainModelId }))[0];
+		baseNote = "the chat's model (from its last request)";
+	}
+	if (!wanted && base) {
+		return { model: base, note: baseNote };
+	}
+	const all = await vscode.lm.selectChatModels();
+	if (all.length === 0) {
+		return { model: undefined, note: "no language model is available" };
+	}
+	const ours = all.filter((m) => OWN_VENDORS.has(m.vendor));
+	const exact = (needle: string) => all.find((m) => m.id.toLowerCase() === needle);
+	const within = (pool: readonly vscode.LanguageModelChat[], needle: string) =>
+		pool.find((m) => m.id.toLowerCase().endsWith(`:${needle}`)) ??
+		pool.find((m) => m.id.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle));
+	const sameProvider = base ? all.filter((m) => providerKey(m) === providerKey(base)) : ours;
+
+	if (wanted) {
+		const ex = exact(wanted);
+		if (ex) {
+			return { model: ex, note: `exact id "${hint}"` };
+		}
+		if (wanted === "strong" && base) {
+			return { model: base, note: "strong = the chat's model" };
+		}
+		if (wanted === "fast") {
+			const fast = sameProvider.find((m) => m !== base && /flash|mini|haiku|air|turbo|lite|nano|small/i.test(`${m.id} ${m.name}`));
+			if (fast) {
+				return { model: fast, note: `fast model of the same provider` };
+			}
+		} else {
+			const m = within(sameProvider, wanted);
+			if (m) {
+				return { model: m, note: `"${hint}" within the chat's provider` };
+			}
+		}
+		if (base) {
+			return { model: base, note: `${baseNote} — "${hint}" is not a model of the same provider (other providers need an exact id)` };
+		}
+	}
+	if (configured) {
+		const m = exact(configured) ?? within(ours, configured) ?? within(all, configured);
+		if (m) {
+			return { model: m, note: "customcopilot.subagent.model (the chat's model is unknown)" };
+		}
+	}
+	// Nothing known about the chat: the first of our models (stable order), not a guess by size.
+	const pick = ours[0] ?? all[0];
+	return { model: pick, note: "the chat's model could not be determined — first available model; set customcopilot.subagent.model to choose" };
+}
+
 export async function selectModel(
 	hint: string | undefined,
 	chatModel: vscode.LanguageModelChat | undefined
 ): Promise<vscode.LanguageModelChat | undefined> {
-	const config = vscode.workspace.getConfiguration();
-	const configured = (config.get<string>("customcopilot.subagent.model", "") || "").trim();
-	const wanted = (hint ?? "").trim().toLowerCase();
-	// Default: the EXACT model object of the caller (main chat or parent
-	// agent) — keeps its config (idx/configId), like VS Code runSubagent.
-	if (!wanted && chatModel) {
-		return chatModel;
-	}
-	const all = await vscode.lm.selectChatModels();
-	if (all.length === 0) {
-		return undefined;
-	}
-	const ours = all.filter((m) => OWN_VENDORS.has(m.vendor));
-	// Exact id first: several configs of one model (e.g. five glm-5.3 with
-	// different settings) share the name and differ only in their
-	// "provider:idx:id::configId" identifier.
-	const byText = (needle: string) =>
-		all.find((m) => m.id.toLowerCase() === needle) ??
-		[...ours, ...all].find((m) => m.id.toLowerCase().endsWith(`:${needle}`)) ??
-		[...ours, ...all].find((m) => m.id.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle));
-
-	if (wanted && wanted !== "fast" && wanted !== "strong") {
-		const m = byText(wanted);
-		if (m) {
-			return m;
-		}
-	}
-	if (configured) {
-		const m = byText(configured.toLowerCase());
-		if (m) {
-			return m;
-		}
-	}
-	if (wanted === "strong" && chatModel) {
-		return chatModel;
-	}
-	const pool = ours.length > 0 ? ours : all;
-	if (wanted === "fast") {
-		const fast = pool.find((m) => /flash|mini|haiku|air|turbo|lite|nano|small/i.test(`${m.id} ${m.name}`));
-		if (fast) {
-			return fast;
-		}
-	}
-	// Largest context window ≈ strongest when nothing else is known.
-	return [...pool].sort((a, b) => b.maxInputTokens - a.maxInputTokens)[0];
+	return (await selectModelDetailed(hint, chatModel)).model;
 }
-

@@ -153,6 +153,7 @@ import {
 	notifyChatRequestStart,
 } from "./chatActivity";
 import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER, SCHEDULE_TOOL_NAME, WAKEUP_HEADER } from "./subagent/agentNames";
+import { noteMainModel } from "./subagent/agentSetup";
 import { SUBAGENT_SENTINEL, SUBAGENT_SYSTEM_END, recommendedPromptAddition } from "./subagent/agentPrompts";
 import { EXTENSION_ID, agentManager, isIdleMainCall, pauseNotice, withAgentNotice } from "./subagent/agentManager";
 import { keyBalancer, parseApiKeys } from "./keyBalancer";
@@ -322,8 +323,10 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				// Copilot offers task_complete only at the "autopilot" permission level.
 				(options.tools ?? []).some((t) => t.name === "task_complete")
 			);
-			// Agents started from this chat get the same workspace tools.
+			// Agents started from this chat get the same workspace tools — and
+			// this exact model when the tool call does not carry it.
 			agentManager.noteMainTools((options.tools ?? []).map((t) => t.name));
+			noteMainModel(model.id);
 			if (!isToolRound) {
 				// A new user (or report) message: the chat is no longer paused.
 				agentManager.clearPause();

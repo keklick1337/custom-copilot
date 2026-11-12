@@ -3,7 +3,7 @@ import * as pathModule from "path";
 import { logger } from "../logger";
 import { autoResumeDepth, currentMainTurn, isAutopilotTurn, isMainChatIdle, noteMainCancelled, wasMainTurnCancelled } from "../chatActivity";
 import { AGENT_TOOL_NAMES, AUTO_RESUME_HEADER } from "./agentNames";
-import { HARD_MAX_STEPS, REPEAT_STOP, REPEAT_WARN, pickTools, selectModel } from "./agentSetup";
+import { HARD_MAX_STEPS, REPEAT_STOP, REPEAT_WARN, pickTools, selectModelDetailed } from "./agentSetup";
 import { agentCreateFile, agentEditFile, agentRunCommand, disposeAgentTerminal } from "./agentWriteTools";
 import { type AgentTypeDef, BUILT_IN_TYPES, describeAgentTypes, resolveAgentType } from "./agentTypes";
 import {
@@ -794,10 +794,12 @@ class AgentManager {
 			(input.allowWrite === true || type.write === true || (isolatedCopy && input.allowWrite !== false)) &&
 			(parentRecord ? parentRecord.allowWrite : true);
 		const modelHint = input.model ?? (type.model && type.model.toLowerCase() !== "inherit" ? type.model : undefined);
-		const model = await selectModel(modelHint, callerModel);
+		const choice = await selectModelDetailed(modelHint, callerModel);
+		const model = choice.model;
 		if (!model) {
 			return "Error: no language model is available for the subagent.";
 		}
+		logger.info("subagent.model", { caller, model: model.id, why: choice.note, hint: modelHint, callerModel: callerModel?.id });
 		const maxConcurrent = Math.max(1, setting("maxConcurrent", 4));
 		if (this.runningCount() >= maxConcurrent) {
 			return `Error: ${maxConcurrent} agents are already running (customcopilot.subagent.maxConcurrent). Wait for one ({"action": "wait"}) or stop one ({"action": "stop", "id": "…"}).\n\n${this.describe(caller)}`;
@@ -852,7 +854,8 @@ class AgentManager {
 		}
 		const head =
 			`Started background agent ${started.id} "${started.name}" (${type.name}) on ${model.name} [${model.id}] (${allowWrite ? "read/write" : "read-only"}, ${stepLimit ? `up to ${maxSteps} rounds` : "no round limit"})` +
-			(worktree ? ` in its own worktree ${worktree.path} (branch ${worktree.branch}).` : ".");
+			(worktree ? ` in its own worktree ${worktree.path} (branch ${worktree.branch}).` : ".") +
+			(choice.note.startsWith("the chat's model") && !choice.note.includes("—") ? "" : ` Model: ${choice.note}.`);
 		if (caller !== MAIN_AGENT) {
 			return `${head} Its report arrives as a message at the start of one of your next rounds; {"action": "wait"} blocks until it does.`;
 		}

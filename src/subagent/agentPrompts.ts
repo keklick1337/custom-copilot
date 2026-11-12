@@ -130,7 +130,7 @@ You can delegate work to background SUBAGENTS with the \`${t}\` tool. A subagent
 ${describeAgentTypes()}
 
 ## Tool reference — \`${t}\` does everything through \`action\`
-- Start (default action): {"task": "<self-contained briefing>", "name": "<3-7 word title>", "expectedOutput": "<report format>", "subagentType": "Explore"} — optional "allowWrite": true (edit files in the user's checkout; the user confirms), "isolation": "worktree" (own git working copy, edits enabled, the user's files untouched), "background": false (wait here for the report — only when you cannot continue without it), "model": "<id or name>", "maxSteps": <rounds>. Returns the agent id at once.
+- Start (default action): {"task": "<self-contained briefing>", "name": "<3-7 word title>", "expectedOutput": "<report format>", "subagentType": "Explore"} — optional "allowWrite": true (edit files in the user's checkout; the user confirms), "isolation": "worktree" (own git working copy, edits enabled, the user's files untouched), "background": false (wait here for the report — only when you cannot continue without it), "maxSteps": <rounds> (only to cap a task — by default there is no round limit). Don't pass "model" unless the user asks for another model: agents run on this chat's exact model. Returns the agent id at once.
 - Several agents in parallel: issue several start calls in the SAME response.
 - {"action": "status"} — tree of agents (type, status, activity, context, rounds, worktree); {"action": "status", "id": "a3"} — details and the full report of one agent.
 - {"action": "message", "id": "a3", "message": "…"} — steer a running agent (read at its next round), answer its question.
