@@ -73,6 +73,7 @@ const VISION_ID_PATTERNS: string[] = [
 	"glm-4.6v",
 	"glm-5v",
 	"glm-5.3-flash",
+	"glm-5.4",
 	"deepseek-vl",
 	"cogvlm",
 	"idefics",
@@ -320,6 +321,8 @@ function detectReasoningFromFields(m: Record<string, unknown>): boolean | undefi
 const GLM_CONTEXT_LENGTHS: Array<[string, number]> = [
 	// 5.2/5.3: Z.AI's own catalog (ZCode `zcode-builtin.json`) says 1,000,000
 	// — under-reporting is harmless, over-reporting triggers 1261 overflows.
+	// 5.4: docs.z.ai GLM-5.4 guide — 1M context, 128K output.
+	["glm-5.4", 1_000_000],
 	["glm-5.3-flashx", 1_000_000],
 	["glm-5.3", 1_000_000],
 	["glm-5.2:free", 256_000],
@@ -409,4 +412,15 @@ export function inferModelCapabilities(model: Record<string, unknown>): Inferred
 		contextLength: detectContextLength(model) ?? knownContextLength(id),
 		maxOutputTokens: detectMaxOutputTokens(model),
 	};
+}
+
+/**
+ * Native vision for a GLM id when the config does not say (`vision` unset):
+ * GLM-4.xV / 5V / 5.4 accept images directly. Used so a text-only fallback
+ * (image stripping on Z.AI hosts) never hits a vision model by default.
+ */
+export function glmHasNativeVision(modelId: string | null | undefined): boolean {
+	const id = (modelId ?? "").toLowerCase();
+	const bare = id.slice(id.lastIndexOf("/") + 1);
+	return bare.startsWith("glm") && idMatches(bare, VISION_ID_PATTERNS);
 }

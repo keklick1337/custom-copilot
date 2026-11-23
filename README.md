@@ -443,6 +443,12 @@ for waiting on background agents (their reports arrive by themselves).
   no longer end up in the answer, the call and its result are shown in the thinking block, and the
   next request replays them as a real tool_use / tool_result pair — so the model no longer imitates
   tool calls in plain text.
+- **GLM-5.4** (Nov 2026): 1M context, 128K output and native vision are known without any
+  settings; it uses the 5.3 thinking wire (efforts low..max, "off" sent as enabled + low). Its
+  preserved thinking is on by default, so on Z.AI hosts (OpenAI-compatible mode) the reasoning
+  is echoed back as `reasoning_content` (`include_reasoning_in_request: false` turns that off); the
+  Anthropic-compatible mode already replays its signed thinking. A GLM vision model with `vision` unset
+  is treated as vision-capable, so its images are never stripped.
 - Thinking signatures the endpoint rejected once ("bound to a different conversation") are
   remembered and left out of later requests, instead of every request failing once and retrying.
 
@@ -471,7 +477,7 @@ for waiting on background agents (their reports arrive by themselves).
 Anthropic `/v1/models` listing reads `max_input_tokens` (context window, e.g. 1M) and
 `max_tokens` (output cap, e.g. 128K) plus `capabilities.image_input`. When an endpoint omits them
 (compat gateways) — or a configured model has no `context_length` — known family windows are
-used: Claude 4.6+ / 5.x / Fable / Mythos → 1M, older Claude → 200K, GLM per version.
+used: Claude 4.6+ / 5.x / Fable / Mythos → 1M, older Claude → 200K, GLM per version (5.2–5.4 → 1M), Grok 4.x per docs.x.ai.
 
 ## 👥 Multi‑Provider
 

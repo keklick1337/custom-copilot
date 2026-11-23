@@ -15,12 +15,17 @@ export const OPENAI_COMPAT_WIRE_EFFORTS = ["none", "minimal", "low", "medium", "
 
 /** GLM-5.2 effort vocabulary (5.3 is a superset; see `GLM53_EFFORTS`). */
 export const GLM52_EFFORTS = ["high", "max"] as const;
-/** GLM-5.3 accepts low..max (verified live on the coding endpoint, hermes #91789). */
+/** GLM-5.3 accepts low..max (verified live on the coding endpoint, hermes #91789);
+ * GLM-5.4 is put on the same wire (its docs publish no effort list yet). */
 export const GLM53_EFFORTS = ["low", "medium", "high", "max"] as const;
 /** Both GLM vocabularies stop at "max": "xhigh" maps UP to it (hermes GLM5x_OVERRIDES). */
 const GLM_EFFORT_OVERRIDES: Readonly<Record<string, string>> = { xhigh: "max" };
-/** Alias spellings seen on relays (Fireworks ``glm-5p3``, ``glm-5-3``…). */
-const GLM_5_3_TOKENS = ["glm-5.3", "glm-5-3", "glm-5p3"];
+/** Alias spellings seen on relays (Fireworks ``glm-5p3``, ``glm-5-3``…).
+ * 5.4 (Nov 2026: 1M context, native vision, preserved thinking on by default)
+ * shares the 5.3 wire: low..max efforts, "off" sent as enabled + low. */
+const GLM_5_3_TOKENS = ["glm-5.3", "glm-5-3", "glm-5p3", "glm-5.4", "glm-5-4", "glm-5p4"];
+/** GLM-5.4+ spellings: preserved thinking is on by default on every endpoint. */
+const GLM_5_4_TOKENS = ["glm-5.4", "glm-5-4", "glm-5p4"];
 /** GLM-5.2 tokens; 5.3 is a superset of the 5.2 wire (takes reasoning_effort too). */
 const GLM_5_2_TOKENS = ["glm-5.2", "glm-5-2", "glm-5p2", ...GLM_5_3_TOKENS];
 
@@ -101,9 +106,14 @@ export function isGlmModel(model: string | null | undefined): boolean {
 	return glmBareId(model).startsWith("glm");
 }
 
-/** True for GLM-5.3 family ids (5.3, 5.3-flash, relay spellings). */
+/** True for the GLM-5.3 wire family (5.3, 5.3-flash, 5.4, relay spellings). */
 export function isGlm53Model(model: string | null | undefined): boolean {
 	return hasToken(model, GLM_5_3_TOKENS);
+}
+
+/** True for GLM-5.4 ids (preserved thinking on by default — reasoning must be echoed). */
+export function isGlm54Model(model: string | null | undefined): boolean {
+	return hasToken(model, GLM_5_4_TOKENS);
 }
 
 /** True for ids on the GLM-5.2+ wire, which accepts a top-level `reasoning_effort`. */

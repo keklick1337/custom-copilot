@@ -209,6 +209,7 @@ import { CommonApi, type ApiUsage, type MessageConversionConfig } from "./common
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
 import { appendToSystemPrompt, applyPromptOverride, liftEmbeddedSystemPrompt } from "./promptOverride";
+import { glmHasNativeVision } from "./modelCapabilities";
 
 /**
  * VS Code Chat provider backed by user-configured custom model endpoints.
@@ -621,7 +622,8 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			}
 			messages = shrinkMessageImages(messages, resolveImageMaxDimension(umEff, config));
 			const requestHost = safeUrlHost(baseUrl);
-			if (isZaiHost(baseUrl) && umEff.vision !== true && umEff.zai_analyze_image !== true) {
+			const nativeVision = umEff.vision === true || (umEff.vision === undefined && glmHasNativeVision(umEff.id));
+			if (isZaiHost(baseUrl) && !nativeVision && umEff.zai_analyze_image !== true) {
 				// Text-only GLM on Z.AI: an image would make the server run its own
 				// analyze_image tool. Prefer native vision; the server tool is an
 				// explicit per-model opt-in ("Z.ai analyze_image").

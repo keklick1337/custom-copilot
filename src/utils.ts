@@ -3,6 +3,7 @@ import type { CustomApiMode, CustomModelItem, RetryConfig } from "./types";
 import { OpenAIFunctionToolDef } from "./openai/openaiTypes";
 
 import { logger } from "./logger";
+import { isGlm54Model } from "./reasoningEffort";
 
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_INTERVAL_MS = 1000;
@@ -405,6 +406,13 @@ export function modelNeedsReasoningEcho(um: CustomModelItem | undefined): boolea
 	}
 	const id = (um.id ?? "").toLowerCase();
 	const host = safeUrlHost(um.baseUrl);
+	// GLM-5.4 on Z.AI: preserved thinking is on by default on every endpoint,
+	// and the docs require the complete, unmodified reasoning_content back.
+	// OpenAI wire only: the Anthropic wire already replays Z.AI's SIGNED
+	// thinking, and unsigned/empty padding there is not ours to invent.
+	if (isZaiHost(um.baseUrl) && isGlm54Model(id) && (um.apiMode ?? "openai") === "openai") {
+		return true;
+	}
 	// The legacy R1 reasoner rejects reasoning_content in its input.
 	if (/deepseek-reasoner|deepseek-r1/.test(id)) {
 		return false;

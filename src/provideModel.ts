@@ -9,7 +9,7 @@ import { fetchOllamaModels } from "./ollama/ollamaApi";
 import { fetchAnthropicModels } from "./anthropic/anthropicApi";
 import { logger } from "./logger";
 import { buildFetchNetworkInit, proxyFetch } from "./network";
-import { inferModelCapabilities, knownContextLength } from "./modelCapabilities";
+import { glmHasNativeVision, inferModelCapabilities, knownContextLength } from "./modelCapabilities";
 import { claudeContextLength } from "./anthropic/anthropicModels";
 import { buildConfigurationSchema } from "./modelConfig";
 
@@ -147,7 +147,10 @@ export async function prepareLanguageModelChatInformation(
 					// and fetch flow treat them as equivalent).
 					toolCalling: supportsTools,
 					// Native vision, or Z.AI's server-side analyze_image when enabled.
-					imageInput: m?.vision === true || m?.zai_analyze_image === true,
+					imageInput:
+						m?.vision === true ||
+						(m?.vision === undefined && glmHasNativeVision(m?.id)) ||
+						m?.zai_analyze_image === true,
 				},
 				configurationSchema: buildConfigurationSchema(
 					m,

@@ -80,6 +80,7 @@ const OUTPUT_LIMITS: Readonly<Record<string, number>> = {
 	minimax: 131_072,
 	qwen3: 65_536,
 	// GLM (Z.AI catalog, ZCode `zcode-builtin.json`); ids normalized "."→"-".
+	"glm-5-4": 128_000,
 	"glm-5-3": 128_000,
 	"glm-5-2": 128_000,
 	"glm-5v-turbo": 131_072,
