@@ -1,5 +1,6 @@
 import type { MessageConversionConfig } from "../commonApi";
 import * as vscode from "vscode";
+import { EFFORT_LADDER } from "../reasoningEffort";
 import {
 	CancellationToken,
 	LanguageModelChatRequestMessage,
@@ -431,6 +432,17 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 					} else {
 						tc.thinkingLevel = effort === "minimal" || effort === "low" ? "low" : strong ? "high" : "medium";
 					}
+					// Gemini 4 Hydrogen / Neon add "xhigh": efforts above high on the
+					// ladder (xhigh, max, ultra) use it (hermes GEMINI4_XHIGH_MODELS).
+					const ladder = EFFORT_LADDER as readonly string[];
+					if (
+						tc.thinkingLevel === "high" &&
+						/(^|\/)gemini-4-(hydrogen|neon)/.test(normalizedModelId) &&
+						effort &&
+						ladder.indexOf(effort) >= ladder.indexOf("xhigh")
+					) {
+						tc.thinkingLevel = "xhigh";
+					}
 				} else if (um?.thinking_budget !== undefined) {
 					tc.thinkingBudget = um.thinking_budget;
 				}
@@ -481,6 +493,10 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 		// "cumulative prefix" heuristic dropped real deltas that happened to
 		// be a prefix of the text so far, e.g. a repeated "*" or "\n".)
 		const seenToolCallKeys = new Set<string>();
+		// Calls are held until finishReason is known: a MAX_TOKENS / SAFETY
+		// reply carrying a call must not run a truncated or blocked call
+		// (hermes `gemini_native_adapter`: map finishReason first).
+		const heldCalls: vscode.LanguageModelToolCallPart[] = [];
 		let pendingThoughtSignature = "";
 		let finishReason: string | undefined;
 
@@ -610,15 +626,33 @@ export class GeminiApi extends CommonApi<GeminiChatMessage, GeminiGenerateConten
 						}
 					}
 
-					this.reportEndThinking(progress);
-					if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText) {
-						progress.report(new vscode.LanguageModelTextPart(" "));
-						this._emittedBeginToolCallsHint = true;
-					}
-					progress.report(new vscode.LanguageModelToolCallPart(id, name, argsObj));
+					heldCalls.push(new vscode.LanguageModelToolCallPart(id, name, argsObj));
 				}
 			}
 			const reason = (finishReason ?? "").toUpperCase();
+			const callsAllowed = reason === "" || reason === "STOP" || reason === "FINISH_REASON_UNSPECIFIED";
+			if (heldCalls.length > 0 && callsAllowed) {
+				this.reportEndThinking(progress);
+				if (!this._emittedBeginToolCallsHint && this._hasEmittedAssistantText) {
+					progress.report(new vscode.LanguageModelTextPart(" "));
+					this._emittedBeginToolCallsHint = true;
+				}
+				for (const call of heldCalls) {
+					progress.report(call);
+				}
+			} else if (heldCalls.length > 0) {
+				logger.warn("gemini.toolCalls.dropped", { modelId, finishReason: finishReason ?? "", count: heldCalls.length });
+				const noticed = /^(MAX_TOKENS|SAFETY|RECITATION|BLOCKLIST|PROHIBITED_CONTENT|SPII|MALFORMED_FUNCTION_CALL|UNEXPECTED_TOOL_CALL)$/.test(reason);
+				if (!noticed) {
+					this.reportEndThinking(progress);
+					progress.report(
+						new vscode.LanguageModelTextPart(
+							`${this._hasEmittedAssistantText ? "\n\n" : ""}⚠️ Gemini stopped (${finishReason}) with an unfinished tool call; it was not run. Please retry.`
+						)
+					);
+					this._hasEmittedAssistantText = true;
+				}
+			}
 			if (reason === "MALFORMED_FUNCTION_CALL" || reason === "UNEXPECTED_TOOL_CALL") {
 				this.reportEndThinking(progress);
 				progress.report(

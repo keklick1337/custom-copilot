@@ -38,7 +38,7 @@ to the adapter matching the model's `apiMode`.
 | Extension entry | `src/extension.ts` — registers one provider per vendor/`apiMode` (`VENDOR_MODES` from `src/vendorModes.ts`), status bar, commit commands, the webview configuration view, and the one-time telemetry-privacy default. |
 | Chat provider | `src/provider.ts` — `CustomEndpointChatProvider` implements `vscode.LanguageModelChatProvider`; an optional `vendorApiMode` filters the listed models, and requests route per `apiMode` through ONE shared `sendWithRetry` dispatcher (fetch + retry + key rotation + error formatting exist once; each apiMode branch only builds URL/body/stream-processor). After streaming it reports token usage as a `LanguageModelDataPart` with mimeType `"usage"` — the internal contract Copilot Chat's context-usage circle reads (same as Copilot's own BYOK providers). |
 | Shared adapter base | `src/commonApi.ts` — `CommonApi` base class: streamed tool-call assembly (per-index flush), thinking parts, XML `<think>` streaming state machine, `ApiUsage` accumulation, `resetRequestState()` (adapters are REUSED across turns — every `convertMessages`/`processStreamingResponse` MUST start with it), JSON helpers, header preparation. |
-| API adapters | `src/openai/openaiApi.ts`, `src/openai/openaiResponsesApi.ts`, `src/ollama/ollamaApi.ts`, `src/anthropic/anthropicApi.ts`, `src/gemini/geminiApi.ts` (+ matching `*Types.ts`). |
+| API adapters | `src/openai/openaiApi.ts`, `src/openai/openaiResponsesApi.ts`, `src/ollama/ollamaApi.ts`, `src/anthropic/anthropicApi.ts`, `src/gemini/geminiApi.ts` (+ matching `*Types.ts`). `src/anthropic/providerBuiltinTools.ts` — GLM server-executed built-in tools (`analyze_image`, `webReader`; ZCode `provider-builtin-tool-compat`): drops the rendered markdown copies only when the stream structure confirms them, shows call/result in thinking, returns the rounds as `providerToolRounds` thinking metadata, which `convertMessages` replays as assistant(tool_use) + user(tool_result) before the answer. Never surface them as `LanguageModelToolCallPart`s (Copilot would execute them). Text-only GLM on Z.AI hosts gets no images unless the model opts in with `zai_analyze_image`. |
 | Gemini split | `src/gemini/geminiUrls.ts` (URL building / id normalization), `src/gemini/geminiTools.ts` (OpenAI tool-schema → Gemini function declarations + JSON-Schema sanitization), `src/gemini/geminiModels.ts` (model listing). |
 | Reasoning efforts | `src/reasoningEffort.ts` — effort ladder + `clampEffort` (ported from hermes-agent's reasoning-effort module): overrides first (e.g. GLM `xhigh→max`), else the nearest WEAKER supported level, never escalates cost, never clamps to `none`. GLM-5.2/5.3, DeepSeek, Kimi, Ollama profiles; Anthropic-compat thinking budgets. |
 | Anthropic model policy | `src/anthropic/anthropicModels.ts` — adaptive vs legacy budget thinking, disable rules, sampling-param bans, output ceilings (hermes `anthropic_adapter.py`). |
@@ -95,6 +95,10 @@ to the adapter matching the model's `apiMode`.
 - **Conversion config**: `convertMessages` takes a `MessageConversionConfig` (`src/commonApi.ts`):
   reasoning echo (auto for DeepSeek/Kimi/MiMo), OpenRouter `reasoning_details` replay, native
   Anthropic. Stream loops use `readStreamLines` (handles CRLF and a final line without `\n`).
+- **Tools-free requests**: Anthropic-compat bodies without `tools` get their tool history as
+  text (`toolHistoryAsText`, results in the assistant role). Gemini holds tool calls until the
+  finishReason is known (only STOP/unset runs them). Responses GPT-6.2+ move `instructions` into a
+  leading `developer` item (`withDeveloperInstructions`), not for stateful requests or xAI.
 - **Thinking budgets**: output ceilings must exceed the thinking budget (Anthropic:
   `max_tokens ≥ budget + 4096`; Gemini: raise `maxOutputTokens` to 65535 when thinking is on,
   gemini-family models only — Gemma rejects `thinkingConfig`).

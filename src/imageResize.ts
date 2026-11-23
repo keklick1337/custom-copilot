@@ -293,3 +293,39 @@ export function shrinkMessageImages(
 	});
 	return anyChanged ? out : messages;
 }
+
+/**
+ * Replace every image (message attachments and tool-result images) with a
+ * short text note — for models without vision. On Z.AI an image sent to a
+ * text-only GLM makes the server run its own `analyze_image` tool instead.
+ */
+export function stripMessageImages(
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
+	note: string
+): { messages: readonly vscode.LanguageModelChatRequestMessage[]; removed: number } {
+	let removed = 0;
+	const out = messages.map((m) => {
+		let changed = false;
+		const content = (m.content ?? []).map((part) => {
+			if (isImagePart(part)) {
+				changed = true;
+				removed++;
+				return new vscode.LanguageModelTextPart(note);
+			}
+			if (part instanceof vscode.LanguageModelToolResultPart && part.content.some(isImagePart)) {
+				changed = true;
+				const items = part.content.map((c) => {
+					if (isImagePart(c)) {
+						removed++;
+						return new vscode.LanguageModelTextPart(note);
+					}
+					return c;
+				});
+				return new vscode.LanguageModelToolResultPart(part.callId, items);
+			}
+			return part;
+		});
+		return changed ? ({ role: m.role, name: m.name, content } as vscode.LanguageModelChatRequestMessage) : m;
+	});
+	return { messages: removed > 0 ? out : messages, removed };
+}

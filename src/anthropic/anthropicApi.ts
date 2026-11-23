@@ -1,5 +1,6 @@
 import type { MessageConversionConfig } from "../commonApi";
 import * as vscode from "vscode";
+import { ProviderBuiltinToolFilter, type ProviderToolRound } from "./providerBuiltinTools";
 import {
 	CancellationToken,
 	LanguageModelChatRequestMessage,
@@ -194,6 +195,69 @@ function canCache(b: AnthropicContentBlock): boolean {
 	return t === "image" || t === "tool_use" || t === "tool_result";
 }
 
+function blocksOf(content: string | AnthropicContentBlock[]): AnthropicContentBlock[] {
+	if (typeof content === "string") {
+		return content ? [{ type: "text", text: content }] : [];
+	}
+	return content;
+}
+
+function toolResultText(content: AnthropicToolResultBlock["content"]): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	return content.map((c) => (c.type === "text" ? c.text : "[image]")).join("\n");
+}
+
+/**
+ * Tool history as plain text, for a request that declares no tools (hermes
+ * `tool_history_as_text`). Results go in the ASSISTANT role, never user, so
+ * text a tool printed cannot pose as a user turn; consecutive same-role
+ * messages are merged. Thinking blocks are kept as they are.
+ */
+export function toolHistoryAsText(messages: AnthropicMessage[]): AnthropicMessage[] {
+	const hasToolBlocks = messages.some(
+		(m) => Array.isArray(m.content) && m.content.some((b) => b.type === "tool_use" || b.type === "tool_result")
+	);
+	if (!hasToolBlocks) {
+		return messages;
+	}
+	const out: AnthropicMessage[] = [];
+	const push = (role: AnthropicMessage["role"], blocks: AnthropicContentBlock[]): void => {
+		if (blocks.length === 0) {
+			return;
+		}
+		const last = out[out.length - 1];
+		if (last && last.role === role) {
+			last.content = [...blocksOf(last.content), ...blocks];
+		} else {
+			out.push({ role, content: blocks });
+		}
+	};
+	for (const m of messages) {
+		const results: AnthropicContentBlock[] = [];
+		const rest: AnthropicContentBlock[] = [];
+		for (const b of blocksOf(m.content)) {
+			if (b.type === "tool_use") {
+				rest.push({ type: "text", text: `[Tool call ${b.name}(${JSON.stringify(b.input ?? {})})]` });
+			} else if (b.type === "tool_result") {
+				const text = toolResultText(b.content).trim() || "(empty)";
+				results.push({ type: "text", text: `[Tool result${b.is_error ? " (error)" : ""} ${b.tool_use_id}]: ${text}` });
+			} else {
+				rest.push(b);
+			}
+		}
+		push("assistant", results);
+		push(m.role, rest);
+	}
+	// Ending on an assistant turn would be a prefill (rejected by newer
+	// models and with thinking on).
+	if (out.length > 0 && out[out.length - 1].role === "assistant" && messages[messages.length - 1]?.role === "user") {
+		out.push({ role: "user", content: [{ type: "text", text: "Continue." }] });
+	}
+	return out;
+}
+
 /**
  * One-shot request (no tools, no prior assistant turn, ≤1 user turn — e.g. a
  * commit-message call): a breakpoint would only buy a cache write (1.25x/2x)
@@ -255,6 +319,23 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	private _sawMessageStop = false;
 	/** Raw usage fields merged across message_start / message_delta. */
 	private _rawUsage: NonNullable<AnthropicStreamChunk["usage"]> = {};
+	/** Progress of the response being streamed (for the built-in tool filter callbacks). */
+	private _progress: Progress<LanguageModelResponsePart2> | undefined;
+	/** Server-executed provider tools (GLM analyze_image, webReader …) — see providerBuiltinTools.ts. */
+	private readonly _builtinTools = new ProviderBuiltinToolFilter(
+		(text) => {
+			if (this._progress) {
+				this.reportEndThinking(this._progress);
+				this._progress.report(new vscode.LanguageModelTextPart(text));
+				this._hasEmittedAssistantText = true;
+			}
+		},
+		(text) => {
+			if (this._progress) {
+				this.bufferThinkingContent(text, this._progress);
+			}
+		}
+	);
 
 	constructor(modelId: string) {
 		super(modelId);
@@ -293,6 +374,8 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			// responses (metadata on the closing ThinkingPart, the same
 			// contract Copilot's BYOK Anthropic provider uses).
 			const signedThinking: AnthropicContentBlock[] = [];
+			// Server-executed built-in tool rounds of an earlier response.
+			const builtinRounds: ProviderToolRound[] = [];
 
 			for (const part of m.content ?? []) {
 				if (part instanceof vscode.LanguageModelTextPart) {
@@ -337,6 +420,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 						| { signature?: unknown; _completeThinking?: unknown; redactedData?: unknown; modelId?: unknown }
 						| undefined;
 					const sameModel = !meta?.modelId || meta.modelId === this._modelId;
+					const rounds = (meta as { providerToolRounds?: unknown } | undefined)?.providerToolRounds;
+					if (sameModel && Array.isArray(rounds)) {
+						builtinRounds.push(...(rounds as ProviderToolRound[]).filter((r) => r && typeof r.id === "string" && typeof r.name === "string"));
+					}
 					if (meta && typeof meta.redactedData === "string" && sameModel) {
 						signedThinking.push({ type: "redacted_thinking", data: meta.redactedData });
 					} else if (
@@ -427,6 +514,19 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			const hasNonThinking = contentBlocks.some(
 				(b) => blockType(b) !== "thinking" && blockType(b) !== "redacted_thinking"
 			);
+			if (role === "assistant" && builtinRounds.length > 0) {
+				// Replay each server-side round as its own assistant(tool_use) +
+				// user(tool_result) turn before the answer (ZCode "plan A": the
+				// server restores the same order it ran them in).
+				for (const r of builtinRounds) {
+					const id = sanitizeToolId(r.id);
+					out.push({ role: "assistant", content: [{ type: "tool_use", id, name: r.name, input: r.input ?? {} }] });
+					out.push({
+						role: "user",
+						content: [{ type: "tool_result", tool_use_id: id, content: r.result?.trim() ? r.result : "(no output)", is_error: r.isError || undefined }],
+					});
+				}
+			}
 			if (contentBlocks.length > 0 && hasNonThinking) {
 				out.push({
 					role,
@@ -594,6 +694,15 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 				rb.tool_choice = { type: "tool", name: toolConfig.tool_choice.function.name };
 			}
 		}
+		// tool_use / tool_result blocks in a request without `tools` are a hard
+		// 400 ("Requests which include tool_use or tool_result blocks must
+		// define tools") — e.g. a tools-free summary/utility request over an
+		// agent conversation, or a replayed Z.AI built-in tool round.
+		if (!Array.isArray(rb.tools) || rb.tools.length === 0) {
+			rb.messages = toolHistoryAsText(rb.messages);
+			delete rb.tool_choice;
+		}
+
 		// Forced tool use is incompatible with extended thinking (400) — and
 		// always-thinking families reject it even without a thinking field.
 		// Z.AI/BigModel's Anthropic endpoint rejects a forced named tool for
@@ -731,6 +840,8 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 		this._stopReason = undefined;
 		this._sawMessageStop = false;
 		this._rawUsage = {};
+		this._builtinTools.reset();
+		this._progress = progress;
 		logger.debug("anthropic.stream.start", { modelId });
 
 		try {
@@ -759,6 +870,7 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 				// Processing errors (e.g. an in-stream `error` event) propagate.
 				await this.processAnthropicChunk(chunk, progress);
 			}
+			this._builtinTools.finish();
 			await this.flushToolCallBuffers(progress, false);
 			this.reportStopNotice(progress, this._stopReason);
 			if (!this._sawMessageStop && !token.isCancellationRequested) {
@@ -793,6 +905,10 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 	): Promise<void> {
 		// Handle ping events (ignore)
 		if (chunk.type === "ping") {
+			return;
+		}
+		// Provider-executed built-in tools and their rendered copies (GLM).
+		if (this._builtinTools.handle(chunk)) {
 			return;
 		}
 
@@ -899,6 +1015,11 @@ export class AnthropicApi extends CommonApi<AnthropicMessage, AnthropicRequestBo
 			await this.flushToolCallBufferAt(idx, progress, /*throwOnInvalid*/ false);
 		} else if (chunk.type === "message_stop") {
 			this._sawMessageStop = true;
+			if (this._builtinTools.rounds.length > 0) {
+				// Kept with the response: the next request replays them as
+				// tool_use / tool_result instead of the model re-reading markdown.
+				this.reportThinkingMetadata(progress, { providerToolRounds: [...this._builtinTools.rounds], modelId: this._modelId });
+			}
 			// End of message - ensure thinking is ended and flush all tool calls
 			await this.flushToolCallBuffers(progress, false);
 			this.reportEndThinking(progress);

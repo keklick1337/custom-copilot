@@ -51,6 +51,13 @@ export interface CustomModelItem {
 	architecture?: RouterArchitectureInfo;
 	context_length?: number;
 	vision?: boolean;
+	/**
+	 * Z.AI / BigModel only: let the server's built-in `analyze_image` tool
+	 * read images for a model WITHOUT native vision (the model is then offered
+	 * image input). Off by default: images are not sent to text-only GLM
+	 * models, and models with native vision always get them directly.
+	 */
+	zai_analyze_image?: boolean;
 	tool_calling?: boolean;
 	max_tokens?: number;
 	// OpenAI new standard parameter

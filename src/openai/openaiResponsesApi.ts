@@ -22,6 +22,7 @@ import {
 	convertToolsToOpenAIResponses,
 	mapRole,
 	resolveThinkingEnabled,
+	safeUrlHost,
 } from "../utils";
 import { clampEffort, OPENAI_COMPAT_WIRE_EFFORTS } from "../reasoningEffort";
 import { accumulateUsage } from "../commonApi";
@@ -945,4 +946,40 @@ export class OpenaiResponsesApi extends CommonApi<ResponsesInputItem, Record<str
 			reader.releaseLock();
 		}
 	}
+}
+
+const DEVELOPER_INSTRUCTIONS_MODEL = /(?:^|[/:.])gpt-(?:6\.(?:[2-9]|[1-9]\d+)|[7-9]|[1-9]\d+)(?:[-.]|$)/;
+
+/**
+ * GPT-6.2+ on the Responses API appends top-level `instructions` AFTER
+ * `input` and bills them uncached every turn; a leading `developer` input
+ * item makes the system prompt cacheable again (hermes
+ * `apply_developer_instructions_if_needed`). Only for a full-history request:
+ * with `previous_response_id` the chain already holds earlier items, so the
+ * fresh `instructions` stay. Never for xAI.
+ */
+export function withDeveloperInstructions(body: Record<string, unknown>, modelId: string, baseUrl: string): Record<string, unknown> {
+	const instructions = body.instructions;
+	if (
+		typeof instructions !== "string" ||
+		!instructions.trim() ||
+		body.previous_response_id !== undefined ||
+		!Array.isArray(body.input) ||
+		/(^|\.)x\.ai$/i.test(safeUrlHost(baseUrl)) ||
+		!DEVELOPER_INSTRUCTIONS_MODEL.test(modelId.trim().toLowerCase())
+	) {
+		return body;
+	}
+	const input = body.input as Array<Record<string, unknown>>;
+	if (input.some((i) => (i?.type === undefined || i?.type === "message") && i?.role === "developer")) {
+		return body;
+	}
+	let at = 0;
+	while (at < input.length && input[at]?.type === "compaction") {
+		at++;
+	}
+	const dev = { type: "message", role: "developer", content: [{ type: "input_text", text: instructions }] };
+	const out: Record<string, unknown> = { ...body, input: [...input.slice(0, at), dev, ...input.slice(at)] };
+	delete out.instructions;
+	return out;
 }

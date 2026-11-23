@@ -28,11 +28,12 @@ import {
 	withProviderDefaults,
 	isToolResultPart,
 	getUserModels,
+	isZaiHost,
 } from "./utils";
 
 import { prepareLanguageModelChatInformation } from "./provideModel";
 import { applyModelConfiguration } from "./modelConfig";
-import { DEFAULT_IMAGE_MAX_DIMENSION, shrinkMessageImages } from "./imageResize";
+import { DEFAULT_IMAGE_MAX_DIMENSION, shrinkMessageImages, stripMessageImages } from "./imageResize";
 
 /** Per-model `image_max_dimension` wins over the global setting; 0 disables resizing. */
 function resolveImageMaxDimension(um: CustomModelItem, config: vscode.WorkspaceConfiguration): number {
@@ -63,7 +64,28 @@ function msHeader(value: string | null): number | undefined {
 }
 
 /** Remove thinking / redacted_thinking blocks from an Anthropic request body; true if any were removed. */
-function stripReplayedThinking(body: unknown): boolean {
+/**
+ * Signatures (and redacted-thinking payloads) the endpoint rejected once.
+ * They stay in the chat history, so without this every later request would
+ * first fail with 400 and only then be retried (ZCode "signedReasoningReset").
+ */
+const rejectedThinking = new Set<string>();
+
+function thinkingKey(b: { type?: string; signature?: unknown; data?: unknown }): string | undefined {
+	if (b?.type === "thinking" && typeof b.signature === "string" && b.signature) {
+		return b.signature;
+	}
+	if (b?.type === "redacted_thinking" && typeof b.data === "string" && b.data) {
+		return `r:${b.data.slice(0, 200)}`;
+	}
+	return undefined;
+}
+
+/**
+ * Remove replayed thinking blocks from a request body. `onlyRejected`: just
+ * the ones rejected before; otherwise all of them (remembered as rejected).
+ */
+function stripReplayedThinking(body: unknown, onlyRejected = false): boolean {
 	const messages = (body as { messages?: unknown } | null)?.messages;
 	if (!Array.isArray(messages)) {
 		return false;
@@ -73,9 +95,22 @@ function stripReplayedThinking(body: unknown): boolean {
 		if (!Array.isArray(msg.content)) {
 			continue;
 		}
-		const kept = (msg.content as Array<{ type?: string }>).filter(
-			(b) => b?.type !== "thinking" && b?.type !== "redacted_thinking"
-		);
+		const kept = (msg.content as Array<{ type?: string; signature?: unknown; data?: unknown }>).filter((b) => {
+			if (b?.type !== "thinking" && b?.type !== "redacted_thinking") {
+				return true;
+			}
+			const key = thinkingKey(b);
+			if (onlyRejected) {
+				return !key || !rejectedThinking.has(key);
+			}
+			if (key) {
+				if (rejectedThinking.size > 2000) {
+					rejectedThinking.clear();
+				}
+				rejectedThinking.add(key);
+			}
+			return false;
+		});
 		if (kept.length !== msg.content.length) {
 			removed = true;
 			msg.content = kept.length > 0 ? kept : [{ type: "text", text: "(thinking omitted)" }];
@@ -160,7 +195,7 @@ import { keyBalancer, parseApiKeys } from "./keyBalancer";
 import { resolveApiKeysFromSource } from "./apiKeySource";
 import { OllamaApi, probeOllamaModel } from "./ollama/ollamaApi";
 import { OpenaiApi } from "./openai/openaiApi";
-import { OpenaiResponsesApi } from "./openai/openaiResponsesApi";
+import { OpenaiResponsesApi, withDeveloperInstructions } from "./openai/openaiResponsesApi";
 import { AnthropicApi } from "./anthropic/anthropicApi";
 import { AnthropicRequestBody } from "./anthropic/anthropicTypes";
 import {
@@ -586,6 +621,19 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 			}
 			messages = shrinkMessageImages(messages, resolveImageMaxDimension(umEff, config));
 			const requestHost = safeUrlHost(baseUrl);
+			if (isZaiHost(baseUrl) && umEff.vision !== true && umEff.zai_analyze_image !== true) {
+				// Text-only GLM on Z.AI: an image would make the server run its own
+				// analyze_image tool. Prefer native vision; the server tool is an
+				// explicit per-model opt-in ("Z.ai analyze_image").
+				const stripped = stripMessageImages(
+					messages,
+					"[image omitted — this model has no vision. Use a vision model (e.g. GLM-4.6V / GLM-5V) or enable \"Z.ai analyze_image\" in the model settings]"
+				);
+				if (stripped.removed > 0) {
+					messages = stripped.messages;
+					logger.info("request.images.stripped", { model: umEff.id, images: stripped.removed });
+				}
+			}
 			const modelConfig: MessageConversionConfig = {
 				includeReasoningInRequest: modelNeedsReasoningEcho(umEff),
 				replayReasoningDetails: requestHost === "openrouter.ai" || requestHost.endsWith(".openrouter.ai"),
@@ -799,6 +847,9 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				const usageAdapter = activeAdapter as { _lastUsage?: ApiUsage } | undefined;
 				logger.debug("request.body", { url, requestBody: body });
 				let strippedThinking = false;
+				if (rejectedThinking.size > 0 && stripReplayedThinking(body, true)) {
+					logger.debug("request.thinking.rejected-skipped", { model: model.id });
+				}
 				const response = await executeWithRetry(async () => {
 					let res = await proxyFetch(url, {
 						...requestNetworkInit,
@@ -1044,7 +1095,8 @@ export class CustomEndpointChatProvider implements LanguageModelChatProvider {
 				// a multi-key pool (or after a key change) replay fails with
 				// invalid_encrypted_content. Retry once without the replayed
 				// reasoning items (hermes error_classifier).
-				const sendResponses = async (body: Record<string, unknown>): Promise<void> => {
+				const sendResponses = async (rawBody: Record<string, unknown>): Promise<void> => {
+					const body = withDeveloperInstructions(rawBody, parsedModelId.baseId, normalizedBaseUrl);
 					try {
 						await sendWithRetry(url, body, "Responses API", processResponsesStream);
 					} catch (err) {

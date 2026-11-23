@@ -166,6 +166,7 @@ const el = {
 	modelThinkingBudget: $("modelThinkingBudget"),
 	modelPromptCache: $("modelPromptCache"),
 	modelFastMode: $("modelFastMode"),
+	modelZaiAnalyzeImage: $("modelZaiAnalyzeImage"),
 	modelImageMaxDimension: $("modelImageMaxDimension"),
 	modelModeHint: $("modelModeHint"),
 	openRouterReasoningSection: $("openRouterReasoningSection"),
@@ -2496,6 +2497,7 @@ const MODEL_FIELD_MODES = {
 	modelThinkingBudget: ["openai", "anthropic", "zai", "gemini"],
 	modelPromptCache: ["anthropic", "zai"],
 	modelFastMode: ["anthropic"],
+	modelZaiAnalyzeImage: ["zai", "anthropic"],
 	modelIncludeReasoning: ["openai", "anthropic", "zai", "ollama"],
 	modelThinkingType: ["openai", "openai-responses"],
 	modelEnableThinking: ALL_MODES,
@@ -2614,6 +2616,7 @@ function resetModelForm() {
 		"modelEnableThinking",
 		"modelPromptCache",
 		"modelFastMode",
+		"modelZaiAnalyzeImage",
 		"modelThinkingType",
 		"modelIncludeReasoning",
 		"modelReasoningEnabled",
@@ -2669,6 +2672,7 @@ function populateModelForm(model, mid) {
 	el.modelPromptCache.value = model.prompt_cache || "";
 	el.modelImageMaxDimension.value = model.image_max_dimension != null ? model.image_max_dimension : "";
 	el.modelFastMode.value = model.fast_mode != null ? String(model.fast_mode) : "";
+	el.modelZaiAnalyzeImage.value = model.zai_analyze_image != null ? String(model.zai_analyze_image) : "";
 	el.modelIncludeReasoning.value =
 		model.include_reasoning_in_request != null ? String(model.include_reasoning_in_request) : "";
 	setSelectValuePreserving(el.modelThinkingType, model.thinking?.type);
@@ -2705,6 +2709,7 @@ function collectModelFormData() {
 		thinking_budget: numOrUndef(el.modelThinkingBudget.value),
 		prompt_cache: el.modelPromptCache.value || undefined,
 		fast_mode: boolOrUndef(el.modelFastMode.value),
+		zai_analyze_image: boolOrUndef(el.modelZaiAnalyzeImage.value),
 		image_max_dimension: numOrUndef(el.modelImageMaxDimension.value),
 		include_reasoning_in_request: boolOrUndef(el.modelIncludeReasoning.value),
 		thinking: el.modelThinkingType.value ? { type: el.modelThinkingType.value } : undefined,

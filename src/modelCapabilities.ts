@@ -336,10 +336,29 @@ const GLM_CONTEXT_LENGTHS: Array<[string, number]> = [
 	["glm-4.5", 131_072],
 ];
 
+/**
+ * Vendor-documented windows of other families whose `/models` entry often
+ * carries none (hermes `DEFAULT_CONTEXT_LENGTHS`, docs.x.ai), most specific
+ * first. Only families where the documented window is the accepted input.
+ */
+const OTHER_CONTEXT_LENGTHS: Array<[string, number]> = [
+	["grok-4-fast", 2_000_000],
+	["grok-4.20", 1_000_000],
+	["grok-4.7", 500_000],
+	["grok-4.6", 500_000],
+	["grok-4.5", 500_000],
+	["grok-4.3", 1_000_000],
+];
+
 /** Context window for a model id from known-family tables; undefined when unknown. */
 export function knownContextLength(modelId: string): number | undefined {
 	const id = modelId.toLowerCase();
 	const bare = id.slice(id.lastIndexOf("/") + 1);
+	for (const [prefix, ctx] of OTHER_CONTEXT_LENGTHS) {
+		if (bare.startsWith(prefix)) {
+			return ctx;
+		}
+	}
 	if (!bare.startsWith("glm")) {
 		return undefined;
 	}

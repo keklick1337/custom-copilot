@@ -879,6 +879,14 @@
 										</select>
 									</div>
 									<div class="field">
+										<label for="modelZaiAnalyzeImage" title="Z.AI / BigModel only. Models with native vision always get images directly. For a text-only GLM, let the Z.ai server read images with its built-in analyze_image tool (otherwise images are not sent to it).">Z.ai analyze_image</label>
+										<select id="modelZaiAnalyzeImage">
+											<option value="">Off (default)</option>
+											<option value="true">On — server reads images</option>
+											<option value="false">Off</option>
+										</select>
+									</div>
+									<div class="field">
 										<label for="modelTools">Tools</label>
 										<select id="modelTools">
 											<option value="">Default (false)</option>

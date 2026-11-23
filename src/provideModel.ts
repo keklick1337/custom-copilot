@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { CancellationToken, LanguageModelChatInformation } from "vscode";
 
 import type { CustomApiMode, CustomModelItem, OpenAIModelsResponse } from "./types";
-import { getUserModels, resolveThinkingEnabled } from "./utils";
+import { getUserModels, resolveThinkingEnabled, safeUrlHost } from "./utils";
 import { VersionManager } from "./versionManager";
 import { fetchGeminiModels } from "./gemini/geminiModels";
 import { fetchOllamaModels } from "./ollama/ollamaApi";
@@ -146,7 +146,8 @@ export async function prepareLanguageModelChatInformation(
 					// both `tool_calling` and `extra.tool_calling` (the tooltip
 					// and fetch flow treat them as equivalent).
 					toolCalling: supportsTools,
-					imageInput: m?.vision ?? false,
+					// Native vision, or Z.AI's server-side analyze_image when enabled.
+					imageInput: m?.vision === true || m?.zai_analyze_image === true,
 				},
 				configurationSchema: buildConfigurationSchema(
 					m,
@@ -198,7 +199,10 @@ export async function fetchModels(
 			"User-Agent": userAgent,
 		};
 		const headers = customHeaders ? { ...baseHeaders, ...customHeaders } : baseHeaders;
-		const resp = await proxyFetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
+		// NanoGPT's plain /models omits every context window; ?detailed=true
+		// publishes them (hermes `_MODELS_QUERY_BY_HOST`).
+		const modelsQuery = /(^|\.)nano-gpt\.com$/i.test(safeUrlHost(baseUrl)) ? "?detailed=true" : "";
+		const resp = await proxyFetch(`${baseUrl.replace(/\/+$/, "")}/models${modelsQuery}`, {
 			...networkInit,
 			method: "GET",
 			headers,

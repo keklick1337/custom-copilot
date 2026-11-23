@@ -241,6 +241,7 @@ const FORM_MANAGED_MODEL_FIELDS: ReadonlyArray<keyof CustomModelItem> = [
 	"thinking_budget",
 	"prompt_cache",
 	"fast_mode",
+	"zai_analyze_image",
 	"image_max_dimension",
 	"include_reasoning_in_request",
 	"thinking",

@@ -433,12 +433,38 @@ for waiting on background agents (their reports arrive by themselves).
 
 ### 🟦 Z.AI / GLM extras
 
+- **Images and GLM's server-side `analyze_image`.** A model with native vision (GLM-4.6V, GLM-5V …,
+  *Vision: true*) always gets images directly. For a text-only GLM the Z.ai server would run its own
+  built-in `analyze_image` tool; that is now an explicit per-model option — **Z.ai analyze_image**
+  in the model form (`zai_analyze_image`, off by default). Off: images are not sent to text-only GLM
+  models (a short note replaces them). On: the model is offered image input and the server reads
+  the images. Either way the server's built-in tool rounds (`analyze_image`, `webReader`, …) are
+  handled properly (ported from ZCode): the "🌐 Z.ai Built-in Tool …" / "Output: …" markdown copies
+  no longer end up in the answer, the call and its result are shown in the thinking block, and the
+  next request replays them as a real tool_use / tool_result pair — so the model no longer imitates
+  tool calls in plain text.
+- Thinking signatures the endpoint rejected once ("bound to a different conversation") are
+  remembered and left out of later requests, instead of every request failing once and retrying.
+
 - **Show Z.AI Coding Plan Quota** command: plan level, 5‑hour / weekly prompt usage and
   MCP quota with reset times, per stored key.
 - Transient business errors inside a streamed 200 response (1302/1303/1305/1312/1234,
   `network_error`, overloaded) are retried once before anything is shown.
 - `retry-after-ms` / `retry-after` honoured up to 5 minutes, `x-should-retry: false` respected,
   local backoff has jitter.
+
+### 🔁 Protocol fixes (ported from hermes-agent)
+
+- **Anthropic / Z.AI:** a request that declares no tools but carries tool history (a tools-free
+  summary or utility request over an agent chat, a replayed Z.ai built-in tool round) sends that
+  history as plain text — `tool_use` / `tool_result` blocks without `tools` are a hard 400.
+- **Gemini:** tool calls are held until the finish reason is known; a reply cut off by
+  `MAX_TOKENS` / safety no longer runs a truncated or blocked call.
+- **Responses API, GPT-6.2+:** the system prompt goes as a leading `developer` input item instead
+  of top-level `instructions` (which GPT-6.2+ bills uncached every turn). Stateful
+  (`previous_response_id`) requests and xAI keep `instructions`.
+- **Context windows:** NanoGPT's model list is read with `?detailed=true` (its plain list has no
+  windows); Grok 4.x windows follow docs.x.ai when the endpoint reports none.
 
 ### 📏 Context windows
 
